@@ -9,9 +9,10 @@
     "plugin"
   ],
   "scripts": {
-    "gateway": "npm run -w harness gateway",
+    "bridge": "npm run -w harness bridge",
+    "mcp-proxy": "npm run -w harness mcp-proxy",
     "plugin:dev": "npm run -w obsidian-chat-plugin dev",
     "plugin:build": "npm run -w obsidian-chat-plugin build",
-    "typecheck": "tsc -p harness/tsconfig.json --noEmit"
+    "typecheck": "npm run -w obsidian-chat-plugin build"
   }
 }

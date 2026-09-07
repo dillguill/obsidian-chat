@@ -7,7 +7,8 @@ import { ItemView, WorkspaceLeaf, Menu, TFile, TFolder, Platform, setIcon, Notic
 import type ObsidianChatPlugin from "../main";
 import type { ChatMessage, RetrievedNote, StreamEvent, ImageAttachment } from "../chat/types";
 import { buildRuntime } from "../chat/runtime";
-import { GatewaySession } from "../chat/gateway";
+import { AcpBridgeClient, AcpUnavailableError, type PendingPermissionRequest } from "../acp/client";
+import type { ContentBlock } from "@agentclientprotocol/sdk";
 import { ChatEngine } from "../chat/engine";
 import { buildGrounding, extractWikilinks } from "../chat/ground";
 import { retrieveCascade, hasContentSignal } from "../retrieval/cascade";
@@ -15,7 +16,8 @@ import type { VaultIndex } from "../retrieval/index";
 import { getActiveProvider, thinkingLevelsFor, hasVision } from "../settings";
 import { renderMarkdown } from "./markdown";
 import { metaToFrontmatter, renderBody, approxTokens } from "../session/store";
-import { createApprovalRequester } from "./approval";
+import { createApprovalRequester, ApprovalModal } from "./approval";
+import type { WritePreview } from "../tools/contract";
 import { ModelSuggestModal } from "./model-suggest";
 import { SessionSuggestModal } from "./session-suggest";
 import { buildModelItems, togglePinnedModel } from "../chat/models";
@@ -65,7 +67,11 @@ const TEXT_EXT = new Set(["md", "txt", "csv", "tsv", "json", "html", "htm", "xml
 
 export class ChatView extends ItemView {
   private engine: ChatEngine | null = null;
-  private gateway: GatewaySession | null = null;
+  private acp: AcpBridgeClient | null = null;
+  /** Local transcript for the ACP path (the harness owns session state; this
+   *  is only for sessions-as-notes persistence — data-model.md Session). */
+  private acpHistory: ChatMessage[] = [];
+  private sendBtnEl: HTMLButtonElement | null = null;
   private messagesEl!: HTMLElement;
   private chipsEl!: HTMLElement;
   private composerEl!: HTMLTextAreaElement;
@@ -157,8 +163,12 @@ export class ChatView extends ItemView {
     // Send floats inside the input row (bottom-right corner) so the toolbar row below
     // is free to just be the three mode chips.
     const sendBtn = inputRow.createEl("button", { cls: "oc-send", attr: { "aria-label": "Send" } });
+    this.sendBtnEl = sendBtn as HTMLButtonElement;
     setIcon(sendBtn, "arrow-up");
-    sendBtn.addEventListener("click", () => this.send());
+    sendBtn.addEventListener("click", () => {
+      if (this.streaming) void this.cancelStreaming();
+      else void this.send();
+    });
     ta.addEventListener("keydown", (e) => {
       if (this.slashMenuEl) {
         if (e.key === "ArrowDown") { e.preventDefault(); this.moveSlash(1); return; }
@@ -548,21 +558,38 @@ export class ChatView extends ItemView {
     }
     this.composerEl.value = "";
     this.streaming = true;
+    this.setSendButtonMode("stop");
     this.addUserMessage(text, this.pendingImages);
     this.lastAssistantText = "";
-    this.gatewayMsgBase = null;
 
     const useGateway = await this.prefersGateway();
     try {
-      if (useGateway) await this.sendViaGateway(text);
+      if (useGateway) await this.sendViaAcp(text);
       else await this.sendViaProvider(text);
     } catch (err) {
-      this.addToolRow("error", `Error: ${String((err as Error).message ?? err)}`, "error");
+      if (err instanceof AcpUnavailableError) {
+        this.addToolRow("error", `Bridge/harness unavailable: ${err.message}`, "error"); // FR-012
+      } else {
+        this.addToolRow("error", `Error: ${String((err as Error).message ?? err)}`, "error");
+      }
     } finally {
       this.clearPendingAttachments();
       this.streaming = false;
+      this.setSendButtonMode("send");
       await this.refreshToolbar();
     }
+  }
+
+  private setSendButtonMode(mode: "send" | "stop") {
+    if (!this.sendBtnEl) return;
+    this.sendBtnEl.empty();
+    setIcon(this.sendBtnEl, mode === "stop" ? "square" : "arrow-up");
+    this.sendBtnEl.setAttribute("aria-label", mode === "stop" ? "Stop" : "Send");
+  }
+
+  /** session/cancel (FR-005 acceptance scenario 2: cancel stops streaming promptly). */
+  private async cancelStreaming() {
+    if (this.acp) await this.acp.cancel();
   }
 
   private async sendViaProvider(text: string) {
@@ -613,23 +640,107 @@ export class ChatView extends ItemView {
     }
   }
 
-  private async sendViaGateway(text: string) {
-    const ground = await this.ground(text);
+  /** Sends one turn over ACP (contracts/plugin-bridge-acp.md). Unlike the old
+   *  gateway, the harness owns conversation state once a session exists, so
+   *  only this turn's content blocks are sent — not the full history. */
+  private async sendViaAcp(text: string) {
     const s = this.plugin.settings;
-    if (!this.gateway) {
-      this.gateway = new GatewaySession({ baseUrl: s.gateway.baseUrl, token: s.gateway.token, model: s.gateway.model || undefined });
-      this.gateway.onEvent((e) => this.handleStreamEvent(e));
+    if (!this.acp) {
+      this.acp = new AcpBridgeClient({ baseUrl: s.gateway.baseUrl, token: s.gateway.token });
+      this.acp.onEvent((e) => this.handleStreamEvent(e));
+      this.acp.onPermissionRequest((p) => void this.handlePermissionRequest(p));
     }
-    await this.gateway.connect();
-    const history = this.engine ? (this.engine.getHistory() as ChatMessage[]) : [];
-    const messages: ChatMessage[] = [
-      { role: "system", content: ground.systemPrompt },
-      ...history,
-      { role: "user", content: text, images: this.pendingImages.length ? this.pendingImages : undefined },
-    ];
-    // Remember the base so we can persist the turn once the assistant stream ends.
-    this.gatewayMsgBase = messages;
-    await this.gateway.sendCompletion(messages, s.gateway.model);
+    await this.acp.connect();
+    const blocks = await this.buildAcpPromptBlocks(text);
+    this.acpHistory.push({ role: "user", content: text, images: this.pendingImages.length ? this.pendingImages : undefined });
+    await this.acp.prompt(blocks);
+    this.acpHistory.push({ role: "assistant", content: this.lastAssistantText });
+    this.lastAssistantText = "";
+    try {
+      await this.persistSession(this.acpHistory);
+    } catch (err) {
+      new Notice(`Couldn't save session: ${String((err as Error).message ?? err)}`);
+    }
+  }
+
+  /** Builds this turn's ACP prompt content blocks: `@mention`-attached note
+   *  content and advisory `.chat/rules.md`/vault-rules context (still
+   *  reaching the harness as context, per data-model.md's correction —
+   *  `.chat/rules.md` is not an access-control gate), then the user's text
+   *  and any image attachments (US3: FR-009 @mention carryover). */
+  private async buildAcpPromptBlocks(text: string): Promise<ContentBlock[]> {
+    const blocks: ContentBlock[] = [];
+    const mentioned = await this.attachMentions(text, this.plugin.index);
+    if (mentioned.length) {
+      const ctx = mentioned.map((n) => `## [[${n.rel.replace(/\.md$/, "")}]]\n${n.snippet}`).join("\n\n");
+      blocks.push({ type: "text", text: `# Mentioned context\n\n${ctx}` });
+    }
+    if (this.plugin.settings.injectVaultRules) {
+      const rules = await this.readAdvisoryRulesContext(mentioned[0]?.rel);
+      if (rules) blocks.push({ type: "text", text: `# Vault rules\n\n${rules}` });
+    }
+    this.renderChips(mentioned.map((n) => n.rel));
+    blocks.push({ type: "text", text });
+    for (const img of this.pendingImages) {
+      const m = /^data:([^;]+);base64,(.*)$/.exec(img.dataUrl);
+      if (m) blocks.push({ type: "image", data: m[2], mimeType: m[1] });
+    }
+    return blocks;
+  }
+
+  /** Top-level vault-rules.md/.chat/rules.md/AGENTS.md + nearest-folder
+   *  `.chat/rules.md`, unchanged from `assembleGrounding`'s existing
+   *  behavior — advisory instruction text, not an access-control gate. */
+  private async readAdvisoryRulesContext(primaryNotePath?: string): Promise<string> {
+    let vaultRules: string | undefined;
+    for (const p of ["vault-rules.md", ".chat/rules.md", "AGENTS.md"]) {
+      const f = this.plugin.app.vault.getAbstractFileByPath(p);
+      if (f instanceof TFile) vaultRules = (vaultRules ? vaultRules + "\n\n" : "") + (await this.plugin.app.vault.cachedRead(f));
+    }
+    if (primaryNotePath) {
+      const folderRules = await this.readNearestFolderRules(primaryNotePath);
+      if (folderRules) vaultRules = (vaultRules ? vaultRules + "\n\n" : "") + folderRules;
+    }
+    return vaultRules ?? "";
+  }
+
+  /** Maps ACP's `session/request_permission` onto the same approval UX
+   *  (Auto/Review/Plan, persistent per-tool allow/deny) the plugin already
+   *  used for locally-executed write tools (research.md R6, T027-T030). */
+  private async handlePermissionRequest(p: PendingPermissionRequest) {
+    if (!this.acp) return;
+    const s = this.plugin.settings;
+    const mode = s.approvalMode;
+    const toolCall = p.request.toolCall as any;
+    const action = toolCall.title ?? toolCall.kind ?? "tool";
+    const preview: WritePreview = {
+      action,
+      path: toolCall.locations?.[0]?.path ?? "",
+      summary: toolCall.title ?? action,
+      diff: Array.isArray(toolCall.content)
+        ? toolCall.content.map((c: any) => (typeof c === "string" ? c : JSON.stringify(c)))
+        : undefined,
+    };
+    const pickOption = (kind: string) => p.request.options.find((o) => o.kind === kind);
+
+    // Persistent per-tool decision (Copilot semantics) — same allowlist the
+    // plugin-direct tool path uses.
+    if (mode !== "plan" && s.toolAllowlist[action] !== undefined) {
+      const option = pickOption(s.toolAllowlist[action] ? "allow_once" : "reject_once") ?? p.request.options[0];
+      if (option) await this.acp.respondPermission(p.requestId, option.optionId);
+      return;
+    }
+
+    const modal = new ApprovalModal(this.plugin.app, preview, mode === "plan" ? "plan" : "review", async (d) => {
+      if (d.remember) {
+        s.toolAllowlist[action] = d.allowed;
+        await this.plugin.saveSettings();
+      }
+      const kind = d.allowed ? (d.remember ? "allow_always" : "allow_once") : "reject_once";
+      const option = pickOption(kind) ?? p.request.options[0];
+      if (option && this.acp) await this.acp.respondPermission(p.requestId, option.optionId);
+    });
+    modal.open();
   }
 
   private async handleStreamEvent(e: StreamEvent) {
@@ -650,17 +761,8 @@ export class ChatView extends ItemView {
         if (this.pendingAssistantMd) this.pendingAssistantMd.removeClass("streaming");
         this.pendingAssistantMd = null;
         this.pendingAcc = "";
-        if (this.gatewayMsgBase) {
-          const base = this.gatewayMsgBase;
-          this.gatewayMsgBase = null;
-          const final: ChatMessage[] = [...base, { role: "assistant", content: this.lastAssistantText }];
-          this.lastAssistantText = "";
-          try {
-            await this.persistSession(final);
-          } catch (err) {
-            new Notice(`Couldn't save session: ${String((err as Error).message ?? err)}`);
-          }
-        }
+        // Session persistence now happens in sendViaAcp() once session/prompt
+        // resolves, using acpHistory — see data-model.md Session.
         break;
       case "error":
         this.addToolRow("error", e.message, "error");
@@ -671,7 +773,6 @@ export class ChatView extends ItemView {
   private pendingAssistantMd: HTMLElement | null = null;
   private pendingAcc = "";
   private lastAssistantText = "";
-  private gatewayMsgBase: ChatMessage[] | null = null;
 
   /** Normalized chat session folder (user-configurable, default "chat"). */
   private sessionFolder(): string {
@@ -706,9 +807,10 @@ export class ChatView extends ItemView {
     this.renderChips([]);
     this.sessionPath = "";
     this.engine?.clear();
-    if (this.gateway) {
-      await this.gateway.close();
-      this.gateway = null;
+    this.acpHistory = [];
+    if (this.acp) {
+      await this.acp.close();
+      this.acp = null;
     }
     this.addSystemMessage("New session.");
   }
@@ -1083,6 +1185,6 @@ export class ChatView extends ItemView {
 
   async onClose() {
     this.hideModePopover();
-    if (this.gateway) await this.gateway.close().catch(() => {});
+    if (this.acp) await this.acp.close().catch(() => {});
   }
 }

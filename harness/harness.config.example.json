@@ -1,0 +1,24 @@
+{
+  "_comment": "Copy to harness.config.json (gitignored) and fill in for your host. See harness/README.md.",
+
+  "command": ["opencode", "acp"],
+
+  "providerConfig": {
+    "_comment": "Opaque, harness-owned settings. The bridge never reads this — it is passed through to the spawned harness's own environment/config only if that harness expects it there. Prefer configuring the harness's own provider settings (e.g. opencode's own config file, ANTHROPIC_API_KEY, etc.) directly rather than relying on this field, unless a given harness documents reading it from here."
+  },
+
+  "mcpVaultProxyUrl": "http://127.0.0.1:8766/mcp/",
+
+  "bridgePort": 8765,
+  "mcpProxyPort": 8766,
+
+  "lra": {
+    "baseUrl": "https://127.0.0.1:27124",
+    "mcpPath": "/mcp/"
+  },
+
+  "rules": {
+    "blacklistFolders": [],
+    "rulesFileName": ".chat/rules.md"
+  }
+}

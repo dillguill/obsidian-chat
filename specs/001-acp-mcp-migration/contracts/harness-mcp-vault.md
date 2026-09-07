@@ -19,8 +19,10 @@ surface on both sides — it is a transparent filter, not a redefinition of the 
 For every incoming tool call:
 
 1. Resolve the call's target vault path(s).
-2. Check the path against the current folder blacklist and the nearest-wins `.chat/rules.md`
-   resolution for that path.
+2. Check the path against the current folder blacklist (`settings.blacklistFolders` — the
+   existing hard access-control gate; **not** `.chat/rules.md`, which is advisory instruction text
+   injected into the model's context elsewhere and is not an access boundary — see
+   data-model.md's Vault Tool Call correction note).
    - If denied: the proxy MUST reject the call with an MCP-level error and MUST NOT forward it to
      LRA (FR-008). The denial reason SHOULD be legible enough for the harness to relay to the user
      ("this folder is excluded from tool access") without the proxy leaking implementation detail

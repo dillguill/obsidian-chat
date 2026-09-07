@@ -74,10 +74,12 @@ export interface ProviderConfig {
   vision?: boolean;
 }
 
+/** ACP bridge connection (specs/001-acp-mcp-migration). No `model` field —
+ *  the model/provider is a config value on the harness itself (Principle
+ *  II), never chosen by the plugin. */
 export interface GatewayConfig {
   baseUrl: string;
   token: string;
-  model: string;
 }
 
 export type ApprovalMode = "auto" | "review" | "plan";
@@ -138,7 +140,7 @@ export const DEFAULT_SETTINGS: ObsidianChatSettings = {
     },
   ],
   activeProviderId: "default",
-  gateway: { baseUrl: "http://127.0.0.1:8765", token: "", model: "" },
+  gateway: { baseUrl: "http://127.0.0.1:8765", token: "" },
   preferGateway: false,
   retrievalK: 5,
   injectVaultRules: true,
@@ -218,10 +220,10 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
       this.display();
     });
 
-    containerEl.createEl("h4", { text: "Harness gateway" });
+    containerEl.createEl("h4", { text: "ACP bridge" });
     new Setting(containerEl)
       .setName("Base URL")
-      .setDesc("Your always-on machine over Tailscale, e.g. https://100.x.y.z:8765")
+      .setDesc("Your always-on machine's ACP bridge over Tailscale, e.g. https://100.x.y.z:8765")
       .addText((t) => t.setValue(this.plugin.settings.gateway.baseUrl).onChange((v) => (this.plugin.settings.gateway.baseUrl = v)));
     new Setting(containerEl)
       .setName("Device token")
@@ -231,11 +233,10 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
         return t.setValue(this.plugin.settings.gateway.token).onChange((v) => (this.plugin.settings.gateway.token = v));
       });
     new Setting(containerEl)
-      .setName("Model")
-      .addText((t) => t.setValue(this.plugin.settings.gateway.model).onChange((v) => (this.plugin.settings.gateway.model = v)));
-    new Setting(containerEl)
-      .setName("Prefer gateway")
-      .setDesc("Use the harness when available. Auto-enabled on mobile.")
+      .setName("Prefer bridge")
+      .setDesc(
+        "Use the ACP bridge (harness) when available. Auto-enabled on mobile. The model/provider is configured on the harness itself, not here (Constitution Principle II)."
+      )
       .addToggle((t) => t.setValue(this.plugin.settings.preferGateway).onChange((v) => (this.plugin.settings.preferGateway = v)));
 
     containerEl.createEl("h4", { text: "Grounding" });

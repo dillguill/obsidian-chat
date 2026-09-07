@@ -69,8 +69,14 @@ MCP tool call and passed through the MCP proxy to LRA's built-in MCP server.
 | `kind` | `read` \| `write` |
 
 **Validation / rules**:
-- A call whose `targetPath` falls under a blacklisted folder or is denied by the nearest-wins
-  `.chat/rules.md` MUST be rejected by the MCP proxy before it reaches LRA (FR-008).
+- A call whose `targetPath` falls under a blacklisted folder (`settings.blacklistFolders`, the
+  existing hard access-control gate — see `plugin/src/retrieval/index.ts`'s `isExcluded()`) MUST
+  be rejected by the MCP proxy before it reaches LRA (FR-008).
+- **Correction from earlier drafts**: `.chat/rules.md` is not an access-control mechanism in the
+  existing product — it is advisory instruction text (like `AGENTS.md`), nearest-folder-wins,
+  injected into the model's context (see `plugin/src/ui/chat-view.ts`'s
+  `readNearestFolderRules`/`assembleGrounding`). The proxy does not enforce it; it continues to
+  reach the harness as context content, independent of the proxy's allow/deny decision.
 - A `write` call is additionally subject to the active Approval Request flow before it is allowed
   to reach LRA, unless the current approval mode is Auto and the call matches a previously granted
   allow rule.

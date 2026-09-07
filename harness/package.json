@@ -3,13 +3,17 @@
   "version": "0.0.1",
   "private": true,
   "type": "module",
-  "description": "Always-on machine gateway: launchd listener, per-device bearer tokens, ephemeral workers (PLAN.md §2.4)",
+  "description": "Always-on machine: ACP bridge + MCP rules proxy (see specs/001-acp-mcp-migration)",
   "license": "MIT",
   "engines": {
     "node": ">=20"
   },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "^1.4.0",
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  },
   "scripts": {
-    "gateway": "node src/gateway.mjs",
-    "worker": "node src/echo-worker.mjs"
+    "bridge": "node src/acp-bridge.mjs",
+    "mcp-proxy": "node src/mcp-rules-proxy.mjs"
   }
 }

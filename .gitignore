@@ -8,3 +8,4 @@ data/
 .claude/
 harness/certs/
 harness/tokens.json
+harness/harness.config.json
