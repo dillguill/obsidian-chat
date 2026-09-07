@@ -1,0 +1,15 @@
+{
+  "name": "@obsidian-chat/harness",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Always-on machine gateway: launchd listener, per-device bearer tokens, ephemeral workers (PLAN.md §2.4)",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "gateway": "node src/gateway.mjs",
+    "worker": "node src/echo-worker.mjs"
+  }
+}

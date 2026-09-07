@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>G3 spike — round trip</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 15px/1.4 -apple-system, system-ui, sans-serif; margin: 0 auto; max-width: 640px; padding: 12px; background:#0e0e12; color:#e8e8ec; }
+  h1 { font-size: 17px; }
+  .row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+  input { flex: 1; min-width: 120px; padding: 10px; border-radius: 8px; border: 1px solid #333; background:#17171d; color:inherit; }
+  button { padding: 10px 14px; border-radius: 8px; border: 0; background:#3a6df0; color:#fff; font-weight:600 }
+  button.sec { background:#2a2a33; }
+  #log { white-space: pre-wrap; word-break: break-word; background:#141419; border:1px solid #26262e; border-radius:8px; padding:10px; height: 55vh; overflow-y:auto; font-family: ui-monospace, monospace; font-size: 13px; }
+  .tok { color:#9ad27d } .meta { color:#777 } .err { color:#ff7b72 }
+</style>
+</head>
+<body>
+<h1>G3 spike — SSE round trip over Tailscale</h1>
+<div class="row">
+  <input id="token" placeholder="bearer token" type="password" />
+</div>
+<div class="row">
+  <button data-a="raw">Raw /health (no JS deps)</button>
+  <button data-a="health">Health</button>
+  <button data-a="start">Start session</button>
+  <button data-a="kill" class="sec">Delete session</button>
+</div>
+<div class="row">
+  <input id="msg" placeholder="type a message…" />
+  <button data-a="send">Send</button>
+</div>
+<div id="log"></div>
+<script>
+"use strict";
+// No $ shortcuts, no window.name reliance — avoid Safari named-element globals.
+var sessionId = null, lastEventId = 0;
+function el(id) { return document.getElementById(id); }
+function log(html, cls) {
+  var d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.innerHTML = html;
+  el("log").appendChild(d);
+  el("log").scrollTop = 1e9;
+}
+window.addEventListener("error", function (e) {
+  log("<span class=err>JS error: " + e.message + " @" + (e.filename||"").split("/").pop() + ":" + e.lineno + "</span>");
+});
+window.addEventListener("unhandledrejection", function (e) {
+  log("<span class=err>promise rejection: " + ((e.reason && e.reason.message) || e.reason) + "</span>");
+});
+
+// Button 0: raw navigation-style fetch with zero app code — isolates Safari vs our JS
+document.querySelector('[data-a="raw"]').addEventListener("click", function () {
+  log("<span class=meta>→ RAW fetch /health</span>");
+  fetch("/health", { cache: "no-store" })
+    .then(function (r) { return r.text().then(function (t) { log("<span class=meta>← RAW " + r.status + "</span> " + t); }); })
+    .catch(function (e) { log("<span class=err>RAW fetch failed: " + e.name + ": " + e.message + "</span>"); });
+});
+
+try {
+  el("token").value = localStorage.getItem("g3token") || "";
+  window.addEventListener("beforeunload", function () { localStorage.setItem("g3token", el("token").value); });
+} catch (e) { log("<span class=err>localStorage blocked: " + e.message + "</span>"); }
+
+function api(method, path, body) {
+  try { localStorage.setItem("g3token", el("token").value); } catch (e) {}
+  log("<span class=meta>→ " + method + " " + path + "</span>");
+  return fetch(path, {
+    method: method,
+    headers: { authorization: "Bearer " + el("token").value, "content-type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  }).then(function (r) {
+    return r.text().then(function (t) {
+      log("<span class=meta>← " + r.status + " (" + t.length + " bytes)</span>");
+      if (!r.ok) throw new Error(r.status + " " + t);
+      return t ? JSON.parse(t) : {};
+    });
+  });
+}
+
+function writeEvent(ev) {
+  // parse SSE block manually
+}
+var sseFail = 0;
+function scheduleReconnect() {
+  if (sseFail >= 8) { log("<span class=err>giving up after " + sseFail + " retries — press Start</span>"); return; }
+  var delay = Math.min(1000 * Math.pow(2, sseFail - 1), 15000);
+  log("<span class=meta>reconnect #" + sseFail + " in " + Math.round(delay / 1000) + "s</span>");
+  setTimeout(streamSSE, delay);
+}
+function streamSSE() {
+  var url = "/sessions/" + sessionId + "/events";
+  log("<span class=meta>→ SSE open (from id " + lastEventId + ")</span>");
+  fetch(url, { headers: { authorization: "Bearer " + el("token").value, "last-event-id": String(lastEventId) } })
+    .then(function (resp) {
+      log("<span class=meta>← SSE status " + resp.status + "</span>");
+      if (resp.status === 404) { log("<span class=err>session is dead (404) — press Start for a new one</span>"); sessionId = null; return; }
+      var reader = resp.body.getReader();
+      var dec = new TextDecoder();
+      var buf = "";
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) { log("<span class=err>stream closed</span>"); sseFail++; return scheduleReconnect(); }
+          buf += dec.decode(r.value, { stream: true });
+          var sep;
+          while ((sep = buf.indexOf("\n\n")) > -1) {
+            var block = buf.slice(0, sep); buf = buf.slice(sep + 2);
+            var id = 0, evName = "message", data = "";
+            block.split("\n").forEach(function (line) {
+              if (line.indexOf("id: ") === 0) id = Number(line.slice(4));
+              else if (line.indexOf("event: ") === 0) evName = line.slice(7);
+              else if (line.indexOf("data: ") === 0) data += line.slice(6);
+            });
+            if (id) lastEventId = id;
+            render(evName, data);
+          }
+          return pump();
+        });
+      }
+      return pump();
+    })
+    .catch(function (e) { log("<span class=err>stream error: " + e.message + "</span>"); sseFail++; scheduleReconnect(); });
+}
+function render(ev, data) {
+  if (ev === "token") {
+    var t = ""; try { t = JSON.parse(data).text || ""; } catch (e) { t = data; }
+    log("<span class=tok>" + t.replace(/\n/g, "<br>") + "</span>");
+  } else if (ev === "turn_end") log("<span class=meta>— turn end —</span>");
+  else log("<span class=meta>" + ev + ": " + data + "</span>");
+}
+
+document.querySelector('[data-a="health"]').addEventListener("click", function () {
+  api("GET", "/health").then(function (j) { log("health: " + JSON.stringify(j)); })
+     .catch(function (e) { log("<span class=err>health failed: " + e.message + "</span>"); });
+});
+document.querySelector('[data-a="start"]').addEventListener("click", function () {
+  api("POST", "/sessions", { model: "echo" }).then(function (r) {
+    sessionId = r.sessionId; lastEventId = 0; sseFail = 0;
+    log("session started: " + sessionId + " pid=" + r.pid);
+    streamSSE();
+  }).catch(function (e) { log("<span class=err>start failed: " + e.message + "</span>"); });
+});
+document.querySelector('[data-a="kill"]').addEventListener("click", function () {
+  if (!sessionId) { log("<span class=err>no session</span>"); return; }
+  api("DELETE", "/sessions/" + sessionId).then(function (j) { log("killed: " + JSON.stringify(j)); sessionId = null; })
+     .catch(function (e) { log("<span class=err>kill failed: " + e.message + "</span>"); });
+});
+function sendMsg() {
+  var text = (el("msg").value || "").trim();
+  if (!text || !sessionId) { log("<span class=err>send: need text + session</span>"); return; }
+  el("msg").value = "";
+  log("<b>you:</b> " + text);
+  api("POST", "/sessions/" + sessionId + "/input", { type: "user_message", text: text })
+     .catch(function (e) { log("<span class=err>send failed: " + e.message + "</span>"); });
+}
+document.querySelector('[data-a="send"]').addEventListener("click", sendMsg);
+el("msg").addEventListener("keydown", function (e) { if (e.key === "Enter") sendMsg(); });
+
+log("page v6 loaded. Auto-running health check…");
+api("GET", "/health").then(function (j) { log("health: " + JSON.stringify(j)); })
+   .catch(function (e) { log("<span class=err>AUTO HEALTH FAILED: " + e.name + ": " + e.message + "</span>"); });
+</script>
+</body>
+</html>

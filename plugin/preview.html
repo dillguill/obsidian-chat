@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Obsidian Chat — UI preview</title>
+<link rel="stylesheet" href="styles.css" />
+<style>
+  :root {
+    --background-primary: #111214;
+    --background-secondary: #1a1b1e;
+    --background-primary-alt: #1a1b1e;
+    --background-modifier-border: #2a2c31;
+    --background-modifier-hover: #2a2c31;
+    --text-normal: #eceff3;
+    --text-muted: #9aa3ad;
+    --text-faint: #6b727c;
+    --text-on-accent: #ffffff;
+    --text-accent: #e08a4a;
+    --interactive-accent: #6a7cff;
+    --link-color: #9ab0ff;
+    --color-green: #4caf6a;
+    --color-red: #e0654a;
+    --font-monospace: ui-monospace, SFMono-Regular, Menlo, monospace;
+    color-scheme: dark;
+  }
+  html, body { height: 100%; margin: 0; background: var(--background-primary); font-family: -apple-system, system-ui, sans-serif; }
+  .oc-view { height: 100vh; }
+  .oc-input { display: block; }
+  /* Stand-ins for setIcon()'s injected <svg class="svg-icon">, sized identically. */
+  .svg-icon { width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; display: block; }
+</style>
+</head>
+<body>
+<div class="oc-view">
+  <!-- header -->
+  <div class="oc-header">
+    <div class="oc-header-title">
+      <span class="oc-app-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg></span>
+      <span class="oc-app-name">Obsidian Chat</span>
+    </div>
+    <div class="oc-header-actions">
+      <button class="oc-icon-btn" aria-label="History" title="History">
+        <svg class="svg-icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+      </button>
+      <button class="oc-icon-btn" aria-label="New session" title="New session">
+        <svg class="svg-icon" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- transcript -->
+  <div class="oc-messages">
+    <div class="oc-tool">
+      <span class="oc-tool-verb">/read</span>
+      <span class="oc-tool-label">Black Hole Image Prompt.md</span>
+    </div>
+
+    <div class="oc-thought">
+      <div class="oc-thought-label">Thought for 0s</div>
+      <div class="oc-thought-body">Now I'll reorganize the prompt into a more readable format while keeping all the content exactly as it is.</div>
+    </div>
+
+    <div class="oc-tool">
+      <span class="oc-tool-verb">/edit</span>
+      <span class="oc-tool-label">Black Hole Image Prompt.md</span>
+      <span class="oc-tool-right"><span class="oc-diff-add">+18</span> <span class="oc-diff-del">-1</span></span>
+    </div>
+
+    <div class="oc-thought">
+      <div class="oc-thought-label">Thought for 2s</div>
+      <div class="oc-thought-body">Done! I've reorganized the prompt into a more readable format by breaking it into distinct sections with line breaks between each physics concept.</div>
+    </div>
+
+    <div class="oc-block">
+      <div class="oc-body-md">
+        The prompt is now structured with clear sections for:
+        <ul>
+          <li>Opening description</li>
+          <li>Key Physics: Gravitational Lensing</li>
+          <li>Material &amp; Occlusion</li>
+          <li>The Center</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- context chips -->
+  <div class="oc-chips">
+    <div class="oc-chip">
+      <span class="oc-chip-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg></span>
+      <span class="oc-chip-label">Black Hole Image Prompt</span>
+      <button class="oc-chip-x" aria-label="Remove context">
+        <svg class="svg-icon" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- composer: one bordered card holds both the input row and the toolbar below it -->
+  <div class="oc-composer">
+    <div class="oc-inputbox">
+      <div class="oc-input-row">
+        <textarea class="oc-input" placeholder="Ask Obsidian Chat anything…&#10;(Enter to send, Shift+Enter for newline)" rows="2"></textarea>
+        <button class="oc-send" aria-label="Send">
+          <svg class="svg-icon" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+        </button>
+      </div>
+      <div class="oc-toolbar">
+        <button class="oc-toolbtn oc-toolbtn-model" title="Model: deepseek/deepseek-chat">
+          <span class="oc-toolbtn-icon"><svg class="svg-icon" viewBox="0 0 24 24"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9" rx="1"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></span>
+          <span class="oc-toolbtn-text">deepseek/deepseek-chat</span>
+          <span class="oc-toolbtn-chevron"><svg class="svg-icon" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg></span>
+        </button>
+        <button class="oc-toolbtn oc-toolbtn-think" title="Thinking: Low">
+          <span class="oc-toolbtn-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></svg></span>
+          <span class="oc-toolbtn-text">Low</span>
+        </button>
+        <button class="oc-toolbtn oc-toolbtn-agent" title="Agent mode: Review">
+          <span class="oc-toolbtn-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></span>
+          <span class="oc-toolbtn-text">Review</span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- agent mode popover (example — normally hidden until the Review pill is clicked) -->
+  <div class="oc-agent-popover" style="position:absolute; right:14px; bottom:170px;">
+    <div class="oc-agent-item">
+      <span class="oc-agent-item-icon"><svg class="svg-icon" viewBox="0 0 24 24"><rect width="8" height="4" x="8" y="2" rx="1" ry="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg></span>
+      <span class="oc-agent-item-body">
+        <span class="oc-agent-item-title" style="display:block;">Plan</span>
+        <span class="oc-agent-item-desc" style="display:block;">Explore the vault and present a plan before making any changes</span>
+      </span>
+    </div>
+    <div class="oc-agent-item sel">
+      <span class="oc-agent-item-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"/><path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg></span>
+      <span class="oc-agent-item-body">
+        <span class="oc-agent-item-title" style="display:block;">Review</span>
+        <span class="oc-agent-item-desc" style="display:block;">Ask for approval before making each edit</span>
+      </span>
+      <span class="oc-agent-item-check"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></svg></span>
+    </div>
+    <div class="oc-agent-item">
+      <span class="oc-agent-item-icon"><svg class="svg-icon" viewBox="0 0 24 24"><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></svg></span>
+      <span class="oc-agent-item-body">
+        <span class="oc-agent-item-title" style="display:block;">Auto</span>
+        <span class="oc-agent-item-desc" style="display:block;">Apply write tools immediately, no approval needed</span>
+      </span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

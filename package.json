@@ -1,0 +1,17 @@
+{
+  "name": "obsidian-chat-workspace",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Vault-native AI workspace — Obsidian plugin + always-on harness (see PLAN.md)",
+  "license": "MIT",
+  "workspaces": [
+    "harness",
+    "plugin"
+  ],
+  "scripts": {
+    "gateway": "npm run -w harness gateway",
+    "plugin:dev": "npm run -w obsidian-chat-plugin dev",
+    "plugin:build": "npm run -w obsidian-chat-plugin build",
+    "typecheck": "tsc -p harness/tsconfig.json --noEmit"
+  }
+}

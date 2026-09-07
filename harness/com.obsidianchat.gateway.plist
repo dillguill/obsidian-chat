@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- G3 launchd install (personal-use spike). After editing paths below:
+     launchctl load ~/Library/LaunchAgents/com.obsidianchat.gateway.plist
+     launchctl unload ... to stop. KeepAlive restarts it; ThrottleInterval avoids crash loops. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.obsidianchat.gateway</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- replace with `which node` output (launchd has no PATH from your shell) -->
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/you/projects/obsidian-chat/harness/src/gateway.mjs</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/you/projects/obsidian-chat/harness</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/you/Library/Logs/obsidian-chat-gateway.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/Library/Logs/obsidian-chat-gateway.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PORT</key>
+    <string>8765</string>
+    <!-- Phase 1: relay worker forwards grounded completions to a provider using
+         keys on this machine. Set these to your provider (OpenRouter/DeepSeek/
+         Ollama). The worker inherits them. -->
+    <key>PROVIDER_BASE_URL</key>
+    <string>https://openrouter.ai/api/v1</string>
+    <key>PROVIDER_API_KEY</key>
+    <string>sk-or-v1-REPLACE_ME</string>
+  </dict>
+</dict>
+</plist>
