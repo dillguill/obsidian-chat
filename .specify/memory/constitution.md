@@ -1,10 +1,16 @@
 <!--
 Sync Impact Report
-- Version change: (none) → 1.0.0
-- Modified principles: n/a (initial ratification)
-- Added sections: Core Principles (I-V), Technology Constraints, Governance
+- Version change: 1.0.0 → 1.1.0
+- Modified principles: III. Minimal Custom Glue (added a named, bounded exception for a
+  rules-enforcement MCP proxy; core intent — no sprawl of custom protocol code — unchanged)
+- Added sections: none
 - Removed sections: none
 - Deferred/TODO placeholders: none
+- Rationale: resolves a CRITICAL finding from /speckit-analyze on spec 001-acp-mcp-migration —
+  the plan requires a small rules-enforcement proxy (mcp-rules-proxy.mjs) that Principle III's
+  original unconditional wording did not permit; rather than let a plan-level Complexity Tracking
+  table silently override a ratified MUST, the exception is now named explicitly in the principle
+  itself, with a governance rule that any further exception requires the same process.
 -->
 # Obsidian Chat Constitution
 
@@ -26,13 +32,24 @@ hardcode, or import a specific provider's SDK. Switching providers MUST
 require only a configuration change on the harness.
 
 ### III. Minimal Custom Glue
-The only bespoke code this project owns is the ACP bridge: process spawn,
-per-device auth, and transport relay (stdio ACP ↔ HTTP/SSE over the
-tailnet). The bridge MUST remain harness-agnostic — it speaks ACP only, and
-never encodes assumptions specific to one harness. Swapping the configured
-harness (opencode, Claude Code, Gemini CLI, Goose, etc.) MUST require zero
-changes to the plugin or the bridge, only a config change pointing the bridge
-at a different ACP-speaking command.
+The bespoke code this project owns is limited to the ACP bridge (process
+spawn, per-device auth, and transport relay — stdio ACP ↔ HTTP/SSE over the
+tailnet) and exactly one named exception: a rules-enforcement MCP proxy
+sitting between the harness and the vault's MCP server, whose sole job is
+enforcing pre-existing folder/`.chat/rules.md`-based access exclusions and
+coordinating approval-gating for vault writes. Both components MUST remain
+harness-agnostic — they speak ACP/MCP only, and never encode assumptions
+specific to one harness. Swapping the configured harness (opencode, Claude
+Code, Gemini CLI, Goose, etc.) MUST require zero changes to the plugin, the
+bridge, or the proxy — only a config change pointing the bridge at a
+different ACP-speaking command. The rules-enforcement proxy MUST NOT
+reimplement or duplicate any vault operation the MCP server already
+provides — it may only allow, deny, or gate calls, never execute vault
+operations itself. No custom component beyond these two is permitted
+without a fresh constitutional amendment naming it explicitly, following
+this same process — a plan's Complexity Tracking table MAY document a
+deviation as rationale for such an amendment, but MUST NOT itself authorize
+one.
 
 ### IV. Delete Over Accumulate
 When a standards-based component (ACP client, MCP server) covers
@@ -71,4 +88,4 @@ All feature specs and plans produced via Spec Kit MUST include a
 Constitution Check step confirming alignment with these principles before
 implementation proceeds.
 
-**Version**: 1.0.0 | **Ratified**: 2026-09-06 | **Last Amended**: 2026-09-06
+**Version**: 1.1.0 | **Ratified**: 2026-09-06 | **Last Amended**: 2026-09-07

@@ -68,12 +68,14 @@ small number of plugin devices (phone + desktop) connecting concurrently to inde
 |---|---|---|
 | I. Standards Over Custom Protocols | Plugin↔harness uses ACP; harness↔vault uses MCP (LRA's built-in server). No new bespoke wire protocol introduced. | PASS |
 | II. Provider Agnosticism | Model/provider selection lives entirely in harness config; plugin and bridge never reference a provider SDK or name. | PASS |
-| III. Minimal Custom Glue | Bridge is the intended custom component. One additional custom component (rules-aware MCP proxy, R5) is required beyond the bridge alone — flagged as a justified deviation in Complexity Tracking rather than silently absorbed. | PASS (with justified addition, see Complexity Tracking) |
+| III. Minimal Custom Glue | Constitution v1.1.0 explicitly names two permitted custom components: the ACP bridge and a rules-enforcement MCP proxy (R5). No third custom component is introduced. | PASS |
 | IV. Delete Over Accumulate | Plan removes gateway.mjs, agent-worker (never-built, so nothing to delete beyond its plan), relay-worker.mjs, lra-tools.mjs, retrieve.mjs, rules.mjs, and the `/jobs` protocol once their replacements are live (FR-011). | PASS |
 | V. Simplicity / YAGNI | Pi/non-ACP harness adapter explicitly excluded (FR-014); no speculative multi-harness routing built. | PASS |
 
-Initial gate result: **PASS**, with one recorded deviation (R5 proxy) carried into Complexity
-Tracking below. Re-evaluated after Phase 1 design (see end of this document).
+Initial gate result: **PASS**. (The R5 proxy was flagged as a Complexity Tracking deviation in an
+earlier draft of this plan; Constitution v1.1.0 has since named it as a permitted exception to
+Principle III directly, so it is no longer a deviation — see Complexity Tracking below for the
+historical rationale.) Re-evaluated after Phase 1 design (see end of this document).
 
 ## Project Structure
 
@@ -111,10 +113,14 @@ harness/                       # Always-on host: bridge + MCP proxy (replaces th
 │   └── echo-worker.mjs        # REMOVED (job-worker model retired with /jobs)
 └── tokens.json                # kept — per-device auth tokens, now consumed by acp-bridge.mjs
 
-# retrieve.mjs and rules.mjs (referenced in the spec's removal list) do not exist yet as separate
-# files in this repo — their intended functionality is covered instead by MCP's search/read tools
-# (retrieve.mjs's role) and mcp-rules-proxy.mjs (rules.mjs's role). FR-011 is satisfied by never
-# building them as custom code, not by deleting pre-existing files.
+# retrieve.mjs and rules.mjs (referenced in the spec's removal list) do not exist as harness/src/
+# production files. A file named retrieve.mjs does exist, but only as an inert research spike at
+# spikes/g6-retrieval/retrieve.mjs (a standalone G6 experiment over a throwaway note copy) — it is
+# not wired into gateway.mjs, lra-tools.mjs, or any runtime path, and is out of scope for FR-011.
+# The production equivalents of retrieve.mjs/rules.mjs are, respectively, the plugin-local
+# retrieval cascade (plugin/src/retrieval/cascade.ts, index.ts — retired per US3/T025) and the new
+# mcp-rules-proxy.mjs. FR-011 is satisfied by retiring those and never building harness-side
+# retrieve.mjs/rules.mjs equivalents, not by deleting the unrelated spike file.
 ```
 
 **Structure Decision**: Reuse the existing `plugin/` + `harness/` npm-workspaces layout. No new
@@ -127,11 +133,13 @@ point at the Local REST API plugin's existing `/mcp/` endpoint, proxied through
 
 ## Complexity Tracking
 
-> **Fill ONLY if Constitution Check has violations that must be justified**
+> **Historical record.** This deviation was resolved by amending the constitution (v1.1.0) to
+> name the exception directly in Principle III, rather than relying on this table to override a
+> MUST. Kept here as the rationale trail for that amendment.
 
-| Violation | Why Needed | Simpler Alternative Rejected Because |
+| Violation (as originally assessed against Constitution v1.0.0) | Why Needed | Simpler Alternative Rejected Because |
 |-----------|------------|-------------------------------------|
-| A second custom component (`mcp-rules-proxy.mjs`) beyond the ACP bridge, in tension with Principle III's "the only bespoke code this project owns is the ACP bridge" | FR-008 requires folder-blacklist and `.chat/rules.md` enforcement to keep working; LRA's built-in MCP server has no concept of either, so *something* project-specific must enforce them | Relying on harness-side prompt instructions alone (no code) was rejected: it's advisory, not an enforced boundary, and would regress a safety guarantee (`rules.mjs`) the current product already provides — an unacceptable regression, not a simplification |
+| A second custom component (`mcp-rules-proxy.mjs`) beyond the ACP bridge, in tension with v1.0.0's "the only bespoke code this project owns is the ACP bridge" | FR-008 requires folder-blacklist and `.chat/rules.md` enforcement to keep working; LRA's built-in MCP server has no concept of either, so *something* project-specific must enforce them | Relying on harness-side prompt instructions alone (no code) was rejected: it's advisory, not an enforced boundary, and would regress a safety guarantee (`rules.mjs`) the current product already provides — an unacceptable regression, not a simplification |
 
 ## Post-Design Constitution Check
 
@@ -141,7 +149,7 @@ point at the Local REST API plugin's existing `/mcp/` endpoint, proxied through
 |---|---|---|
 | I. Standards Over Custom Protocols | PASS | Contracts (see `contracts/`) define only how existing standards (ACP session lifecycle, MCP tool calls) are configured/mapped — no new wire protocol is specified. |
 | II. Provider Agnosticism | PASS | Data model's `HarnessConfig` entity holds provider selection; no entity in `data-model.md` models a provider-specific concept in the plugin or bridge. |
-| III. Minimal Custom Glue | PASS (with the one recorded, justified addition above) | Design confirms the proxy is a pass-through filter, not a reimplementation of MCP or vault logic — it stays minimal in scope. |
+| III. Minimal Custom Glue | PASS | Design confirms the proxy is a pass-through filter, not a reimplementation of MCP or vault logic — it stays minimal in scope, matching the bound Constitution v1.1.0 places on it. |
 | IV. Delete Over Accumulate | PASS | `quickstart.md` includes an explicit verification step that removed files are gone and no longer referenced. |
 | V. Simplicity / YAGNI | PASS | No Pi/non-ACP adapter appears anywhere in data-model.md or contracts/. |
 
