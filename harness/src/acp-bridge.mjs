@@ -162,12 +162,28 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// `requestUrl()` only bypasses CORS on desktop — on mobile (Capacitor
+// WebView, origin `capacitor://localhost`) it's still real `fetch()`
+// underneath and CORS applies to every route, not just the SSE stream
+// (confirmed against Obsidian's own dev forum, and against this repo's own
+// prior working gateway.mjs, which set these same headers globally on every
+// response for exactly this reason). A wildcard origin covers both
+// `capacitor://localhost` (mobile) and `app://obsidian.md` (desktop) without
+// needing to branch on platform.
 const server = createServer(async (req, res) => {
-  const deviceId = authenticate(req);
-  if (!deviceId) return sendJson(res, 401, { error: "unauthorized" }); // FR-004
+  res.setHeader("access-control-allow-origin", "*");
+  res.setHeader("access-control-allow-headers", "authorization, content-type, last-event-id");
+  res.setHeader("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    return res.end();
+  }
 
   const url = new URL(req.url, "http://internal");
   const parts = url.pathname.split("/").filter(Boolean);
+
+  const deviceId = authenticate(req);
+  if (!deviceId) return sendJson(res, 401, { error: "unauthorized" }); // FR-004
 
   try {
     // POST /sessions -> session/new
@@ -175,11 +191,15 @@ const server = createServer(async (req, res) => {
       const ctx = requireHarness();
       const cwd = config.cwd ?? process.cwd();
       const mcpServers = config.mcpVaultProxyUrl
-        ? [{ type: "http", url: config.mcpVaultProxyUrl }]
+        ? [{ type: "http", name: "vault", url: config.mcpVaultProxyUrl, headers: [] }]
         : [];
-      const { sessionId } = await ctx.request("session/new", { cwd, mcpServers });
+      const { sessionId, modes, configOptions } = await ctx.request("session/new", { cwd, mcpServers });
       sessions.set(sessionId, { deviceId, seq: 0, buffer: [], subscribers: new Set() });
-      return sendJson(res, 200, { sessionId });
+      // `modes`/`configOptions` are passed through verbatim — whatever shape the
+      // harness's own ACP response has (SessionModeState / SessionConfigOption[]).
+      // The bridge doesn't interpret them, staying harness-agnostic (Principle III;
+      // contracts/plugin-bridge-acp-extensions.md).
+      return sendJson(res, 200, { sessionId, modes, configOptions });
     }
 
     // GET /sessions/:id/events -> SSE, replay from Last-Event-ID (FR-005)
@@ -214,6 +234,36 @@ const server = createServer(async (req, res) => {
       const { prompt } = await readJsonBody(req); // ContentBlock[] — see plugin/src/acp/client.ts
       const ctx = requireHarness();
       const response = await ctx.request("session/prompt", { sessionId, prompt });
+      return sendJson(res, 200, response);
+    }
+
+    // POST /sessions/:id/mode -> session/set_mode
+    if (req.method === "POST" && parts.length === 3 && parts[0] === "sessions" && parts[2] === "mode") {
+      const sessionId = parts[1];
+      const s = sessionState(sessionId);
+      if (s.deviceId !== deviceId) return sendJson(res, 403, { error: "session belongs to another device" });
+      const { modeId } = await readJsonBody(req);
+      const ctx = requireHarness();
+      const response = await ctx.request("session/set_mode", { sessionId, modeId });
+      return sendJson(res, 200, response);
+    }
+
+    // POST /sessions/:id/config-option -> session/set_config_option
+    if (req.method === "POST" && parts.length === 3 && parts[0] === "sessions" && parts[2] === "config-option") {
+      const sessionId = parts[1];
+      const s = sessionState(sessionId);
+      if (s.deviceId !== deviceId) return sendJson(res, 403, { error: "session belongs to another device" });
+      const { optionId, value } = await readJsonBody(req);
+      const ctx = requireHarness();
+      // Real field name is `configId`, not `optionId` (our own plugin-bridge
+      // HTTP contract's naming) — confirmed against the SDK schema. A boolean
+      // value also needs the `type: "boolean"` discriminant alongside it;
+      // the select-value variant has no `type` field.
+      const params =
+        typeof value === "boolean"
+          ? { sessionId, configId: optionId, type: "boolean", value }
+          : { sessionId, configId: optionId, value };
+      const response = await ctx.request("session/set_config_option", params);
       return sendJson(res, 200, response);
     }
 

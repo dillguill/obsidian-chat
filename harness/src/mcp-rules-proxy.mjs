@@ -22,6 +22,15 @@
 import { readFileSync, existsSync } from "node:fs";
 import { createServer } from "node:http";
 
+// LRA's HTTPS listener uses a self-signed cert it generates itself (see
+// Obsidian Local REST API's own docs) — Node's built-in fetch() rejects
+// that by default (DEPTH_ZERO_SELF_SIGNED_CERT). This process's only
+// outbound HTTPS calls are to that one loopback LRA instance, so disabling
+// verification process-wide (rather than per-request — Node's global fetch
+// doesn't accept a dispatcher from the standalone `undici` package; the two
+// Agent implementations aren't compatible) is scoped enough here.
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+
 const CONFIG_PATH = new URL("../harness.config.json", import.meta.url);
 
 function loadConfig() {
@@ -45,21 +54,52 @@ function blacklist() {
 /** Mirrors `VaultIndex.isExcluded()` (plugin/src/retrieval/index.ts). */
 function isExcluded(path) {
   const bl = blacklist();
-  return bl.some((p) => path === p.replace(/\/$/, "") || path.startsWith(p));
+  const normPath = String(path).replace(/\/+$/, "");
+  return bl.some((p) => {
+    const norm = String(p).replace(/\/+$/, "");
+    return normPath === norm || normPath.startsWith(norm + "/");
+  });
 }
 
 /**
- * Best-effort extraction of vault-relative path(s) targeted by an MCP
- * `tools/call` request. LRA's exact per-tool argument field names aren't
- * pinned down in this repo yet (no live LRA MCP tool listing was available
- * while writing this), so this walks `params.arguments` for any string
- * value that looks like a vault-relative path. TODO: once wired up against
- * a real LRA instance, replace this heuristic with exact per-tool field
- * names (e.g. `path`, `newPath`) from LRA's actual `tools/list` output.
+ * Exact path-bearing argument field names, per LRA tool.
+ *
+ * Captured from a live `tools/list` against the Local REST API MCP endpoint
+ * (v5.1.0, 2026-09-13 — 16 tools, schemes in the comment below), replacing the
+ * earlier substring heuristic. All vault tools take `path`; move/copy add
+ * `destination`. Tools absent from this table fall back to the generic walk,
+ * so an LRA upgrade that adds a tool degrades to "best effort" rather than
+ * silently skipping the blacklist check.
+ */
+const PATH_FIELDS = {
+  vault_list: ["path"],
+  vault_read: ["path"],
+  vault_write: ["path"],
+  vault_append: ["path"],
+  vault_patch: ["path"],
+  vault_delete: ["path"],
+  vault_move: ["path", "destination"],
+  vault_copy: ["path", "destination"],
+  vault_get_document_map: ["path"],
+  open_file: ["path"],
+  // No path argument: active_file_get_path, search_query, search_simple,
+  // tag_list, command_list, command_execute.
+};
+
+/**
+ * Paths targeted by an MCP `tools/call` request.
+ *
+ * Uses {@link PATH_FIELDS} when the tool is known; otherwise walks the
+ * arguments for anything path-shaped (the original best-effort behaviour).
  */
 function extractTargetPaths(rpcBody) {
+  const name = rpcBody?.params?.name;
   const args = rpcBody?.params?.arguments;
   if (!args || typeof args !== "object") return [];
+  const fields = name ? PATH_FIELDS[name] : undefined;
+  if (fields) {
+    return fields.map((f) => args[f]).filter((v) => typeof v === "string" && v.length > 0);
+  }
   const found = [];
   const walk = (v) => {
     if (typeof v === "string" && v.length && !v.startsWith("http") && v.includes(".")) found.push(v);

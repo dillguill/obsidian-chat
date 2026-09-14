@@ -37,8 +37,6 @@ Two long-lived processes run here on the always-on host, replacing the old
 cp harness.config.example.json harness.config.json   # gitignored — edit for your host
 # tokens.json (gitignored) already holds per-device bearer tokens; add one entry per plugin device
 npm install
-npm run mcp-proxy &   # start the rules proxy first
-npm run bridge        # then the bridge, which spawns the configured harness
 ```
 
 `harness.config.json`'s `mcpVaultProxyUrl` should point at wherever
@@ -49,9 +47,32 @@ The bridge passes `mcpVaultProxyUrl` to the harness via ACP's own
 telling an agent which MCP servers to use for a session, so no separate
 per-harness MCP configuration step is needed (Principle I).
 
+## Running these processes
+
+These two processes are **not** started by hand. The always-on Obsidian
+desktop app is the server: on whichever machine is meant to be the host,
+enable "Host the harness on this device" in the plugin's settings and point
+"Harness directory" at this folder. The plugin then spawns `mcp-rules-proxy.mjs`
+and `acp-bridge.mjs` as child processes when Obsidian starts and kills them
+when Obsidian quits or the plugin reloads — so the harness (and whatever
+model/provider config it reads on startup) always reflects the current
+`harness.config.json` / harness-native config after a normal app restart,
+with no separate service to remember to restart. See
+`plugin/src/main.ts`'s `startHostedHarness()`/`stopHostedHarness()`.
+
+For iterating on this code directly, you can still run them by hand instead —
+just make sure the plugin's "Host the harness on this device" is off first,
+since both would otherwise fight over the same ports:
+
+```sh
+npm run mcp-proxy &   # start the rules proxy first
+npm run bridge        # then the bridge, which spawns the configured harness
+```
+
 ## Switching harness or provider
 
 Edit `harness.config.json`'s `command` (harness) or reconfigure that harness's
-own provider settings (provider) and restart `npm run bridge`. No plugin
-update, no bridge code change (FR-002, FR-006, FR-013) — see
+own provider settings (provider), then restart Obsidian (or reload the plugin)
+on the host device so it respawns the harness subprocess with the new config.
+No plugin update, no bridge code change (FR-002, FR-006, FR-013) — see
 `specs/001-acp-mcp-migration/quickstart.md` Scenario 2 to verify.
