@@ -5,68 +5,133 @@
  *  composer toolbar (model / agent / thinking / tools). */
 import { ItemView, WorkspaceLeaf, Menu, TFile, TFolder, Platform, setIcon, Notice } from "obsidian";
 import type ObsidianChatPlugin from "../main";
-import type { ChatMessage, RetrievedNote, StreamEvent, ImageAttachment } from "../chat/types";
-import { buildRuntime } from "../chat/runtime";
-import { AcpBridgeClient, AcpUnavailableError, type PendingPermissionRequest } from "../acp/client";
+import type { ActivityItem, ChatMessage, PlanEntry, RetrievedNote, StreamEvent, ImageAttachment, UsageInfo } from "../chat/types";
+import { AcpBridgeClient, AcpUnavailableError, toolCallContentLines, type PendingPermissionRequest } from "../acp/client";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
-import { ChatEngine } from "../chat/engine";
-import { buildGrounding, extractWikilinks } from "../chat/ground";
-import { retrieveCascade, hasContentSignal } from "../retrieval/cascade";
+import { extractWikilinks } from "../chat/ground";
 import type { VaultIndex } from "../retrieval/index";
-import { getActiveProvider, thinkingLevelsFor, hasVision } from "../settings";
 import { renderMarkdown } from "./markdown";
-import { metaToFrontmatter, renderBody, approxTokens } from "../session/store";
-import { createApprovalRequester, ApprovalModal } from "./approval";
-import type { WritePreview } from "../tools/contract";
-import { ModelSuggestModal } from "./model-suggest";
+import { metaToFrontmatter, renderBody, approxTokens, extractActivityTrails } from "../session/store";
+import { renderApprovalCard, type WritePreview } from "./approval";
 import { SessionSuggestModal } from "./session-suggest";
-import { buildModelItems, togglePinnedModel } from "../chat/models";
 import { vaultFileDataUrl, VaultImagePickModal, IMAGE_EXT } from "./image-picker";
 import { NoteMentionModal, type MentionItem } from "./mention";
-import type { ApprovalMode, ThinkingLevel, ChatMode } from "../settings";
+import { openAcpPickerMenu, flattenSelectOptions } from "./acp-picker-menu";
+import { AcpModelSuggestModal } from "./acp-model-suggest";
+import { applyToolEvent, formatDuration, groupDiff, groupLabel, toolIcon } from "./activity";
+import { basename } from "./activity";
+import { ConnectionInfoModal, type KeyboardDebugInfo } from "./connection-info";
+import type { SessionConfigOption } from "@agentclientprotocol/sdk";
 
 export const VIEW_TYPE_CHAT = "obsidian-chat-view";
 
-// Tool calls render as compact slash-command echoes ("/read some-file.md"), not icon rows.
-const TOOL_VERBS: Record<string, string> = {
-  read_file: "read",
-  edit_note: "edit",
-  create_note: "new",
-  rename_move_file: "move",
-  create_folder: "mkdir",
-  set_property: "set",
-  manage_tags: "tag",
-  delete_file: "delete",
-  search_vault: "search",
-  list_folder: "ls",
-  web_search: "web",
-  error: "error",
+// Display-only icon per well-known mode id (opencode declares "build"/"plan").
+// Falls back to a generic icon for any other harness-declared mode id — this
+// is cosmetic, not a plugin-owned mode enum (FR-007).
+const MODE_ICONS: Record<string, string> = {
+  build: "hammer",
+  plan: "list-checks",
 };
 
-// Agent modes — the popover mirrors this list (icon + title + description).
-// "Research" is the default research-assistant mode; the others set write-approval.
-const AGENT_MODES: { id: ChatMode; icon: string; label: string; desc: string }[] = [
-  { id: "research", icon: "search", label: "Research", desc: "Research assistant — pulls notes via tools; writes are gated by approval" },
-  { id: "plan", icon: "clipboard-list", label: "Plan", desc: "Explore the vault and present a plan before making any changes" },
-  { id: "review", icon: "hand", label: "Review", desc: "Ask for approval before making each edit" },
-  { id: "auto", icon: "rocket", label: "Auto", desc: "Apply write tools immediately, no approval needed" },
-];
+/** One removable one-turn context chip (W3.5). Selection chips carry their
+ *  text inline; note/folder chips carry only a reference (the content is read
+ *  at send time so a long-lived chip can never hold a stale body). */
+interface ContextChip {
+  id: string;
+  kind: "selection" | "note" | "folder" | "active-note";
+  label: string;
+  path?: string;
+  text?: string;
+  startLine?: number;
+  endLine?: number;
+}
 
-// Thinking (reasoning effort) levels — same popover style as Agent. This is the full
-// catalog; which of these actually appear depends on the active model's declared
-// support (ProviderConfig.thinkingLevels — see availableThinkingModes below), since
-// not every model exposes the same reasoning-effort knobs.
-const THINKING_CATALOG: { id: ThinkingLevel; icon: string; label: string; desc: string }[] = [
-  { id: "off", icon: "zap-off", label: "Off", desc: "Respond directly, no extended reasoning" },
-  { id: "low", icon: "zap", label: "Low", desc: "Light reasoning for straightforward requests" },
-  { id: "high", icon: "brain", label: "High", desc: "Deeper reasoning for complex or ambiguous requests" },
-];
+/** Hides optional toolbar labels only when the row actually wraps (W2.2).
+ *
+ *  Measured rather than guessed with a media query: the same rule then works
+ *  for a narrow desktop sidebar and a phone without a second breakpoint, and
+ *  labels come back the moment there is room. */
+class ToolbarLayout {
+  private ro: ResizeObserver | null = null;
+  private mo: MutationObserver | null = null;
+  private frame: number | null = null;
+
+  constructor(private toolbarEl: HTMLElement) {
+    const win = toolbarEl.ownerDocument.defaultView;
+    const RO = win?.ResizeObserver;
+    if (typeof RO === "function") {
+      this.ro = new RO(() => this.schedule());
+      this.ro.observe(toolbarEl);
+    }
+    const MO = win?.MutationObserver;
+    if (typeof MO === "function") {
+      // childList/characterData only — observing our own class attribute would
+      // make refresh() retrigger this observer forever.
+      this.mo = new MO(() => this.schedule());
+      this.mo.observe(toolbarEl, { childList: true, subtree: true, characterData: true });
+    }
+    this.schedule();
+  }
+
+  refresh(): void {
+    const first = this.toolbarEl.firstElementChild;
+    if (!first) return;
+    this.toolbarEl.removeClass("oc-toolbar-compact");
+    const top = first.getBoundingClientRect().top;
+    const wrapped = Array.from(this.toolbarEl.children).some(
+      (el) => Math.abs(el.getBoundingClientRect().top - top) > 2,
+    );
+    this.toolbarEl.toggleClass("oc-toolbar-compact", wrapped);
+  }
+
+  destroy(): void {
+    if (this.frame !== null) {
+      this.toolbarEl.ownerDocument.defaultView?.cancelAnimationFrame(this.frame);
+      this.frame = null;
+    }
+    this.ro?.disconnect();
+    this.mo?.disconnect();
+    this.ro = null;
+    this.mo = null;
+  }
+
+  private schedule(): void {
+    const win = this.toolbarEl.ownerDocument.defaultView;
+    if (!win || this.frame !== null) return;
+    this.frame = win.requestAnimationFrame(() => {
+      this.frame = null;
+      this.refresh();
+    });
+  }
+}
 
 /** File extensions we can attach as plain text (non-image) context. */
 const TEXT_EXT = new Set(["md", "txt", "csv", "tsv", "json", "html", "htm", "xml", "log", "yaml", "yml", "css", "js"]);
 
+/** How much of the viewport has to be covered before we call it a keyboard.
+ *
+ *  Nothing else on a phone takes 100px off the viewport bottom, and every
+ *  iPhone keyboard is well over 200px, so this separates "keyboard" from
+ *  "scrollbar/rotation jitter" with room to spare. */
+const KEYBOARD_MIN_COVER = 100;
+
+/** Capacitor's Keyboard plugin, present in the Obsidian mobile app.
+ *
+ *  Its `keyboardWillShow`/`keyboardWillHide` events carry the real keyboard
+ *  height and fire on every device, unlike `visualViewport` diffing — which
+ *  silently reports nothing whenever the WebView neither resizes nor shrinks its
+ *  visual viewport. Reading it structurally keeps the plugin's "no Node/Electron
+ *  APIs" rule (G8) and its `isDesktopOnly: false` manifest honest: the object is
+ *  simply absent on desktop. */
+interface CapacitorKeyboard {
+  addListener?: (event: string, cb: (info: { keyboardHeight?: number }) => void) => void;
+}
+function capacitorKeyboard(): CapacitorKeyboard | undefined {
+  return (window as { Capacitor?: { Plugins?: { Keyboard?: CapacitorKeyboard } } }).Capacitor?.Plugins
+    ?.Keyboard;
+}
+
 export class ChatView extends ItemView {
-  private engine: ChatEngine | null = null;
   private acp: AcpBridgeClient | null = null;
   /** Local transcript for the ACP path (the harness owns session state; this
    *  is only for sessions-as-notes persistence — data-model.md Session). */
@@ -82,11 +147,38 @@ export class ChatView extends ItemView {
   private attachmentsEl!: HTMLElement;
   private pendingImages: ImageAttachment[] = [];
   private pendingTextAttachments: { name: string; content: string }[] = [];
+  /** Pre-write snapshots keyed by the tool's own path string, captured on the
+   *  first approved write to that path in this session (W7.5). Undo reads it. */
+  private writeSnapshots = new Map<string, { existed: boolean; content: string }>();
+  /** Removable one-turn context chips (W3.5) — selection/note/folder/active-note. */
+  private contextChips: ContextChip[] = [];
+  /** Message typed while the agent is running (W2.4). Single slot: sending
+   *  again replaces it. Drained when the turn settles. */
+  private queued: { text: string; images: ImageAttachment[]; textAttachments: { name: string; content: string }[] } | null = null;
+  /** True while `sendQueued()` is running, so the drain in `send()`'s finally
+   *  doesn't re-enter for the message it just sent. */
+  private draining = false;
+  private queueEl!: HTMLElement;
+  private queueTextEl!: HTMLElement;
+  /** Jump-to-latest pill (W2.3) + whether the transcript is pinned to the
+   *  bottom. Only auto-scroll while pinned, so reading back never gets yanked. */
+  private jumpEl!: HTMLElement;
+  private pinned = true;
+  private toolbarLayout: ToolbarLayout | null = null;
+  private welcomeEl: HTMLElement | null = null;
+  /** Connection banner (W7.10) — hidden while connected. */
+  private connEl!: HTMLElement;
+  /** Last sent turn, kept for Regenerate (W7.8). */
+  private lastTurnText: string | null = null;
+  private lastTurnImages: ImageAttachment[] = [];
   private slashMenuEl: HTMLElement | null = null;
   private slashIndex = 0;
   private mentionArmed = true;
-  private modePopoverEl: HTMLElement | null = null;
-  private modePopoverCleanup: (() => void) | null = null;
+  /** Links typed as `[[…]]` — referenced in the prompt but NOT force-attached
+   *  (W3.6); `@`-mentions keep the existing attach-on-send behaviour. */
+  private referenceOnlyLinks = new Set<string>();
+  /** Newest assistant block — the only one offering Regenerate (W7.8). */
+  private lastAssistantBlockEl: HTMLElement | null = null;
   private sessionPath = "";
   private streaming = false;
   private citations: string[] = [];
@@ -111,6 +203,7 @@ export class ChatView extends ItemView {
     const c = this.contentEl;
     c.empty();
     c.addClass("oc-view");
+    c.toggleClass("oc-density-compact", this.plugin.settings.uiDensity === "compact");
 
     // ---- header ----
     // On mobile the view opens as a full page under Obsidian's own native top bar
@@ -136,6 +229,10 @@ export class ChatView extends ItemView {
       plus.addEventListener("click", () => this.newSession());
     }
 
+    // ---- connection banner (W7.10) — hidden unless something's wrong ----
+    this.connEl = c.createDiv({ cls: "oc-conn" });
+    this.connEl.hidden = true;
+
     // ---- transcript ----
     const messages = c.createDiv({ cls: "oc-messages" });
     this.messagesEl = messages;
@@ -143,20 +240,44 @@ export class ChatView extends ItemView {
     // ---- context chips (citations / attachments) ----
     const chips = c.createDiv({ cls: "oc-chips" });
     this.chipsEl = chips;
+    // Scrolling back through the transcript must not fight the stream (W2.3).
+    this.registerDomEvent(messages, "scroll", () => {
+      const nearBottom = messages.scrollTop + messages.clientHeight >= messages.scrollHeight - 24;
+      this.pinned = nearBottom;
+      if (this.jumpEl) this.jumpEl.hidden = nearBottom;
+    });
+
+    // ---- queued message row (W2.4) — hidden until something is queued ----
+    this.queueEl = c.createDiv({ cls: "oc-queue" });
+    this.queueEl.hidden = true;
+    this.queueTextEl = this.queueEl.createSpan({ cls: "oc-queue-text" });
+    const queueSendBtn = this.queueEl.createEl("button", { cls: "oc-queue-btn", text: "Send now" });
+    queueSendBtn.addEventListener("click", () => void this.steerQueued());
+    const queueXBtn = this.queueEl.createEl("button", { cls: "oc-queue-btn", text: "Discard" });
+    queueXBtn.addEventListener("click", () => {
+      this.queued = null;
+      this.renderQueue();
+    });
 
     // ---- composer ----
     // One bordered card holds both the input row and the mode-chip toolbar below it
     // (divided by a hairline), so the whole card — not just whitespace — is what
     // separates the composer from the flowing transcript above.
-    const composer = c.createDiv({ cls: "oc-composer" });
-    const box = composer.createDiv({ cls: "oc-inputbox" });
+    // The wrapper is what the keyboard handler pins (see syncKeyboardState);
+    // it spans the full-width flex column so the inner card keeps its own margins.
+    const composer = c.createDiv({ cls: "oc-composer-wrap" });
+    this.composerWrapEl = composer;
+    const composerInner = composer.createDiv({ cls: "oc-composer" });
+    this.composerBoxEl = composerInner;
+    const box = composerInner.createDiv({ cls: "oc-inputbox" });
+    this.wireDropTarget(box);
     // Pending image attachments render as a compact pill row at the top of the card.
     this.attachmentsEl = box.createDiv({ cls: "oc-attachments" });
     this.attachmentsEl.style.display = "none";
     const inputRow = box.createDiv({ cls: "oc-input-row" });
     const ta = inputRow.createEl("textarea", {
       cls: "oc-input",
-      attr: { placeholder: "Ask Obsidian Chat anything…\n(Enter to send, Shift+Enter for newline)", rows: "2", "aria-label": "Message" },
+      attr: { placeholder: Platform.isMobileApp ? "Ask anything…" : "Ask Obsidian Chat anything…\n(Enter to send, Shift+Enter for newline)", rows: "2", "aria-label": "Message" },
     });
     this.composerEl = ta as HTMLTextAreaElement;
     ta.addEventListener("paste", (e) => this.handlePaste(e));
@@ -176,16 +297,72 @@ export class ChatView extends ItemView {
         if (e.key === "Enter") { e.preventDefault(); this.runSlash(this.slashIndex); return; }
         if (e.key === "Escape") { this.hideSlash(); return; }
       }
-      if (e.key === "Enter" && !e.shiftKey) {
+      // Cmd/Ctrl+Enter always sends; plain Enter follows the user's setting
+      // (W2.5 — mobile keyboards benefit from Enter = newline).
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        this.send();
+        return;
+      }
+      // On a phone there is no Cmd/Ctrl key, so Return inserts a newline and
+      // the send button sends — the standard mobile chat contract (W2.5).
+      // Desktop follows the user's `sendShortcut` setting.
+      if (e.key === "Enter" && !e.shiftKey && !Platform.isMobileApp && this.plugin.settings.sendShortcut !== "mod-enter") {
         e.preventDefault();
         this.send();
       }
     });
     ta.addEventListener("input", () => {
-      ta.style.height = "auto";
-      ta.style.height = Math.min(ta.scrollHeight, 240) + "px";
+      this.applyComposerHeight();
       this.updateSlashMenu();
       this.maybeOpenMention();
+    });
+    // The composer grows with the viewport, not a fixed pixel cap (W2.1), and
+    // recomputes when the iOS keyboard opens/closes or the window resizes.
+    this.registerDomEvent(window, "resize", () => this.syncKeyboardState());
+    // iOS keyboard: `visualViewport` shrinks/scrolls as the keyboard animates,
+    // which `window.resize` alone does not report. (`registerDomEvent` is typed
+    // for Window/Document/HTMLElement only, hence the manual listener pair.)
+    const vv = window.visualViewport;
+    if (vv) {
+      const onViewportChange = () => this.syncKeyboardState();
+      vv.addEventListener("resize", onViewportChange);
+      vv.addEventListener("scroll", onViewportChange);
+      this.register(() => {
+        vv.removeEventListener("resize", onViewportChange);
+        vv.removeEventListener("scroll", onViewportChange);
+      });
+    }
+    this.registerDomEvent(ta, "focus", () => window.requestAnimationFrame(() => this.syncKeyboardState()));
+    // The dismissal can finish without a trailing `visualViewport` resize on
+    // iOS, which would strand the lifted state — re-check on blur too.
+    this.registerDomEvent(ta, "blur", () => window.requestAnimationFrame(() => this.syncKeyboardState()));
+    // The authoritative signal, when it exists: Capacitor's Keyboard plugin. The
+    // `visualViewport` diffing below is only a fallback — on a device that
+    // neither resizes the WebView nor shrinks its visual viewport it reports
+    // nothing at all, which is how four attempts at this bug managed to be no-ops.
+    const capKb = capacitorKeyboard();
+    if (capKb?.addListener) {
+      capKb.addListener("keyboardWillShow", (info) => {
+        this.capacitorKeyboardHeight = Math.round(info?.keyboardHeight ?? 0);
+        this.syncKeyboardState();
+      });
+      capKb.addListener("keyboardWillHide", () => {
+        this.capacitorKeyboardHeight = 0;
+        this.syncKeyboardState();
+      });
+    }
+    this.register(() => {
+      if (this.snapshotTimer !== null) window.clearTimeout(this.snapshotTimer);
+      this.snapshotTimer = null;
+    });
+    this.registerDomEvent(document, "visibilitychange", () => this.applyComposerHeight());
+    // Esc stops the run from anywhere in the view (W6.8).
+    this.registerDomEvent(c, "keydown", (ev) => {
+      if (ev.key === "Escape" && this.streaming) {
+        ev.preventDefault();
+        void this.cancelStreaming();
+      }
     });
     // ---- composer toolbar: a single row of mode chips [model ▾][thinking][agent] ----
     // Lives inside the same card as the input, below a hairline divider.
@@ -205,22 +382,511 @@ export class ChatView extends ItemView {
     setIcon(this.modelBtnEl.createSpan({ cls: "oc-toolbtn-icon" }), "cpu");
     this.modelBtnEl.createSpan({ cls: "oc-toolbtn-text" });
     setIcon(this.modelBtnEl.createSpan({ cls: "oc-toolbtn-chevron" }), "chevron-down");
-    this.modelBtnEl.addEventListener("click", () => void this.openModelPicker());
+    this.modelBtnEl.addEventListener("click", () => this.openModelPicker());
 
     this.thinkBtnEl = toolbar.createEl("button", { cls: "oc-toolbtn oc-toolbtn-think" });
     this.thinkBtnEl.createSpan({ cls: "oc-toolbtn-icon" });
     this.thinkBtnEl.createSpan({ cls: "oc-toolbtn-text" });
-    this.thinkBtnEl.addEventListener("click", () => (this.modePopoverEl ? this.hideModePopover() : this.showThinkingMenu()));
+    this.thinkBtnEl.addEventListener("click", () => this.showThinkingMenu());
 
     this.agentBtnEl = toolbar.createEl("button", { cls: "oc-toolbtn oc-toolbtn-agent" });
     this.agentBtnEl.createSpan({ cls: "oc-toolbtn-icon" });
     this.agentBtnEl.createSpan({ cls: "oc-toolbtn-text" });
-    this.agentBtnEl.addEventListener("click", () => (this.modePopoverEl ? this.hideModePopover() : this.showAgentMenu()));
+    this.agentBtnEl.addEventListener("click", () => this.showAgentMenu());
+
+    // Usage / context meter (W4.2) — last child so it sits at the row's end.
+    // A small circular ring whose arc fills with context usage; hidden until the
+    // harness reports a reading (opencode does).
+    this.usageEl = toolbar.createDiv({ cls: "oc-usage oc-toolbtn-hidden" });
+    this.usageFillEl = this.usageEl;
+    this.toolbarLayout = new ToolbarLayout(toolbar);
 
     await this.refreshToolbar();
+    // Jump-to-latest pill (W2.3) — shown only once the reader scrolls up.
+    this.jumpEl = c.createEl("button", { cls: "oc-jump", attr: { "aria-label": "Jump to latest" } });
+    setIcon(this.jumpEl.createSpan(), "arrow-down");
+    this.jumpEl.createSpan({ text: "New" });
+    this.jumpEl.hidden = true;
+    this.jumpEl.addEventListener("click", () => {
+      this.pinned = true;
+      this.scrollToBottom();
+    });
     // Warm the vault index so @-mentions can offer notes immediately.
     void this.plugin.index.ensureLoaded();
-    this.addSystemMessage("Ask a question — I'll ground it in your vault.");
+    // Best-effort eager connect so the toolbar reflects real
+    // harness-declared modes/thinking-levels from the start
+    // (FR-007/FR-008), not only after the first message is sent.
+    // connect() retries internally while the hosted bridge
+    // finishes spawning, so a cold start won't leave the model
+    // picker hidden.
+    void this.ensureAcp()
+      .connect()
+      .then(() => this.refreshToolbar())
+      .catch(() => {});
+    this.showWelcome();
+  }
+
+  // ---------- empty state (W6.1) ----------
+
+  /** Welcome panel: brand, three entry actions, recent sessions. Removed by the
+   *  first user message and restored by "New session". */
+  private showWelcome(): void {
+    if (this.welcomeEl) return;
+    const el = this.messagesEl.createDiv({ cls: "oc-welcome" });
+    // Deliberately no brand row: the desktop header (and Obsidian's own mobile
+    // top bar) already names the view, so repeating it read as a duplicate title.
+    el.createDiv({ cls: "oc-welcome-sub", text: "Grounded in your vault — powered by your connected harness." });
+    const actions = el.createDiv({ cls: "oc-welcome-actions" });
+    const action = (icon: string, label: string, onClick: () => void) => {
+      const b = actions.createEl("button", { cls: "oc-welcome-action", attr: { type: "button" } });
+      setIcon(b.createSpan(), icon);
+      b.createSpan({ text: label });
+      b.addEventListener("click", onClick);
+    };
+    action("file-text", "Ask about this note", () => {
+      void this.addActiveNote();
+      this.composerEl.focus();
+    });
+    action("history", "History", () => void this.showHistory());
+    action("plus", "New session", () => void this.newSession());
+    void this.renderRecentSessions(el);
+    this.welcomeEl = el;
+  }
+
+  private hideWelcome(): void {
+    this.welcomeEl?.remove();
+    this.welcomeEl = null;
+  }
+
+  /** Newest three session notes in the session folder. Prefers frontmatter
+   *  `title` when the harness supplied one (W7.11), else the filename. */
+  private async renderRecentSessions(parent: HTMLElement): Promise<void> {
+    const folder = this.sessionFolder();
+    const files = this.plugin.app.vault
+      .getMarkdownFiles()
+      .filter((f) => f.path.startsWith(folder))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime)
+      .slice(0, 3);
+    if (!files.length) return;
+    const wrap = parent.createDiv({ cls: "oc-welcome-recent" });
+    wrap.createDiv({ cls: "oc-welcome-recent-title", text: "Recent" });
+    for (const f of files) {
+      const fm = this.plugin.app.metadataCache.getFileCache(f)?.frontmatter as { title?: string } | undefined;
+      const b = wrap.createEl("button", { cls: "oc-recent-item", attr: { type: "button" } });
+      b.createSpan({ cls: "oc-recent-name", text: fm?.title ?? f.basename });
+      b.createSpan({ cls: "oc-recent-date", text: new Date(f.stat.mtime).toLocaleDateString() });
+      b.addEventListener("click", () => void this.loadSession(f.path));
+    }
+  }
+
+  // ---------- context chips (W3.5) ----------
+
+  /** Adds the active note as one-turn context. */
+  private async addActiveNote(): Promise<void> {
+    const f = this.plugin.app.workspace.getActiveFile();
+    if (!f) {
+      new Notice("No active note");
+      return;
+    }
+    this.addContextChip({ id: `active:${f.path}`, kind: "active-note", label: f.basename, path: f.path });
+  }
+
+  /** Adds a selection/note/folder chip (file menu, drag-drop, command). */
+  addContextChip(chip: ContextChip): void {
+    if (this.contextChips.some((c) => c.id === chip.id)) return;
+    this.contextChips.push(chip);
+    this.renderChips(this.citations);
+  }
+
+  private clearContextChips(): void {
+    if (!this.contextChips.length) return;
+    this.contextChips = [];
+    this.renderChips(this.citations);
+  }
+
+  /** Drag & drop onto the composer (W3.4): images become vision pills,
+   *  text/markdown becomes attached context, anything else is refused. */
+  private wireDropTarget(box: HTMLElement): void {
+    box.addEventListener("dragover", (e) => {
+      if (!e.dataTransfer?.types.includes("Files")) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      box.addClass("oc-drop-active");
+    });
+    box.addEventListener("dragleave", (e) => {
+      if (e.relatedTarget instanceof Node && box.contains(e.relatedTarget)) return;
+      box.removeClass("oc-drop-active");
+    });
+    box.addEventListener("drop", (e) => {
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (!files.length) return;
+      e.preventDefault();
+      box.removeClass("oc-drop-active");
+      let accepted = 0;
+      for (const file of files) {
+        const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
+        if (IMAGE_EXT.has(ext)) {
+          this.addPendingImageFromFile(file);
+          accepted++;
+        } else if (TEXT_EXT.has(ext)) {
+          this.addFileFromDevice(file);
+          accepted++;
+        }
+      }
+      if (!accepted) new Notice("Unsupported file type");
+    });
+  }
+
+  /** Focuses the composer (used after adding a context chip from outside). */
+  focusComposer(): void {
+    this.composerEl?.focus();
+  }
+
+  /** Replays a stored turn's activity as one collapsed group (W7.4) — same DOM
+   *  as a live group, minus the timer and live header. */
+  private renderStoredActivity(items: ActivityItem[]): void {
+    const wrap = this.messagesEl.createDiv({ cls: "oc-activity" });
+    wrap.setAttribute("data-expanded", "false");
+    const header = wrap.createEl("button", { cls: "oc-activity-header", attr: { type: "button" } });
+    const iconEl = header.createSpan({ cls: "oc-activity-icon" });
+    const failed = items.some((i) => i.status === "failed");
+    if (failed) iconEl.addClass("oc-activity-failed");
+    setIcon(iconEl, failed ? "alert-triangle" : "check");
+    header.createSpan({ cls: "oc-activity-label", text: groupLabel(items) });
+    const diff = groupDiff(items);
+    if (diff) header.createSpan({ cls: "oc-activity-diff", text: `+${diff.add} −${diff.del}` });
+    const chevEl = header.createSpan({ cls: "oc-activity-chevron" });
+    setIcon(chevEl, "chevron-right");
+    const body = wrap.createDiv({ cls: "oc-activity-body" });
+    this.wireCollapsible(header, wrap, (expanded) => {
+      chevEl.empty();
+      setIcon(chevEl, expanded ? "chevron-down" : "chevron-right");
+    });
+    for (const item of items) {
+      const row = body.createDiv({ cls: "oc-tool" + (item.status === "failed" ? " oc-tool-error" : "") });
+      const ri = row.createSpan({ cls: "oc-tool-icon" });
+      setIcon(ri, toolIcon(item.rawName, item.kind, item.status));
+      row.createSpan({ cls: "oc-tool-verb", text: item.verb });
+      const labelEl = row.createSpan({ cls: "oc-tool-label", text: item.label });
+      const right = row.createSpan({ cls: "oc-tool-right" });
+      if (item.diff) this.renderDiffStat(right, `+${item.diff.add} -${item.diff.del}`);
+      if (item.isPath && item.target) {
+        labelEl.addClass("oc-tool-label-link");
+        labelEl.addEventListener("click", () => void this.openVaultTarget(item.target!));
+      }
+    }
+  }
+
+  /** End-of-turn summary of vault writes with per-file Undo (W7.5). */
+  private renderChangesCard(items: ActivityItem[]): void {
+    const writeNames = new Set(["write", "append", "patch", "delete", "move", "copy", "edit"]);
+    const writes = items.filter(
+      (i) => i.isPath && i.target && i.status === "completed" && (writeNames.has(i.name) || i.kind === "edit"),
+    );
+    if (!writes.length) return;
+    const byPath = new Map<string, { add: number; del: number }>();
+    for (const w of writes) {
+      const e = byPath.get(w.target!) ?? { add: 0, del: 0 };
+      if (w.diff) {
+        e.add += w.diff.add;
+        e.del += w.diff.del;
+      }
+      byPath.set(w.target!, e);
+    }
+    const card = this.messagesEl.createDiv({ cls: "oc-changes" });
+    const expanded = byPath.size <= 3;
+    card.setAttribute("data-expanded", expanded ? "true" : "false");
+    const header = card.createEl("button", { cls: "oc-changes-header", attr: { type: "button" } });
+    const add = [...byPath.values()].reduce((n, v) => n + v.add, 0);
+    const del = [...byPath.values()].reduce((n, v) => n + v.del, 0);
+    const stat = add || del ? ` · +${add} −${del}` : "";
+    header.createSpan({
+      cls: "oc-changes-title",
+      text: `Changed ${byPath.size} ${byPath.size === 1 ? "note" : "notes"}${stat}`,
+    });
+    const chev = header.createSpan({ cls: "oc-changes-chevron" });
+    setIcon(chev, expanded ? "chevron-down" : "chevron-right");
+    this.wireCollapsible(header, card, (isOpen) => {
+      chev.empty();
+      setIcon(chev, isOpen ? "chevron-down" : "chevron-right");
+    });
+    const body = card.createDiv({ cls: "oc-changes-body" });
+    for (const [path, info] of byPath) {
+      const row = body.createDiv({ cls: "oc-changes-row" });
+      setIcon(row.createSpan({ cls: "oc-changes-icon" }), "file-text");
+      const pathEl = row.createSpan({ cls: "oc-changes-path", text: path });
+      pathEl.addClass("oc-tool-label-link");
+      pathEl.addEventListener("click", () => void this.openVaultTarget(path));
+      if (info.add || info.del) {
+        this.renderDiffStat(row.createSpan({ cls: "oc-tool-right" }), `+${info.add} -${info.del}`);
+      }
+      const undoBtn = row.createEl("button", { cls: "oc-changes-undo", text: "Undo" });
+      if (!this.writeSnapshots.has(path)) {
+        undoBtn.disabled = true;
+        undoBtn.setAttribute("title", "No snapshot was taken for this action");
+      }
+      undoBtn.addEventListener("click", () => void this.undoPath(path, undoBtn));
+    }
+    const undoAll = card.createEl("button", { cls: "oc-changes-undo-all", text: "Undo all" });
+    undoAll.addEventListener("click", () => void this.undoAll([...byPath.keys()]));
+  }
+
+  /** Restores one path from its pre-write snapshot (W7.5). */
+  private async undoPath(path: string, btn?: HTMLButtonElement): Promise<void> {
+    const snap = this.writeSnapshots.get(path);
+    if (!snap) return;
+    const f = this.resolveVaultFile(path);
+    if (snap.existed) {
+      if (f) await this.plugin.app.vault.modify(f, snap.content);
+      else {
+        const parent = path.split("/").slice(0, -1).join("/");
+        if (parent && !this.plugin.app.vault.getAbstractFileByPath(parent)) {
+          await this.plugin.app.vault.createFolder(parent).catch(() => {});
+        }
+        await this.plugin.app.vault.create(path, snap.content);
+      }
+    } else if (f) {
+      await this.plugin.app.vault.trash(f, false);
+    }
+    if (btn) {
+      btn.disabled = true;
+      btn.setText("Undone");
+    }
+    new Notice(`Restored ${basename(path)}`);
+  }
+
+  private async undoAll(paths: string[]): Promise<void> {
+    let n = 0;
+    for (const p of paths) {
+      if (!this.writeSnapshots.has(p)) continue;
+      try {
+        await this.undoPath(p);
+        n++;
+      } catch (err) {
+        new Notice(`Undo failed for ${p}: ${String((err as Error).message ?? err)}`);
+      }
+    }
+    if (n) new Notice(`Restored ${n} note${n === 1 ? "" : "s"}`);
+  }
+
+  /** Connection banner (W7.10): visible only when connecting or unreachable,
+   *  so a dropped bridge explains itself instead of surfacing as an error row
+   *  only after the user sends something. */
+  private updateConnection(): void {
+    if (!this.connEl) return;
+    const state = this.acp?.getConnectionState() ?? "idle";
+    if (state === "connected" || state === "idle") {
+      this.connEl.hidden = true;
+      return;
+    }
+    this.connEl.hidden = false;
+    this.connEl.setAttribute("data-state", state);
+    this.connEl.empty();
+    this.connEl.createSpan({ cls: "oc-conn-dot" });
+    this.connEl.createSpan({
+      cls: "oc-conn-text",
+      text: state === "connecting" ? "Connecting to harness…" : "Harness unreachable — retrying",
+    });
+    if (state === "unreachable") {
+      const details = this.connEl.createEl("button", { cls: "oc-queue-btn", text: "Details" });
+      details.addEventListener("click", () => this.openConnectionInfo());
+    }
+  }
+
+  /** Opens the connection/debug panel (W7.10; also the `connection-info` command).
+   *  The keyboard sample rides along so the last-reported phone geometry can be
+   *  read back without a console (W7.13). */
+  openConnectionInfo(): void {
+    new ConnectionInfoModal(this.plugin.app, this.acp?.getDebugInfo(), this.lastKeyboardSnapshot).open();
+  }
+
+  /** Re-applies view-scoped settings after the settings tab saves (W6.9). */
+  applyViewSettings(): void {
+    this.contentEl.toggleClass("oc-density-compact", this.plugin.settings.uiDensity === "compact");
+    this.applyComposerHeight();
+  }
+
+  /** Tracks the on-screen keyboard and lets CSS place the composer for it (W7.13).
+   *
+   *  Why the first three attempts showed no change at all: they all tried to
+   *  *re-position* the composer for however much the keyboard hid, and every one
+   *  of them derived that amount from `window.innerHeight - vv.height`. When the
+   *  WebView resizes for the keyboard instead of overlaying it, `innerHeight`
+   *  shrinks in lockstep with `vv.height`, so that expression is ~0: the lift
+   *  was 0, the reserved padding was 0, and the DOM was never touched. The band
+   *  the user sees is not hidden area at all — it is constant layout that is
+   *  merely *uncovered* once the keyboard hides Obsidian's bottom tab bar: the
+   *  mobile `.oc-composer` reserves `56px + env(safe-area-inset-bottom)` of
+   *  clearance for exactly that bar. Position math cannot remove a padding.
+   *
+   *  So detection here reads Obsidian's own `--keyboard-height`. On the target
+   *  device the WebView neither resizes (`innerHeight` constant at 852) nor
+   *  shrinks its visual viewport (`vv.height` constant at 852) while that
+   *  variable reads 328px — so every viewport-diffing approach measured zero and
+   *  silently did nothing. The viewport diffs are kept only as fallbacks for
+   *  Android/hardware-keyboard cases where the variable may be absent. */
+  private syncKeyboardState(): void {
+    if (!Platform.isMobileApp) return;
+    if (!this.composerWrapEl) return;
+    const vv = window.visualViewport;
+    // Rotation (and split view) changes every dimension we record, so a stale
+    // resting baseline would read the new geometry as "keyboard open" forever.
+    if (vv && Math.abs(vv.width - this.vvRestingWidth) > 1) {
+      this.vvRestingWidth = vv.width;
+      this.vvRestingHeight = vv.height;
+      this.winRestingHeight = window.innerHeight;
+    }
+    if (vv) this.vvRestingHeight = Math.max(this.vvRestingHeight, vv.height);
+    this.winRestingHeight = Math.max(this.winRestingHeight, window.innerHeight);
+
+    const covered = Math.max(
+      Math.round(this.readKeyboardHeight()),
+      Math.round(this.capacitorKeyboardHeight),
+      Math.round(this.winRestingHeight - window.innerHeight),
+      Math.round(this.vvRestingHeight - (vv?.height ?? this.vvRestingHeight)),
+    );
+    const open = covered > KEYBOARD_MIN_COVER;
+
+    // Obsidian already ends the app at the keyboard's top edge: it clamps
+    // `.app-container` with `max-height: calc(100vh - var(--keyboard-height))`,
+    // measured on the device as 524px = 852 - 328 while the keyboard is up. So
+    // the keyboard's height must NOT be reserved again here — doing that pushed
+    // the card above the bottom of an already correctly-sized view and left the
+    // original band of blank space under it (and squeezed the transcript to
+    // 28px). The only thing actually wrong was this box's own tab-bar clearance,
+    // `56px + env(safe-area-inset-bottom)`, which needs to collapse to a plain
+    // gap while the keyboard covers that bar. */
+    if (this.composerBoxEl) {
+      if (open) this.composerBoxEl.style.paddingBottom = "8px";
+      else this.composerBoxEl.style.removeProperty("padding-bottom");
+    }
+
+    // Only a *state* change reflows: `applyComposerHeight()` reads `scrollHeight`,
+    // and `--keyboard-height` can tick through several values as it animates.
+    this.contentEl.toggleClass("oc-kb", open);
+    const stateKey = open ? "1" : "0";
+    if (stateKey !== this.keyboardStateKey) {
+      this.keyboardStateKey = stateKey;
+      this.keyboardOpen = open;
+      this.applyComposerHeight();
+    }
+    // Trailing-debounced, so the chain is measured once the keyboard has settled
+    // (and only while it is up — dismissing it is required to read the panel).
+    if (open) this.scheduleKeyboardSample();
+  }
+
+  /** Obsidian publishes the on-screen keyboard's height here (0 when it is
+   *  down); `:root { --keyboard-height: 0px }` is its own default, and it is the
+   *  only signal that reports the keyboard on every device. */
+  private readKeyboardHeight(): number {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--keyboard-height");
+    const px = Number.parseFloat(raw);
+    return Number.isFinite(px) ? px : 0;
+  }
+
+  /** Samples the box chain the keyboard fix depends on (W7.13).
+   *
+   *  Obsidian may size its own containers for the keyboard (`--keyboard-height`, a
+   *  `max-height` clamp on `.app-container`), and the box that actually strangles
+   *  this view is one of those, not anything this plugin's CSS declares. The phone
+   *  has no console, so the chain is read out through the connection-info panel.
+   *  Only called while the keyboard is up: opening that panel dismisses the
+   *  keyboard, so a sample taken on the way down is all you would be left with. */
+  private sampleKeyboard(): KeyboardDebugInfo {
+    const vv = window.visualViewport;
+    const h = (el: Element | null | undefined) => (el instanceof HTMLElement ? el.clientHeight : -1);
+    return {
+      open: true,
+      covered: Math.max(0, Math.round(this.readKeyboardHeight())),
+      pinned: this.keyboardOpen,
+      innerHeight: Math.round(window.innerHeight),
+      visualHeight: Math.round(vv?.height ?? 0),
+      visualOffsetTop: Math.round(vv?.offsetTop ?? 0),
+      restingHeight: Math.round(this.vvRestingHeight),
+      screenHeight: Math.round(window.screen.height),
+      keyboardVar:
+        getComputedStyle(document.documentElement).getPropertyValue("--keyboard-height").trim() || "(unset)",
+      appHeight: h(document.querySelector(".app-container")),
+      viewContentHeight: h(this.contentEl.parentElement),
+      viewHeight: h(this.contentEl),
+      messagesHeight: h(this.messagesEl),
+      composerHeight: h(this.composerWrapEl),
+    };
+  }
+
+  /** Re-arms a trailing 250ms sample, so the numbers describe the settled
+   *  keyboard rather than a frame of its opening animation — and so the layout
+   *  reads in `sampleKeyboard` do not run for every event of that animation. */
+  private scheduleKeyboardSample(): void {
+    if (this.snapshotTimer !== null) window.clearTimeout(this.snapshotTimer);
+    this.snapshotTimer = window.setTimeout(() => {
+      this.snapshotTimer = null;
+      this.lastKeyboardSnapshot = this.sampleKeyboard();
+    }, 250);
+  }
+
+  /** Viewport-capped composer autosize (W2.1).
+   *
+   *  Deliberately the JS path rather than CSS `field-sizing: content`: the
+   *  latter is unreliable in iOS WKWebView, and this plugin's phone target is
+   *  exactly where the old fixed 240px cap misbehaved. The cap tracks the
+   *  window so the composer can never eat the transcript. */
+  private applyComposerHeight(): void {
+    const ta = this.composerEl;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const cap = Math.max(150, window.innerHeight * 0.55);
+    ta.style.height = Math.min(ta.scrollHeight, cap) + "px";
+    this.pinComposer();
+  }
+
+  /** Pins the transcript and the composer to the view's edges — inline styles,
+   *  deliberately.
+   *
+   *  Measured on the device: the view is a flex column (`display=flex`) whose
+   *  children nevertheless refuse to fill it. The composer wrapper sat in flow,
+   *  ~230px above the view's end, and `.oc-messages` — the item with
+   *  `flex: 1 1 auto` — stayed at content height (153px) instead of expanding,
+   *  so the transcript clipped mid-element and the leftover area read as a grey
+   *  slab over the view. Nothing that depends on that column distributing space
+   *  works here (no `flex-grow`, no `margin: auto`), so both boxes are pinned to
+   *  the view's edges instead, which is arrangement-independent.
+   *
+   *  Only on mobile: the desktop sidebar's flex layout is untouched. */
+  private pinComposer(): void {
+    const wrap = this.composerWrapEl;
+    if (!wrap || !Platform.isMobileApp) return;
+    const corners = (el: HTMLElement, top: string, bottom: string) => {
+      el.style.position = "absolute";
+      el.style.left = "0";
+      el.style.right = "0";
+      el.style.top = top;
+      el.style.bottom = bottom;
+    };
+    wrap.style.position = "absolute";
+    wrap.style.left = "0";
+    wrap.style.right = "0";
+    wrap.style.bottom = "0";
+    wrap.style.zIndex = "2";
+    // Measured while the wrapper is already out of flow, so this is its own
+    // content height: the card plus the 8px gap the keyboard state leaves.
+    // The transcript ends this far above the composer card (explicit request:
+    // 4px). The empty chips row is deliberately excluded from the sum — its 10px
+    // of padding must not widen the visible gap. It is positioned inside the same
+    // band and has no background, so the two do not fight.
+    const GAP_ABOVE_COMPOSER = 4;
+    const wrapH = Math.ceil(wrap.clientHeight);
+    const transcriptBottom = wrapH + GAP_ABOVE_COMPOSER;
+    if (this.chipsEl) corners(this.chipsEl, "auto", `${transcriptBottom}px`);
+    if (this.messagesEl) {
+      // The banner is in flow at the very top when it is showing, so the
+      // transcript starts below it rather than underneath it.
+      const top = this.connEl && !this.connEl.hidden ? Math.ceil(this.connEl.clientHeight) : 0;
+      corners(this.messagesEl, `${top}px`, `${transcriptBottom}px`);
+      // The transcript now ends above the composer, so it no longer needs to
+      // reserve the composer's height as scroll padding.
+      this.messagesEl.style.paddingBottom = "";
+    }
   }
 
   // ---------- transcript rendering (workspace style) ----------
@@ -233,9 +899,13 @@ export class ChatView extends ItemView {
   }
 
   private addUserMessage(text: string, images?: ImageAttachment[]) {
+    this.hideWelcome();
+    // A hairline separates turns (W6.6) — quiet, not boxed.
+    if (this.messagesEl.childElementCount > 0) this.messagesEl.createEl("hr", { cls: "oc-turn" });
     const el = this.messagesEl.createDiv({ cls: "oc-block oc-user" });
     const md = el.createDiv({ cls: "oc-body-md" });
     renderMarkdown(this.plugin.app, md, text, this.sessionPath, this).catch(() => md.setText(text));
+    this.attachMessageActions(el, false);
     if (images?.length) {
       const row = el.createDiv({ cls: "oc-user-images" });
       for (const img of images) {
@@ -250,16 +920,118 @@ export class ChatView extends ItemView {
     const el = this.messagesEl.createDiv({ cls: "oc-block oc-assistant" });
     const md = el.createDiv({ cls: "oc-body-md" });
     el.createSpan({ cls: "oc-caret" });
+    this.attachMessageActions(el, true);
+    this.lastAssistantBlockEl = el;
     this.scrollToBottom();
     return md;
   }
 
-  /** Compact slash-command echo, e.g. "/read some-file.md". The "/verb" prefix already
-   *  marks it as a tool call and errors get their own red "/error" row, so there's no
-   *  separate status icon — "ok" is a no-op; anything else (e.g. "+18 -1") renders as a diff. */
+  /** Copy / quote on every message (W3.7), plus Regenerate on the newest
+   *  assistant reply (W7.8). Actions appear on hover for pointer devices and
+   *  via long-press (native menu) on touch. */
+  private attachMessageActions(blockEl: HTMLElement, isAssistant: boolean): void {
+    const actions = blockEl.createDiv({ cls: "oc-msg-actions" });
+    const copyBtn = actions.createEl("button", {
+      cls: "oc-msg-action",
+      attr: { type: "button", "aria-label": "Copy message", title: "Copy" },
+    });
+    setIcon(copyBtn, "copy");
+    copyBtn.addEventListener("click", () => void this.copyBlockText(blockEl, copyBtn));
+    const quoteBtn = actions.createEl("button", {
+      cls: "oc-msg-action",
+      attr: { type: "button", "aria-label": "Quote in composer", title: "Quote in composer" },
+    });
+    setIcon(quoteBtn, "quote");
+    quoteBtn.addEventListener("click", () => this.quoteBlock(blockEl));
+    if (isAssistant) {
+      const regenBtn = actions.createEl("button", {
+        cls: "oc-msg-action oc-msg-regen",
+        attr: { type: "button", "aria-label": "Regenerate", title: "Regenerate — asks again in this session" },
+      });
+      setIcon(regenBtn, "refresh-cw");
+      regenBtn.addEventListener("click", () => void this.regenerate());
+      regenBtn.hidden = true; // shown only while this is the newest reply
+    }
+    // Touch: long-press opens the same actions in a native menu.
+    blockEl.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const menu = new Menu();
+      menu.addItem((i) => i.setTitle("Copy message").setIcon("copy").onClick(() => void this.copyBlockText(blockEl, copyBtn)));
+      menu.addItem((i) => i.setTitle("Quote in composer").setIcon("quote").onClick(() => this.quoteBlock(blockEl)));
+      menu.showAtMouseEvent(ev);
+    });
+  }
+
+  private blockText(blockEl: HTMLElement): string {
+    return blockEl.querySelector(".oc-body-md")?.textContent ?? "";
+  }
+
+  private async copyBlockText(blockEl: HTMLElement, btn: HTMLElement): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(this.blockText(blockEl));
+    } catch {
+      return;
+    }
+    btn.empty();
+    setIcon(btn, "check");
+    window.setTimeout(() => {
+      btn.empty();
+      setIcon(btn, "copy");
+    }, 1200);
+  }
+
+  /** Puts the message into the composer as a blockquote (W3.7). */
+  private quoteBlock(blockEl: HTMLElement): void {
+    const quoted = this.blockText(blockEl)
+      .split(/\r?\n/)
+      .map((l) => `> ${l}`)
+      .join("\n");
+    const existing = this.composerEl.value.trim();
+    this.composerEl.value = existing ? `${existing}\n\n${quoted}\n\n` : `${quoted}\n\n`;
+    this.applyComposerHeight();
+    this.composerEl.focus();
+    this.composerEl.selectionStart = this.composerEl.selectionEnd = this.composerEl.value.length;
+  }
+
+  /** Regenerate is offered only on the newest assistant reply (W7.8). */
+  private markRegenerable(blockEl: HTMLElement | null): void {
+    if (!blockEl) return;
+    for (const btn of Array.from(this.messagesEl.querySelectorAll<HTMLElement>(".oc-msg-regen"))) btn.hidden = true;
+    const btn = blockEl.querySelector<HTMLElement>(".oc-msg-regen");
+    if (btn) btn.hidden = false;
+  }
+
+  /** Re-asks the last turn in the same session (W7.8).
+   *  ACP has no session rewind, so this is a genuine re-ask rather than a
+   *  history branch — the button's tooltip says exactly that. */
+  private async regenerate(): Promise<void> {
+    if (this.streaming || !this.lastTurnText) return;
+    this.pendingImages = [...this.lastTurnImages];
+    this.renderAttachments();
+    this.streaming = true;
+    this.setSendButtonMode("stop");
+    this.lastAssistantText = "";
+    try {
+      await this.sendViaAcp(this.lastTurnText); // no user message echoed
+    } catch (err) {
+      this.addToolRow("error", `Error: ${String((err as Error).message ?? err)}`, "error");
+    } finally {
+      this.clearPendingAttachments();
+      this.streaming = false;
+      this.setSendButtonMode("send");
+      await this.refreshToolbar();
+      if (this.queued && !this.draining) void this.sendQueued();
+    }
+  }
+
+  /** Standalone error/status row (bridge/transport errors, not real ACP tool
+   *  calls) — always breaks out of any open activity group. */
   private addToolRow(name: string, detail: string, status?: "ok" | "error" | string) {
+    this.finalizeActivityGroup();
     const row = this.messagesEl.createDiv({ cls: "oc-tool" + (name === "error" ? " oc-tool-error" : "") });
-    row.createSpan({ cls: "oc-tool-verb", text: `/${TOOL_VERBS[name] ?? name}` });
+    const iconEl = row.createSpan({ cls: "oc-tool-icon" });
+    setIcon(iconEl, name === "error" ? "alert-triangle" : "wrench");
+    row.createSpan({ cls: "oc-tool-verb", text: `/${name}` });
     row.createSpan({ cls: "oc-tool-label", text: detail || name });
     if (status && status !== "ok" && status !== "error") {
       this.renderDiffStat(row.createSpan({ cls: "oc-tool-right" }), status);
@@ -280,16 +1052,427 @@ export class ChatView extends ItemView {
     el.createSpan({ cls: "oc-diff-del", text: `-${m[2]}` });
   }
 
-  private addThought(text: string) {
-    const el = this.messagesEl.createDiv({ cls: "oc-thought" });
-    el.createDiv({ cls: "oc-thought-label", text: "Thought" });
-    const body = el.createDiv({ cls: "oc-thought-body" });
-    body.setText(text);
+  /** One rendered row per ACP toolCallId, inside the current activity group
+   *  (`toolRows`/`activityGroups` — specs/003-workspace-parity W1.3). */
+  private toolRows = new Map<string, {
+    item: ActivityItem;
+    idx: number;
+    rowEl: HTMLElement;
+    iconEl: HTMLElement;
+    verbEl: HTMLElement;
+    labelEl: HTMLElement;
+    rightEl: HTMLElement;
+  }>();
+  /** The current consecutive run of tool calls, rendered as ONE collapsible
+   *  block. Null between runs — `finalizeActivityGroup()` clears it, and the
+   *  next tool event opens a fresh group. */
+  private activityGroupEl: HTMLElement | null = null;
+  private activityHeaderEl: HTMLElement | null = null;
+  private activityBodyEl: HTMLElement | null = null;
+  private activityIconEl: HTMLElement | null = null;
+  private activityLabelEl: HTMLElement | null = null;
+  private activityDiffEl: HTMLElement | null = null;
+  private activityItems: ActivityItem[] = [];
+  private activityStartedAt = 0;
+  private activityLiveText = "";
+  private activityTimer: number | null = null;
+  private activityUserToggled = false;
+  /** Finished activity items for the current turn — attached to the assistant
+   *  history entry at turn end so a reopened session replays the trail (W7.4). */
+  private turnActivity: ActivityItem[] = [];
+  /** Live plan checklist (W4.1) — one panel per session, replaced in place.
+   *  opencode does not emit plans today; the panel stays absent when none come. */
+  private planEl: HTMLElement | null = null;
+  private planBodyEl: HTMLElement | null = null;
+  private planCountEl: HTMLElement | null = null;
+  private planUserToggled = false;
+  /** Latest harness-reported usage (W4.2). */
+  private usage: UsageInfo | null = null;
+  private usageEl: HTMLElement | null = null;
+  private usageFillEl: HTMLElement | null = null;
+
+  /** The composer's outer wrapper — the element the keyboard handler pins. */
+  private composerWrapEl: HTMLElement | null = null;
+  /** The `.oc-composer` box inside that wrapper — what the keyboard height is
+   *  reserved on (inline, from the measured value). */
+  private composerBoxEl: HTMLElement | null = null;
+  /** Largest visual-viewport height observed with the keyboard closed. Diffs
+   *  against this to detect the keyboard; see `syncKeyboardState`. */
+  private vvRestingHeight = 0;
+  /** Viewport width the resting baselines were taken at — a different width
+   *  means a rotation, and the heights recorded for the old one are meaningless. */
+  private vvRestingWidth = 0;
+  /** Largest layout-viewport height observed (same baseline), used to tell a
+   *  resized WebView apart from an overlaid one. */
+  private winRestingHeight = 0;
+  /** Whether the keyboard currently counts as open (mirrors `.oc-kb`). */
+  private keyboardOpen = false;
+  /** Memo of the last applied keyboard state, so the continuous
+   *  `visualViewport` events during the keyboard animation do not reflow. */
+  private keyboardStateKey = "";
+  /** Last keyboard geometry sample, for the connection-info panel (W7.13). */
+  private lastKeyboardSnapshot: KeyboardDebugInfo | null = null;
+  /** Pending trailing sample timer (see `scheduleKeyboardSample`). */
+  private snapshotTimer: number | null = null;
+  /** Keyboard height in px reported by Capacitor's Keyboard plugin; 0 when the
+   *  plugin is absent (desktop) or the keyboard is down. */
+  private capacitorKeyboardHeight = 0;
+
+  /** Wires a header as an accessible disclosure for `wrapperEl`, driven by
+   *  that element's `data-expanded` attribute (the CSS contract shared by
+   *  activity groups, thought blocks and the plan panel). */
+  private wireCollapsible(
+    headerEl: HTMLElement,
+    wrapperEl: HTMLElement,
+    onToggle?: (expanded: boolean) => void,
+  ): void {
+    headerEl.setAttribute("role", "button");
+    headerEl.setAttribute("tabindex", "0");
+    headerEl.setAttribute("aria-expanded", wrapperEl.getAttribute("data-expanded") ?? "true");
+    const toggle = () => {
+      const next = wrapperEl.getAttribute("data-expanded") === "false";
+      wrapperEl.setAttribute("data-expanded", next ? "true" : "false");
+      headerEl.setAttribute("aria-expanded", next ? "true" : "false");
+      onToggle?.(next);
+    };
+    headerEl.addEventListener("click", toggle);
+    headerEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    });
+  }
+
+  private stopActivityTimer(): void {
+    if (this.activityTimer !== null) {
+      window.clearInterval(this.activityTimer);
+      this.activityTimer = null;
+    }
+  }
+
+  /** Opens a group for the current run, or returns the existing one. While the
+   *  run is live the header shows the newest action plus an elapsed ticker. */
+  private ensureActivityGroup(): void {
+    if (this.activityGroupEl) return;
+    const wrap = this.messagesEl.createDiv({ cls: "oc-activity" });
+    wrap.setAttribute("data-expanded", "true");
+    const header = wrap.createEl("button", { cls: "oc-activity-header", attr: { type: "button" } });
+    const iconEl = header.createSpan({ cls: "oc-activity-icon" });
+    const labelEl = header.createSpan({ cls: "oc-activity-label" });
+    const diffEl = header.createSpan({ cls: "oc-activity-diff" });
+    const chevEl = header.createSpan({ cls: "oc-activity-chevron" });
+    setIcon(chevEl, "chevron-down");
+    const body = wrap.createDiv({ cls: "oc-activity-body" });
+    this.wireCollapsible(header, wrap, (expanded) => {
+      this.activityUserToggled = true;
+      chevEl.empty();
+      setIcon(chevEl, expanded ? "chevron-down" : "chevron-right");
+    });
+    this.activityGroupEl = wrap;
+    this.activityHeaderEl = header;
+    this.activityBodyEl = body;
+    this.activityIconEl = iconEl;
+    this.activityLabelEl = labelEl;
+    this.activityDiffEl = diffEl;
+    this.activityItems = [];
+    this.activityStartedAt = Date.now();
+    this.activityLiveText = "Working…";
+    labelEl.setText(this.activityLiveText);
+    iconEl.addClass("oc-spin");
+    setIcon(iconEl, "loader");
+    this.activityTimer = window.setInterval(() => {
+      if (!this.activityLabelEl) return;
+      const secs = (Date.now() - this.activityStartedAt) / 1000;
+      this.activityLabelEl.setText(`${this.activityLiveText} · ${formatDuration(secs)}`);
+    }, 1000);
+  }
+
+  /** Freezes the current run: settles the header to `N steps · Ns`, collapses
+   *  it unless the user expanded it or something failed, and clears the refs so
+   *  the next tool call starts a new group. */
+  private finalizeActivityGroup(): void {
+    if (!this.activityGroupEl) return;
+    this.stopActivityTimer();
+    const items = this.activityItems;
+    const secs = Math.max(0, (Date.now() - this.activityStartedAt) / 1000);
+    const failed = items.some((i) => i.status === "failed");
+    if (this.activityIconEl) {
+      this.activityIconEl.removeClass("oc-spin");
+      this.activityIconEl.empty();
+      this.activityIconEl.toggleClass("oc-activity-failed", failed);
+      setIcon(this.activityIconEl, failed ? "alert-triangle" : "check");
+    }
+    if (this.activityLabelEl) this.activityLabelEl.setText(groupLabel(items, secs));
+    if (this.activityDiffEl) {
+      const d = groupDiff(items);
+      this.activityDiffEl.setText(d ? `+${d.add} −${d.del}` : "");
+    }
+    if (!failed && !this.activityUserToggled) {
+      this.activityGroupEl.setAttribute("data-expanded", "false");
+      this.activityHeaderEl?.setAttribute("aria-expanded", "false");
+      const chev = this.activityHeaderEl?.querySelector(".oc-activity-chevron");
+      if (chev instanceof HTMLElement) {
+        chev.empty();
+        setIcon(chev, "chevron-right");
+      }
+    }
+    this.turnActivity.push(...items);
+    this.activityGroupEl = null;
+    this.activityHeaderEl = null;
+    this.activityBodyEl = null;
+    this.activityIconEl = null;
+    this.activityLabelEl = null;
+    this.activityDiffEl = null;
+    this.activityItems = [];
+    this.activityLiveText = "";
+    this.activityUserToggled = false;
+    this.toolRows.clear();
+  }
+
+  /** Opens a tool row's target note when it resolves to a real vault file. */
+  private async openVaultTarget(target: string): Promise<void> {
+    const f = this.resolveVaultFile(target) ?? (target.includes(".") ? null : this.resolveVaultFile(`${target}.md`));
+    if (f) await this.app.workspace.getLeaf(false).openFile(f);
+  }
+
+  /** One row per ACP tool call, grouped into the current run's collapsible
+   *  block (W1.3/W1.4). Updates look the row up by toolCallId and re-render in
+   *  place — ACP resends only changed fields (the target often arrives on the
+   *  second update, and the title is absent from `completed`). */
+  private addOrUpdateToolCall(ev: Extract<StreamEvent, { type: "tool_call" }>) {
+    this.ensureActivityGroup();
+    let entry = this.toolRows.get(ev.toolCallId);
+    const item = applyToolEvent(entry?.item, ev);
+    if (!entry) {
+      const rowEl = this.activityBodyEl!.createDiv({ cls: "oc-tool" });
+      const iconEl = rowEl.createSpan({ cls: "oc-tool-icon" });
+      const verbEl = rowEl.createSpan({ cls: "oc-tool-verb" });
+      const labelEl = rowEl.createSpan({ cls: "oc-tool-label" });
+      const rightEl = rowEl.createSpan({ cls: "oc-tool-right" });
+      entry = { item, idx: this.activityItems.length, rowEl, iconEl, verbEl, labelEl, rightEl };
+      this.toolRows.set(ev.toolCallId, entry);
+      this.activityItems.push(item);
+    } else {
+      entry.item = item;
+      this.activityItems[entry.idx] = item;
+    }
+
+    entry.iconEl.empty();
+    setIcon(entry.iconEl, toolIcon(item.rawName, item.kind, item.status));
+    entry.verbEl.setText(item.verb);
+    entry.labelEl.setText(item.label);
+    entry.rowEl.toggleClass("oc-tool-error", item.status === "failed");
+    entry.rowEl.toggleClass("oc-tool-pending", item.status === "pending" || item.status === "in_progress");
+    entry.rightEl.empty();
+    if (item.diff) this.renderDiffStat(entry.rightEl, `+${item.diff.add} -${item.diff.del}`);
+    const tip = [item.verb, item.target, item.durationSeconds !== undefined ? formatDuration(item.durationSeconds) : ""]
+      .filter(Boolean)
+      .join(" · ");
+    if (tip) entry.rowEl.setAttribute("title", tip);
+    // Path targets open the note on click (W7.6); only wire once per row.
+    if (item.isPath && item.target && !entry.labelEl.hasClass("oc-tool-label-link")) {
+      entry.labelEl.addClass("oc-tool-label-link");
+      entry.labelEl.addEventListener("click", () => void this.openVaultTarget(item.target!));
+    }
+
+    if (item.status === "pending" || item.status === "in_progress") {
+      this.activityLiveText = [item.verb, item.label].filter(Boolean).join(" ");
+    }
+    if (this.activityLabelEl) {
+      const secs = (Date.now() - this.activityStartedAt) / 1000;
+      this.activityLabelEl.setText(`${this.activityLiveText} · ${formatDuration(secs)}`);
+    }
     this.scrollToBottom();
-    return body;
+  }
+
+  /** Renders/updates the harness plan checklist (W4.1).
+   *
+   *  The protocol replaces the entire entry list on every update, so this
+   *  re-renders the rows in place and keeps the panel's transcript position.
+   *  opencode emits no plans today — a harness that does gets the panel for
+   *  free, and one that doesn't simply never shows it. */
+  private updatePlan(entries: PlanEntry[]): void {
+    if (!entries.length) return;
+    if (!this.planEl) {
+      const wrap = this.messagesEl.createDiv({ cls: "oc-plan" });
+      wrap.setAttribute("data-expanded", "true");
+      const header = wrap.createEl("button", { cls: "oc-plan-header", attr: { type: "button" } });
+      header.createSpan({ cls: "oc-plan-title", text: "Plan" });
+      const countEl = header.createSpan({ cls: "oc-plan-count" });
+      const chevEl = header.createSpan({ cls: "oc-plan-chevron" });
+      setIcon(chevEl, "chevron-down");
+      const body = wrap.createDiv({ cls: "oc-plan-body" });
+      this.wireCollapsible(header, wrap, (expanded) => {
+        this.planUserToggled = true;
+        chevEl.empty();
+        setIcon(chevEl, expanded ? "chevron-down" : "chevron-right");
+      });
+      this.planEl = wrap;
+      this.planBodyEl = body;
+      this.planCountEl = countEl;
+    }
+    const done = entries.filter((e) => e.status === "completed").length;
+    this.planCountEl?.setText(`${done}/${entries.length}`);
+    const body = this.planBodyEl;
+    if (!body) return;
+    body.empty();
+    for (const entry of entries) {
+      const row = body.createDiv({ cls: "oc-plan-row" });
+      row.setAttribute("data-status", entry.status);
+      const iconEl = row.createSpan({ cls: "oc-plan-icon" });
+      if (entry.status === "completed") {
+        setIcon(iconEl, "check");
+        iconEl.addClass("oc-plan-done");
+      } else if (entry.status === "in_progress") {
+        setIcon(iconEl, "loader");
+        iconEl.addClass("oc-spin");
+      } else {
+        setIcon(iconEl, "circle");
+      }
+      const textEl = row.createSpan({ cls: "oc-plan-text" });
+      textEl.setText(entry.content.length > 120 ? entry.content.slice(0, 120) + "…" : entry.content);
+      if (entry.priority === "high") row.createSpan({ cls: "oc-plan-prio", attr: { title: "High priority" } });
+    }
+    const allDone = entries.every((e) => e.status === "completed");
+    const anyRunning = entries.some((e) => e.status === "in_progress");
+    if (!this.planUserToggled && this.planEl) {
+      const expanded = anyRunning && !allDone;
+      this.planEl.setAttribute("data-expanded", expanded ? "true" : "false");
+      const chev = this.planEl.querySelector(".oc-plan-chevron");
+      if (chev instanceof HTMLElement) {
+        chev.empty();
+        setIcon(chev, expanded ? "chevron-down" : "chevron-right");
+      }
+    }
+    this.scrollToBottom();
+  }
+
+  /** Renders the harness's context/cost reading in the toolbar (W4.2).
+   *  Hidden entirely until the harness reports one. */
+  private updateUsage(u: UsageInfo): void {
+    this.usage = u;
+    if (!this.usageEl || !this.usageFillEl) return;
+    const pct = u.size > 0 ? Math.min(100, (u.used / u.size) * 100) : 0;
+    this.usageEl.style.setProperty("--oc-usage-pct", `${Math.round(pct)}`);
+    this.usageEl.toggleClass("oc-usage-warn", pct >= 70 && pct < 90);
+    this.usageEl.toggleClass("oc-usage-critical", pct >= 90);
+    this.usageEl.removeClass("oc-toolbtn-hidden");
+    const cost = u.cost
+      ? ` · ${u.cost.currency === "USD" ? "$" : u.cost.currency + " "}${u.cost.amount.toFixed(2)}`
+      : "";
+    this.usageEl.setAttribute(
+      "title",
+      `${u.used.toLocaleString()} / ${u.size.toLocaleString()} tokens (${Math.round(pct)}%)${cost}`,
+    );
+  }
+
+  // ---------- threaded, collapsible thinking (specs/002-acp-only-chat-ux US4) ----------
+  //
+  // `agent_thought_chunk` has no start/stop marker of its own (unlike the
+  // Claude Agent SDK's content-block events, which Claudian's equivalent
+  // component wraps directly — research.md R8), so a burst's boundary is
+  // inferred here: it stays open across consecutive "reasoning" events and
+  // closes the instant a "token" or "tool_call" event interrupts it.
+
+  private pendingThought: {
+    wrapperEl: HTMLElement;
+    headerEl: HTMLElement;
+    labelEl: HTMLElement;
+    contentEl: HTMLElement;
+    text: string;
+    startedAt: number;
+    timer: number | null;
+  } | null = null;
+  /** Reasoning bursts finalized so far in the current turn, attached to the
+   *  assistant history entry for persistence (data-model.md Reasoning Block). */
+  private pendingReasoningBursts: { text: string; durationSeconds?: number }[] = [];
+  /** Session id applyConfigOverrides() last ran for — compared against
+   *  acp.getSessionId() rather than tracked per AcpBridgeClient instance,
+   *  since the same instance silently starts a new session id after a dead
+   *  (404) session is replaced (e.g. the bridge restarted) without going
+   *  through ensureAcp()'s "create a fresh client" branch. */
+  private overridesAppliedForSessionId: string | null = null;
+
+  private wireThoughtToggle(wrapperEl: HTMLElement, headerEl: HTMLElement) {
+    this.wireCollapsible(headerEl, wrapperEl);
+  }
+
+  /** Appends one streamed reasoning chunk, opening a new block if none is
+   *  currently open. */
+  private addThoughtDelta(text: string) {
+    // Some backends flush the reasoning stream with a trailing whitespace-only
+    // chunk (e.g. a lone "\n") once real content is already done. Don't let
+    // that open a block on its own; once one's open, appending it is harmless.
+    if (!this.pendingThought && !text.trim()) return;
+    if (!this.pendingThought) {
+      const wrapperEl = this.messagesEl.createDiv({ cls: "oc-thought-block" });
+      wrapperEl.setAttribute("data-streaming", "true");
+      wrapperEl.setAttribute("data-expanded", "true");
+      const headerEl = wrapperEl.createDiv({ cls: "oc-thought-header" });
+      headerEl.setAttribute("tabindex", "0");
+      headerEl.setAttribute("role", "button");
+      headerEl.setAttribute("aria-expanded", "true");
+      headerEl.setAttribute("aria-label", "Extended thinking — click to collapse");
+      const labelEl = headerEl.createSpan({ cls: "oc-thought-label", text: "Thinking 0s…" });
+      const contentEl = wrapperEl.createDiv({ cls: "oc-thought-content" });
+      const startedAt = Date.now();
+      const timer = window.setInterval(() => {
+        labelEl.setText(`Thinking ${Math.floor((Date.now() - startedAt) / 1000)}s…`);
+      }, 1000);
+      this.wireThoughtToggle(wrapperEl, headerEl);
+      this.pendingThought = { wrapperEl, headerEl, labelEl, contentEl, text: "", startedAt, timer };
+    }
+    const pt = this.pendingThought;
+    pt.text += text;
+    renderMarkdown(this.plugin.app, pt.contentEl, pt.text, this.sessionPath, this).catch(() => pt.contentEl.setText(pt.text));
+    this.scrollToBottom();
+  }
+
+  /** Closes the currently-open thought block (if any): freezes its label,
+   *  auto-collapses it, and records the burst for persistence. A no-op if no
+   *  block is open, so callers can call it unconditionally. */
+  private finalizeThought() {
+    const pt = this.pendingThought;
+    if (!pt) return;
+    if (pt.timer !== null) window.clearInterval(pt.timer);
+    if (!pt.text.trim()) {
+      // Nothing but whitespace ever streamed into this block — drop it
+      // entirely rather than leave an empty "Thought for Ns" ghost behind.
+      pt.wrapperEl.remove();
+      this.pendingThought = null;
+      return;
+    }
+    const durationSeconds = Math.floor((Date.now() - pt.startedAt) / 1000);
+    pt.labelEl.setText(`Thought for ${durationSeconds}s`);
+    pt.headerEl.setAttribute("aria-label", "Extended thinking — click to expand");
+    pt.wrapperEl.setAttribute("data-streaming", "false");
+    pt.wrapperEl.setAttribute("data-expanded", "false");
+    pt.headerEl.setAttribute("aria-expanded", "false");
+    if (pt.text.trim()) this.pendingReasoningBursts.push({ text: pt.text, durationSeconds });
+    this.pendingThought = null;
+  }
+
+  /** Renders a previously-saved reasoning burst, collapsed by default
+   *  (FR-010), when reopening a session. */
+  private renderStoredThought(text: string, durationSeconds?: number) {
+    const wrapperEl = this.messagesEl.createDiv({ cls: "oc-thought-block" });
+    wrapperEl.setAttribute("data-streaming", "false");
+    wrapperEl.setAttribute("data-expanded", "false");
+    const headerEl = wrapperEl.createDiv({ cls: "oc-thought-header" });
+    headerEl.setAttribute("tabindex", "0");
+    headerEl.setAttribute("role", "button");
+    headerEl.setAttribute("aria-expanded", "false");
+    headerEl.setAttribute("aria-label", "Extended thinking — click to expand");
+    headerEl.createSpan({ cls: "oc-thought-label", text: durationSeconds !== undefined ? `Thought for ${durationSeconds}s` : "Thought" });
+    const contentEl = wrapperEl.createDiv({ cls: "oc-thought-content" });
+    renderMarkdown(this.plugin.app, contentEl, text, this.sessionPath, this).catch(() => contentEl.setText(text));
+    this.wireThoughtToggle(wrapperEl, headerEl);
   }
 
   private scrollToBottom() {
+    if (!this.pinned) return; // reading back — don't yank the viewport (W2.3)
+    if (this.jumpEl) this.jumpEl.hidden = true;
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
@@ -304,32 +1487,10 @@ export class ChatView extends ItemView {
 
   // ---------- grounding / context ----------
 
-  private async ground(query: string): Promise<{ systemPrompt: string; citations: string[] }> {
-    const idx = this.plugin.index;
-    // Explicitly @-mentioned notes (e.g. `[[Inbox/Project-AI]]`) are always attached.
-    const mentioned = await this.attachMentions(query, idx);
-
-    // Research (tools) mode: no notes pre-loaded; the model pulls them with
-    // search_vault/read_file. Auto mode: retrieve top-k notes (old behavior).
-    if (this.plugin.settings.groundingMode !== "auto") {
-      return this.assembleGrounding(query, mentioned);
-    }
-    if (!hasContentSignal(query)) return this.assembleGrounding(query, mentioned);
-
-    await idx.ensureLoaded(() => this.setStatus("indexing vault…"));
-    const docs = idx.getAll();
-    const retrieved = retrieveCascade(query, docs, {
-      topK: this.plugin.settings.retrievalK,
-      useGraph: true,
-    });
-    const mentionedRels = new Set(mentioned.map((n) => n.rel));
-    const notes = [...mentioned, ...retrieved.filter((n) => !mentionedRels.has(n.rel))];
-    return this.assembleGrounding(query, notes);
-  }
-
   /** Attach the content of any `[[wikilink]]` targets in the query. */
   private async attachMentions(query: string, idx: VaultIndex): Promise<RetrievedNote[]> {
-    const targets = extractWikilinks(query);
+    // `[[…]]` typed directly by the user is a reference, not an attach request (W3.6).
+    const targets = extractWikilinks(query).filter((t) => !this.referenceOnlyLinks.has(t));
     if (!targets.length) return [];
     await idx.ensureLoaded(() => this.setStatus("indexing vault…"));
     const docs = idx.getAll();
@@ -347,34 +1508,6 @@ export class ChatView extends ItemView {
     return out;
   }
 
-  /** Assemble the system prompt from notes + vault rules + attached files. */
-  private async assembleGrounding(query: string, notes: RetrievedNote[]): Promise<{ systemPrompt: string; citations: string[] }> {
-    let vaultRules: string | undefined;
-    if (this.plugin.settings.injectVaultRules) {
-      for (const p of ["vault-rules.md", ".chat/rules.md", "AGENTS.md"]) {
-        const f = this.plugin.app.vault.getAbstractFileByPath(p);
-        if (f instanceof TFile) {
-          vaultRules = (vaultRules ? vaultRules + "\n\n" : "") + (await this.plugin.app.vault.cachedRead(f));
-        }
-      }
-      // Nearest-wins folder rules for the primary note (closest .chat/rules.md wins).
-      const primary = notes[0]?.rel;
-      if (primary) {
-        const folderRules = await this.readNearestFolderRules(primary);
-        if (folderRules) vaultRules = (vaultRules ? vaultRules + "\n\n" : "") + folderRules;
-      }
-    }
-    const g = buildGrounding(query, notes, { vaultRules });
-    if (this.pendingTextAttachments.length) {
-      const block = this.pendingTextAttachments
-        .map((a) => `# Attached file: ${a.name}\n${a.content.slice(0, 4000)}`)
-        .join("\n\n");
-      g.systemPrompt += `\n\n${block}`;
-    }
-    this.renderChips(g.citations);
-    return g;
-  }
-
   /** Read `.chat/rules.md` from the folder of a note (nearest to the note wins). */
   private async readNearestFolderRules(path: string): Promise<string> {
     const folders = path.split("/").slice(0, -1);
@@ -386,6 +1519,8 @@ export class ChatView extends ItemView {
     return "";
   }
 
+  /** Citation chips (non-removable) followed by the removable context chips —
+   *  one visual language for both (W3.5). */
   private renderChips(citations: string[]) {
     this.citations = citations;
     this.chipsEl.empty();
@@ -393,23 +1528,35 @@ export class ChatView extends ItemView {
       const chip = this.chipsEl.createDiv({ cls: "oc-chip" });
       setIcon(chip.createSpan({ cls: "oc-chip-icon" }), "file-text");
       chip.createSpan({ cls: "oc-chip-label", text: cite.replace(/\.md$/, "") });
-      const x = chip.createEl("button", { cls: "oc-chip-x", attr: { "aria-label": "Remove context" } });
+      const x = chip.createEl("button", { cls: "oc-chip-x", attr: { "aria-label": "Remove citation" } });
       setIcon(x, "x");
       x.addEventListener("click", () => {
         this.citations = this.citations.filter((c) => c !== cite);
         chip.remove();
       });
     }
-  }
-
-  private makeRuntime() {
-    return buildRuntime(getActiveProvider(this.plugin.settings));
+    for (const ctx of this.contextChips) {
+      const chip = this.chipsEl.createDiv({ cls: "oc-chip oc-chip-context" });
+      const icon = ctx.kind === "selection" ? "text-select" : ctx.kind === "folder" ? "folder" : "file-text";
+      setIcon(chip.createSpan({ cls: "oc-chip-icon" }), icon);
+      chip.createSpan({ cls: "oc-chip-label", text: ctx.label });
+      chip.setAttribute("title", ctx.path ?? ctx.label);
+      const x = chip.createEl("button", { cls: "oc-chip-x", attr: { "aria-label": "Remove context" } });
+      setIcon(x, "x");
+      x.addEventListener("click", () => {
+        this.contextChips = this.contextChips.filter((c) => c.id !== ctx.id);
+        this.renderChips(this.citations);
+      });
+    }
   }
 
   // ---------- vision attachments ----------
 
+  /** Image attachment is always offered — whether the connected harness's model
+   *  actually accepts images is a harness-side concern the plugin can't know
+   *  generically (Constitution Principle II: no provider-specific logic here). */
   private visionEnabled(): boolean {
-    return hasVision(getActiveProvider(this.plugin.settings));
+    return true;
   }
 
   private handlePaste(e: ClipboardEvent) {
@@ -540,32 +1687,40 @@ export class ChatView extends ItemView {
     this.renderAttachments();
   }
 
-  private async prefersGateway(): Promise<boolean> {
-    const s = this.plugin.settings;
-    const mobile = Platform.isMobile;
-    return (s.preferGateway || mobile) && !!s.gateway.baseUrl && !!s.gateway.token;
-  }
-
   // ---------- send / stream ----------
 
-  private async send() {
-    const text = this.composerEl.value.trim();
-    if (!text || this.streaming) return;
-    if (text.startsWith("/") && !this.slashMenuEl) {
-      this.runSlashCommand(ChatView.COMMANDS.find((cc) => cc.name === text.trim().split(" ")[0]) ?? { name: text, hint: "" });
-      this.composerEl.value = "";
+  private async send(queuedText?: string) {
+    const text = (queuedText ?? this.composerEl.value).trim();
+    if (!text) return;
+    // Typing while the agent works queues instead of dropping (W2.4).
+    if (this.streaming && queuedText === undefined) {
+      this.enqueue(text);
       return;
     }
-    this.composerEl.value = "";
+    // Only the fixed local commands are intercepted here. Anything else
+    // starting with "/" — including a harness-declared command — is normal
+    // prompt text: ACP has no separate command-invocation method, the
+    // harness interprets "/" syntax in the prompt itself (research.md R7).
+    if (!this.slashMenuEl) {
+      const local = ChatView.LOCAL_COMMANDS.find((c) => c.name === text.split(" ")[0]);
+      if (local) {
+        this.runSlashCommand(local);
+        this.composerEl.value = "";
+        return;
+      }
+    }
+    if (queuedText === undefined) this.composerEl.value = "";
+    this.applyComposerHeight();
+    this.pinned = true; // an explicit send always re-pins the transcript
+    this.lastTurnText = text;
+    this.lastTurnImages = [...this.pendingImages];
     this.streaming = true;
     this.setSendButtonMode("stop");
     this.addUserMessage(text, this.pendingImages);
     this.lastAssistantText = "";
 
-    const useGateway = await this.prefersGateway();
     try {
-      if (useGateway) await this.sendViaAcp(text);
-      else await this.sendViaProvider(text);
+      await this.sendViaAcp(text);
     } catch (err) {
       if (err instanceof AcpUnavailableError) {
         this.addToolRow("error", `Bridge/harness unavailable: ${err.message}`, "error"); // FR-012
@@ -574,17 +1729,73 @@ export class ChatView extends ItemView {
       }
     } finally {
       this.clearPendingAttachments();
+      this.clearContextChips();
+      this.referenceOnlyLinks.clear();
       this.streaming = false;
       this.setSendButtonMode("send");
       await this.refreshToolbar();
+      // Drain a queued follow-up now that the turn has fully settled (W2.4).
+      if (this.queued && !this.draining) void this.sendQueued();
     }
+  }
+
+  /** Queues a message typed while the agent is still working (W2.4).
+   *  The transcript only ever shows messages in send order, so the user
+   *  message is echoed when the queue drains — not now. */
+  private enqueue(text: string): void {
+    if (this.queued) new Notice("Queued message replaced");
+    this.queued = {
+      text,
+      images: [...this.pendingImages],
+      textAttachments: [...this.pendingTextAttachments],
+    };
+    this.composerEl.value = "";
+    this.clearPendingAttachments();
+    this.applyComposerHeight();
+    this.renderQueue();
+  }
+
+  private renderQueue(): void {
+    if (!this.queueEl) return;
+    if (!this.queued) {
+      this.queueEl.hidden = true;
+      return;
+    }
+    const preview = this.queued.text.length > 60 ? this.queued.text.slice(0, 60) + "…" : this.queued.text;
+    this.queueTextEl.setText(`Queued · ${preview}`);
+    this.queueEl.hidden = false;
+  }
+
+  /** Sends exactly one queued message, echoing it like a normal send (W2.4). */
+  private async sendQueued(): Promise<void> {
+    if (!this.queued || this.draining) return;
+    const item = this.queued;
+    this.queued = null;
+    this.renderQueue();
+    this.draining = true;
+    this.pendingImages = item.images;
+    this.pendingTextAttachments = item.textAttachments;
+    try {
+      await this.send(item.text);
+    } finally {
+      this.draining = false;
+    }
+  }
+
+  /** "Send now" — cancels the in-flight turn; the queue drains in `send()`'s
+   *  finally, so the queued message goes out immediately after (W2.4). */
+  private async steerQueued(): Promise<void> {
+    if (!this.queued) return;
+    await this.cancelStreaming();
   }
 
   private setSendButtonMode(mode: "send" | "stop") {
     if (!this.sendBtnEl) return;
     this.sendBtnEl.empty();
     setIcon(this.sendBtnEl, mode === "stop" ? "square" : "arrow-up");
-    this.sendBtnEl.setAttribute("aria-label", mode === "stop" ? "Stop" : "Send");
+    const label = mode === "stop" ? "Stop (Esc)" : "Send";
+    this.sendBtnEl.setAttribute("aria-label", label);
+    this.sendBtnEl.setAttribute("title", label);
   }
 
   /** session/cancel (FR-005 acceptance scenario 2: cancel stops streaming promptly). */
@@ -592,74 +1803,69 @@ export class ChatView extends ItemView {
     if (this.acp) await this.acp.cancel();
   }
 
-  private async sendViaProvider(text: string) {
-    let ground: { systemPrompt: string; citations: string[] } = { systemPrompt: "", citations: [] };
-    try {
-      ground = await this.ground(text);
-    } catch (err) {
-      this.addToolRow("error", `Grounding failed: ${String((err as Error).message ?? err)}`, "error");
+  /** Lazily constructs the ACP client and wires its listeners, without
+   *  connecting — safe to call repeatedly (idempotent). */
+  private ensureAcp(): AcpBridgeClient {
+    if (!this.acp) {
+      const s = this.plugin.settings;
+      this.acp = new AcpBridgeClient({ baseUrl: s.gateway.baseUrl, token: s.gateway.token });
+      this.acp.onEvent((e) => this.handleStreamEvent(e));
+      this.acp.onPermissionRequest((p) => void this.handlePermissionRequest(p));
+      // Agent mode / thinking level / "/" commands are entirely harness-declared
+      // (specs/002-acp-only-chat-ux R5/R6/R7) — re-render whenever they change.
+      this.acp.onStateChange(() => {
+        this.refreshToolbar();
+        this.updateConnection();
+      });
     }
-    const runtime = this.makeRuntime();
-    const s = this.plugin.settings;
-    const model = getActiveProvider(s).model;
-    let assistantMd: HTMLElement | null = null;
-    let acc = "";
-
-    const approver = createApprovalRequester(this.plugin.app, s, () => this.plugin.saveSettings());
-    const eng = new ChatEngine({
-      runtime,
-      model,
-      tools: this.enabledToolDefinitions(),
-      maxToolRounds: s.maxToolRounds,
-      tokenBudget: s.tokenBudget,
-      ground: async () => ground,
-      executeTool: (name, args) => this.plugin.tools.execWithApproval(name, args, this.plugin.index, approver),
-      onEvent: (e) => {
-        if (e.type === "token") {
-          acc += e.text;
-          if (!assistantMd) assistantMd = this.beginAssistantMessage();
-          this.streamInto(assistantMd, acc);
-        } else if (e.type === "done") {
-          if (assistantMd) assistantMd.removeClass("streaming");
-          assistantMd = null;
-        } else {
-          this.handleStreamEvent(e);
-        }
-      },
-    });
-    this.engine = eng;
-    try {
-      await eng.ask(text, undefined, this.pendingImages);
-    } finally {
-      // Persist the session even if the turn errored, so a record always lands in the folder.
-      try {
-        await this.persistSession(eng.getHistory());
-      } catch (err) {
-        new Notice(`Couldn't save session: ${String((err as Error).message ?? err)}`);
-      }
-    }
+    return this.acp;
   }
 
   /** Sends one turn over ACP (contracts/plugin-bridge-acp.md). Unlike the old
    *  gateway, the harness owns conversation state once a session exists, so
    *  only this turn's content blocks are sent — not the full history. */
   private async sendViaAcp(text: string) {
-    const s = this.plugin.settings;
-    if (!this.acp) {
-      this.acp = new AcpBridgeClient({ baseUrl: s.gateway.baseUrl, token: s.gateway.token });
-      this.acp.onEvent((e) => this.handleStreamEvent(e));
-      this.acp.onPermissionRequest((p) => void this.handlePermissionRequest(p));
-    }
-    await this.acp.connect();
-    const blocks = await this.buildAcpPromptBlocks(text);
+    const acp = this.ensureAcp();
+    this.pendingReasoningBursts = [];
+    this.turnSettled = false;
     this.acpHistory.push({ role: "user", content: text, images: this.pendingImages.length ? this.pendingImages : undefined });
-    await this.acp.prompt(blocks);
-    this.acpHistory.push({ role: "assistant", content: this.lastAssistantText });
-    this.lastAssistantText = "";
     try {
-      await this.persistSession(this.acpHistory);
-    } catch (err) {
-      new Notice(`Couldn't save session: ${String((err as Error).message ?? err)}`);
+      await acp.connect();
+      const sid = acp.getSessionId();
+      if (sid && sid !== this.overridesAppliedForSessionId) {
+        this.overridesAppliedForSessionId = sid;
+        await this.applyConfigOverrides();
+        await this.refreshToolbar();
+      }
+      const blocks = await this.buildAcpPromptBlocks(text);
+      await acp.prompt(blocks);
+    } finally {
+      this.turnSettled = true; // covers the error path — "done" never fires then
+      this.finalizeThought(); // catch any block still open at turn end
+      this.finalizeActivityGroup(); // settle/collapse the run's activity group
+      // Snapshot the turn's writes for the changes card before the array resets.
+      const finishedActivity = [...this.turnActivity];
+      // Persist whatever we have — including just the user's message, or a
+      // reasoning burst with no final reply — even if the connection failed,
+      // the turn errored, or the harness never replied, so a record always
+      // lands in the folder (FR-003) instead of being silently lost.
+      if (this.lastAssistantText || this.pendingReasoningBursts.length || this.turnActivity.length) {
+        this.acpHistory.push({
+          role: "assistant",
+          content: this.lastAssistantText,
+          reasoning: this.pendingReasoningBursts.length ? this.pendingReasoningBursts : undefined,
+          activity: this.turnActivity.length ? [...this.turnActivity] : undefined,
+        });
+      }
+      this.lastAssistantText = "";
+      this.pendingReasoningBursts = [];
+      this.turnActivity = [];
+      this.renderChangesCard(finishedActivity);
+      try {
+        await this.persistSession(this.acpHistory);
+      } catch (err) {
+        new Notice(`Couldn't save session: ${String((err as Error).message ?? err)}`);
+      }
     }
   }
 
@@ -670,6 +1876,30 @@ export class ChatView extends ItemView {
    *  and any image attachments (US3: FR-009 @mention carryover). */
   private async buildAcpPromptBlocks(text: string): Promise<ContentBlock[]> {
     const blocks: ContentBlock[] = [];
+    // Context chips ride with this turn (W3.5): selection first, then note
+    // references. Note bodies are read now, not when the chip was added, so a
+    // long-lived chip can never carry a stale body.
+    for (const chip of this.contextChips) {
+      if (chip.kind === "selection" && chip.text) {
+        const lines = chip.startLine && chip.endLine ? ` lines="${chip.startLine}-${chip.endLine}"` : "";
+        blocks.push({
+          type: "text",
+          text: `# Selected text\n<editor_selection path="${chip.path ?? "unknown"}"${lines}>\n${chip.text}\n</editor_selection>`,
+        });
+      } else if (chip.kind === "folder" && chip.path) {
+        blocks.push({ type: "text", text: `# Folder reference\n[[${chip.path}]]` });
+      } else if (chip.path) {
+        const f = this.plugin.app.vault.getAbstractFileByPath(chip.path);
+        if (f instanceof TFile) {
+          const content = await this.plugin.app.vault.cachedRead(f);
+          const body = content.length > 20000 ? content.slice(0, 20000) + "\n…[truncated]" : content;
+          blocks.push({
+            type: "text",
+            text: `# Note context\n[[${chip.path.replace(/\.md$/, "")}]]\n\n${body}`,
+          });
+        }
+      }
+    }
     const mentioned = await this.attachMentions(text, this.plugin.index);
     if (mentioned.length) {
       const ctx = mentioned.map((n) => `## [[${n.rel.replace(/\.md$/, "")}]]\n${n.snippet}`).join("\n\n");
@@ -704,60 +1934,130 @@ export class ChatView extends ItemView {
     return vaultRules ?? "";
   }
 
-  /** Maps ACP's `session/request_permission` onto the same approval UX
-   *  (Auto/Review/Plan, persistent per-tool allow/deny) the plugin already
-   *  used for locally-executed write tools (research.md R6, T027-T030). */
+  /** ACP's `ToolCallLocation.path` is documented as an absolute filesystem
+   *  path, but Obsidian's vault API needs a vault-relative one, and the
+   *  plugin has no reliable way to know the harness's configured working
+   *  directory (Constitution Principle II — no harness-specific config in
+   *  the plugin). Resolve defensively: try the path as given, then
+   *  progressively shorter suffixes, until one matches a real vault file. A
+   *  path that matches nothing (e.g. a not-yet-created file) correctly
+   *  returns null. */
+  private resolveVaultFile(path: string): TFile | null {
+    if (!path) return null;
+    const direct = this.plugin.app.vault.getAbstractFileByPath(path);
+    if (direct instanceof TFile) return direct;
+    const segments = path.split("/").filter(Boolean);
+    for (let i = 1; i < segments.length; i++) {
+      const f = this.plugin.app.vault.getAbstractFileByPath(segments.slice(i).join("/"));
+      if (f instanceof TFile) return f;
+    }
+    return null;
+  }
+
+  /** Maps ACP's `session/request_permission` onto an inline approval card
+   *  (persistent per-tool allow/deny, session-lifetime Undo) —
+   *  specs/002-acp-only-chat-ux User Story 2. Always shown the same way
+   *  regardless of agent mode — mode is entirely harness-owned (FR-007); if
+   *  a harness's active mode means it won't propose a write, this method is
+   *  simply never called for it. */
   private async handlePermissionRequest(p: PendingPermissionRequest) {
     if (!this.acp) return;
     const s = this.plugin.settings;
-    const mode = s.approvalMode;
     const toolCall = p.request.toolCall as any;
     const action = toolCall.title ?? toolCall.kind ?? "tool";
+    const rawPath = toolCall.locations?.[0]?.path ?? "";
     const preview: WritePreview = {
       action,
-      path: toolCall.locations?.[0]?.path ?? "",
+      path: rawPath,
       summary: toolCall.title ?? action,
-      diff: Array.isArray(toolCall.content)
-        ? toolCall.content.map((c: any) => (typeof c === "string" ? c : JSON.stringify(c)))
-        : undefined,
+      diff: toolCallContentLines(toolCall.content, "completed"),
     };
     const pickOption = (kind: string) => p.request.options.find((o) => o.kind === kind);
+    const respond = async (allowed: boolean, remember: boolean) => {
+      const kind = allowed ? (remember ? "allow_always" : "allow_once") : "reject_once";
+      const option = pickOption(kind) ?? p.request.options[0];
+      if (option && this.acp) await this.acp.respondPermission(p.requestId, option.optionId);
+    };
 
-    // Persistent per-tool decision (Copilot semantics) — same allowlist the
-    // plugin-direct tool path uses.
-    if (mode !== "plan" && s.toolAllowlist[action] !== undefined) {
-      const option = pickOption(s.toolAllowlist[action] ? "allow_once" : "reject_once") ?? p.request.options[0];
-      if (option) await this.acp.respondPermission(p.requestId, option.optionId);
+    // Persistent per-tool decision (Copilot semantics) — bypasses the card
+    // entirely for an action the user already decided on.
+    if (s.toolAllowlist[action] !== undefined) {
+      await respond(s.toolAllowlist[action], false);
       return;
     }
 
-    const modal = new ApprovalModal(this.plugin.app, preview, mode === "plan" ? "plan" : "review", async (d) => {
+    const handle = renderApprovalCard(this.messagesEl, preview, async (d) => {
       if (d.remember) {
         s.toolAllowlist[action] = d.allowed;
         await this.plugin.saveSettings();
       }
-      const kind = d.allowed ? (d.remember ? "allow_always" : "allow_once") : "reject_once";
-      const option = pickOption(kind) ?? p.request.options[0];
-      if (option && this.acp) await this.acp.respondPermission(p.requestId, option.optionId);
+      // Snapshot BEFORE sending the approval response, so it reflects
+      // pre-write state (data-model.md Undo Snapshot).
+      let snapshot: { existed: boolean; content: string } | null = null;
+      if (d.allowed) {
+        const f = this.resolveVaultFile(rawPath);
+        snapshot = f ? { existed: true, content: await this.plugin.app.vault.cachedRead(f) } : { existed: false, content: "" };
+        // Remember the first pre-write state per path so the changes card can
+        // undo the whole session's work on that file (W7.5).
+        if (rawPath && !this.writeSnapshots.has(rawPath)) this.writeSnapshots.set(rawPath, snapshot);
+      }
+      await respond(d.allowed, !!d.remember);
+      handle.settle({
+        allowed: d.allowed,
+        onUndo: d.allowed
+          ? async () => {
+              try {
+                const f = this.resolveVaultFile(rawPath);
+                if (snapshot?.existed) {
+                  if (f) await this.plugin.app.vault.modify(f, snapshot.content);
+                  else new Notice(`Couldn't find ${rawPath} to restore`);
+                } else if (f) {
+                  await this.plugin.app.vault.trash(f, false);
+                }
+              } catch (err) {
+                new Notice(`Undo failed: ${String((err as Error).message ?? err)}`);
+              }
+            }
+          : undefined,
+      });
     });
-    modal.open();
   }
 
   private async handleStreamEvent(e: StreamEvent) {
     switch (e.type) {
       case "token":
+        this.finalizeThought();
+        this.finalizeActivityGroup();
         if (!this.pendingAssistantMd) this.pendingAssistantMd = this.beginAssistantMessage();
         this.pendingAcc += e.text;
         this.lastAssistantText += e.text;
         this.streamInto(this.pendingAssistantMd, this.pendingAcc);
         break;
       case "reasoning":
-        this.addThought(e.text);
+        if (this.turnSettled) break; // stale post-done notification — see turnSettled
+        this.finalizeActivityGroup();
+        this.addThoughtDelta(e.text);
         break;
       case "tool_call":
-        this.addToolRow(e.name, e.name, "ok");
+        this.finalizeThought();
+        this.addOrUpdateToolCall(e);
+        break;
+      case "plan":
+        this.finalizeThought();
+        this.finalizeActivityGroup();
+        this.updatePlan(e.entries);
+        break;
+      case "usage":
+        this.updateUsage(e);
+        break;
+      case "session_info":
+        // Title is stored by the client and read at persist time (W7.11).
         break;
       case "done":
+        this.turnSettled = true;
+        this.finalizeThought();
+        this.finalizeActivityGroup();
+        this.markRegenerable(this.lastAssistantBlockEl);
         if (this.pendingAssistantMd) this.pendingAssistantMd.removeClass("streaming");
         this.pendingAssistantMd = null;
         this.pendingAcc = "";
@@ -765,6 +2065,8 @@ export class ChatView extends ItemView {
         // resolves, using acpHistory — see data-model.md Session.
         break;
       case "error":
+        this.finalizeThought();
+        this.finalizeActivityGroup();
         this.addToolRow("error", e.message, "error");
         break;
     }
@@ -773,6 +2075,17 @@ export class ChatView extends ItemView {
   private pendingAssistantMd: HTMLElement | null = null;
   private pendingAcc = "";
   private lastAssistantText = "";
+  /** False only while a turn is in flight (set in sendViaAcp, cleared on
+   *  "done"). opencode's ACP server has a known protocol violation where it
+   *  resolves `session/prompt` (stopReason: end_turn) before its own
+   *  session/update pipeline finishes flushing — anomalyco/opencode#17505,
+   *  #18672 — so a stray `agent_thought_chunk` notification can arrive over
+   *  our persistent SSE stream after we've already rendered the final answer
+   *  and marked the turn done. Since real reasoning always precedes the
+   *  answer, a reasoning burst that shows up once the turn has settled is
+   *  that stale artifact, not new content — drop it instead of opening a
+   *  trailing "Thought for Ns" block for it. */
+  private turnSettled = true;
 
   /** Normalized chat session folder (user-configurable, default "chat"). */
   private sessionFolder(): string {
@@ -788,9 +2101,9 @@ export class ChatView extends ItemView {
       const name = `session-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
       this.sessionPath = `${folderPath}/${name}.md`;
     }
+    // No `model`/`provider` field — the plugin doesn't know this in the ACP
+    // world (Constitution Principle II; data-model.md Session).
     const meta = {
-      model: getActiveProvider(this.plugin.settings).model,
-      provider: getActiveProvider(this.plugin.settings).name,
       created: Date.now(),
       updated: Date.now(),
       tokens: approxTokens(messages),
@@ -803,15 +2116,24 @@ export class ChatView extends ItemView {
 
   private async newSession() {
     this.hideSlash();
+    if (this.pendingThought?.timer !== null && this.pendingThought?.timer !== undefined) {
+      window.clearInterval(this.pendingThought.timer);
+    }
+    this.pendingThought = null;
+    this.pendingReasoningBursts = [];
     this.messagesEl.empty();
     this.renderChips([]);
     this.sessionPath = "";
-    this.engine?.clear();
     this.acpHistory = [];
     if (this.acp) {
       await this.acp.close();
       this.acp = null;
     }
+    await this.refreshToolbar(); // hide mode/thinking controls until the new session reconnects
+    void this.ensureAcp()
+      .connect()
+      .then(() => this.refreshToolbar())
+      .catch(() => {});
     this.addSystemMessage("New session.");
   }
 
@@ -836,33 +2158,68 @@ export class ChatView extends ItemView {
     const body = await this.plugin.app.vault.cachedRead(f);
     this.messagesEl.empty();
     this.sessionPath = path;
-    // Parse the saved body into display blocks; honor # title and ## role (time)
+    // Parse the saved body into display blocks; honor # title, ## role (time),
+    // and — nested under a role — ### 🧠 Thought (Ns) sections (US4/FR-010).
     const lines = body.split("\n");
     let pendingRole: ChatMessage["role"] | null = null;
     let pendingBuf: string[] = [];
+    let pendingThoughts: { text: string; durationSeconds?: number }[] = [];
+    let inThought = false;
+    let thoughtDuration: number | undefined;
+    let thoughtBuf: string[] = [];
+    // Stored activity trails are consumed in note order, one per assistant turn (W7.4).
+    const activityTrails = extractActivityTrails(body);
+    let activityIdx = 0;
+
+    const flushThought = () => {
+      if (!inThought) return;
+      const text = thoughtBuf.join("\n").trim();
+      if (text) pendingThoughts.push({ text, durationSeconds: thoughtDuration });
+      thoughtBuf = [];
+      inThought = false;
+    };
     const flush = () => {
+      flushThought();
       const text = pendingBuf.join("\n").trim();
-      if (pendingRole && text) {
-        if (pendingRole === "user") this.addUserMessage(text);
-        else if (pendingRole === "assistant") {
+      if (pendingRole === "assistant") {
+        for (const t of pendingThoughts) this.renderStoredThought(t.text, t.durationSeconds);
+        const trail = activityTrails[activityIdx++];
+        if (trail?.length) this.renderStoredActivity(trail);
+        if (text) {
           const md = this.beginAssistantMessage();
-          renderMarkdown(this.plugin.app, md, text, path, this).catch(() => {});
-        } else if (pendingRole === "system") {
-          this.addSystemMessage(text);
-        } else {
-          this.addToolRow("tool", text, "ok");
+          renderMarkdown(this.plugin.app, md, text, this.sessionPath, this).catch(() => md.setText(text));
         }
+        this.markRegenerable(this.lastAssistantBlockEl);
+      } else if (pendingRole === "user" && text) {
+        this.addUserMessage(text);
+      } else if (pendingRole && text) {
+        this.addSystemMessage(text);
       }
       pendingBuf = [];
+      pendingThoughts = [];
     };
     for (const line of lines) {
-      const m = line.match(/^## (👤 User|🤖 Assistant|🔑 System|🔧 Tool)/);
-      if (m) {
+      // renderBody (session/store.ts) writes "## 👤 User (...)" etc. — the role
+      // word follows an emoji, not "## " directly, so it must be matched
+      // anywhere in the heading rather than immediately after "## ".
+      const roleMatch = line.match(/^##\s+.*\b(User|Assistant|System|Tool)\b/);
+      const thoughtMatch = line.match(/^###\s+🧠\s+Thought(?:\s*\((\d+)s\))?/);
+      if (roleMatch) {
         flush();
-        pendingRole = m[1].includes("User") ? "user" : m[1].includes("Assistant") ? "assistant" : m[1].includes("System") ? "system" : "tool";
+        pendingRole = roleMatch[1].includes("User") ? "user" : roleMatch[1].includes("Assistant") ? "assistant" : roleMatch[1].includes("System") ? "system" : "tool";
+      } else if (thoughtMatch) {
+        flushThought();
+        inThought = true;
+        thoughtDuration = thoughtMatch[1] !== undefined ? Number(thoughtMatch[1]) : undefined;
+      } else if (line.trim() === "<!-- end-thoughts -->") {
+        flushThought(); // explicit marker — a blank line alone can't end a thought section
+      } else if (line.startsWith("<!-- oc-activity-b64:")) {
+        // Extracted separately above; never part of the message body.
       } else if (line.startsWith("#")) {
         flush();
         pendingRole = null;
+      } else if (inThought) {
+        thoughtBuf.push(line);
       } else {
         pendingBuf.push(line);
       }
@@ -873,155 +2230,210 @@ export class ChatView extends ItemView {
 
   // ---------- composer toolbar ----------
 
+  /** Last real thought_level option seen this session — kept so the thinking
+   *  button can render disabled (not hidden) when the current model doesn't
+   *  support it, instead of disappearing (see refreshToolbar). */
+  private lastThinkOption: SessionConfigOption | undefined;
+
+  /** The harness's `thought_level`-category config option, if it declares
+   *  one (falls back to a name-pattern match since `category` is optional in
+   *  the schema) — specs/002-acp-only-chat-ux R6. */
+  private findThinkingOption(): SessionConfigOption | undefined {
+    const options = this.acp?.getConfigOptions();
+    if (!options?.length) return undefined;
+    return (
+      options.find((o) => o.category === "thought_level") ??
+      options.find((o) => /think|reasoning|effort/i.test(o.name))
+    );
+  }
+
+  /** The harness's `model`-category config option, if it declares one — same
+   *  mechanism as thinking level, just a different category and rendered
+   *  with a search modal instead of a plain menu since a model list can be
+   *  long (same distinction the old BYOK model picker made). */
+  private findModelOption(): SessionConfigOption | undefined {
+    const options = this.acp?.getConfigOptions();
+    if (!options?.length) return undefined;
+    return options.find((o) => o.category === "model") ?? options.find((o) => /model/i.test(o.name));
+  }
+
+  /** Agent mode as a `SessionConfigOption{category:"mode"}` — the fallback
+   *  a harness uses when it doesn't implement ACP's dedicated
+   *  `SessionModeState` primitive. Confirmed live against opencode: its
+   *  `session/new` response carries no `modes` field at all, only a
+   *  `{id:"mode", category:"mode", type:"select", ...}` config option — so
+   *  without this fallback the agent-mode button never renders for it. */
+  private findModeOption(): SessionConfigOption | undefined {
+    const options = this.acp?.getConfigOptions();
+    if (!options?.length) return undefined;
+    return options.find((o) => o.category === "mode") ?? options.find((o) => /\bmode\b/i.test(o.name));
+  }
+
   private async refreshToolbar() {
-    const s = this.plugin.settings;
-    const active = getActiveProvider(s);
-    // model selector — title doubles as the tooltip once mobile collapses the label to an icon.
-    this.modelBtnEl.find(".oc-toolbtn-text").setText(active.model);
-    this.modelBtnEl.setAttribute("title", `Model: ${active.model}`);
-    // agent (approval) mode — icon + label track the active mode
-    const mode = AGENT_MODES.find((m) => m.id === s.mode) ?? AGENT_MODES[0];
-    setIcon(this.agentBtnEl.find(".oc-toolbtn-icon"), mode.icon);
-    this.agentBtnEl.find(".oc-toolbtn-text").setText(mode.label);
-    this.agentBtnEl.setAttribute("title", `Agent mode: ${mode.label}`);
-    // thinking level — icon + label track the active level; the option set itself
-    // depends on what the active model declares support for (see availableThinkingModes).
-    const thinkModes = this.availableThinkingModes();
-    const think = thinkModes.find((m) => m.id === s.thinkingLevel) ?? thinkModes[0];
-    this.thinkBtnEl.toggleClass("oc-toolbtn-disabled", !think);
-    setIcon(this.thinkBtnEl.find(".oc-toolbtn-icon"), think?.icon ?? "zap-off");
-    this.thinkBtnEl.find(".oc-toolbtn-text").setText(think?.label ?? "N/A");
-    this.thinkBtnEl.setAttribute("title", `Thinking: ${think?.label ?? "N/A"}`);
+    // Model — same harness-declared mechanism as agent mode/thinking level,
+    // via a "model"-category config option. No option declared = no button
+    // (FR-008 pattern), not a placeholder.
+    const modelOpt = this.findModelOption();
+    const modelValues = modelOpt?.type === "select" ? flattenSelectOptions(modelOpt.options) : [];
+    const hasModel = modelValues.length > 0;
+    this.modelBtnEl.toggleClass("oc-toolbtn-hidden", !hasModel);
+    if (hasModel && modelOpt?.type === "select") {
+      const current = modelValues.find((o) => o.value === modelOpt.currentValue) ?? modelValues[0];
+      this.modelBtnEl.find(".oc-toolbtn-text").setText(current.name);
+      this.modelBtnEl.setAttribute("title", `Model: ${current.name}`);
+    }
+
+    // Agent mode — entirely harness-declared (FR-007), via either ACP's
+    // dedicated SessionModeState or (opencode) a "mode"-category config
+    // option. No modes declared via either = no button (FR-008). Icon is
+    // per-mode-id where the id matches a well-known name (opencode's own
+    // "build"/"plan"), falling back to a generic icon for anything else —
+    // display-only, not a plugin-owned mode enum (FR-007 stays intact since
+    // the mode set/switching itself is still 100% harness-declared).
+    const modeItems = this.agentModeItems();
+    this.agentBtnEl.toggleClass("oc-toolbtn-hidden", modeItems.length === 0);
+    if (modeItems.length) {
+      const current = modeItems.find((m) => m.current) ?? modeItems[0];
+      setIcon(this.agentBtnEl.find(".oc-toolbtn-icon"), MODE_ICONS[current.id.toLowerCase()] ?? "workflow");
+      this.agentBtnEl.find(".oc-toolbtn-text").setText(current.name);
+      this.agentBtnEl.setAttribute("title", current.description ? `Agent mode: ${current.name} — ${current.description}` : `Agent mode: ${current.name}`);
+    }
+
+    // Thinking level — same mechanism, via the harness's thought_level config
+    // option. Unlike model/mode, this button is never hidden: it's always
+    // shown, greyed out (oc-toolbtn-disabled) whenever the current model/
+    // harness doesn't currently declare the option, active when it does —
+    // so it doesn't disappear/reappear as models are switched.
+    const thinkOpt = this.findThinkingOption();
+    if (thinkOpt) this.lastThinkOption = thinkOpt;
+    const shownThinkOpt = thinkOpt ?? this.lastThinkOption;
+    setIcon(this.thinkBtnEl.find(".oc-toolbtn-icon"), "brain");
+    this.thinkBtnEl.toggleClass("oc-toolbtn-hidden", false);
+    this.thinkBtnEl.toggleClass("oc-toolbtn-disabled", !thinkOpt);
+    if (shownThinkOpt) {
+      const label =
+        shownThinkOpt.type === "boolean"
+          ? shownThinkOpt.currentValue
+            ? "On"
+            : "Off"
+          : flattenSelectOptions(shownThinkOpt.options).find((o) => o.value === shownThinkOpt.currentValue)?.name ?? shownThinkOpt.currentValue;
+      this.thinkBtnEl.find(".oc-toolbtn-text").setText(label);
+      this.thinkBtnEl.setAttribute(
+        "title",
+        thinkOpt ? `${shownThinkOpt.name}: ${label}` : `${shownThinkOpt.name}: not available for the current model`,
+      );
+    } else {
+      this.thinkBtnEl.find(".oc-toolbtn-text").setText("Thinking");
+      this.thinkBtnEl.setAttribute("title", "Thinking: not available for the current model/harness");
+    }
 
     // attach button always visible (files + images)
     this.attachBtnEl.setAttribute("title", "Attach a file / image");
+    // Re-measure compression now that labels/icons may have changed (W2.2).
+    this.toolbarLayout?.refresh();
   }
 
-  /** The reasoning levels the active model actually supports (a subset of THINKING_CATALOG). */
-  private availableThinkingModes() {
-    const allowed = thinkingLevelsFor(getActiveProvider(this.plugin.settings));
-    return THINKING_CATALOG.filter((m) => allowed.includes(m.id));
+  private openModelPicker() {
+    const opt = this.findModelOption();
+    if (!opt || opt.type !== "select") {
+      new Notice("This harness hasn't declared any selectable models.");
+      return;
+    }
+    const items = flattenSelectOptions(opt.options);
+    if (!items.length) return;
+    new AcpModelSuggestModal(this.plugin.app, items, (item) => {
+      void this.acp?.setConfigOption(opt.id, item.value);
+      this.rememberConfigOverride(opt.id, item.value);
+    }).open();
   }
 
-  private async openModelPicker() {
-    const s = this.plugin.settings;
-    const items = await buildModelItems(s);
-    new ModelSuggestModal(
-      this.plugin.app,
-      items,
-      (item) => {
-        const prov = s.providers.find((p) => p.id === item.providerId);
-        if (!prov) return;
-        s.activeProviderId = prov.id;
-        prov.model = item.model;
-        this.plugin.saveSettings();
-        this.refreshToolbar();
-      },
-      (item) => {
-        const pinned = togglePinnedModel(s, item);
-        this.plugin.saveSettings();
-        return pinned;
-      }
-    ).open();
+  /** Normalizes agent mode into one shape regardless of which of ACP's two
+   *  mode mechanisms the harness uses (see findModeOption's note). */
+  private agentModeItems(): Array<{ id: string; name: string; description?: string; current: boolean }> {
+    const modes = this.acp?.getModes();
+    if (modes?.availableModes?.length) {
+      return modes.availableModes.map((m) => ({ id: m.id, name: m.name, description: m.description ?? undefined, current: m.id === modes.currentModeId }));
+    }
+    const opt = this.findModeOption();
+    if (opt?.type === "select") {
+      return flattenSelectOptions(opt.options).map((o) => ({ id: o.value, name: o.name, description: o.description ?? undefined, current: o.value === opt.currentValue }));
+    }
+    return [];
   }
 
   private showAgentMenu() {
-    const s = this.plugin.settings;
-    this.showModePopover(this.agentBtnEl, AGENT_MODES, s.mode, (m) => {
-      s.mode = m.id;
-      if (m.id !== "research") s.approvalMode = m.id;
-      this.plugin.saveSettings();
-      this.refreshToolbar();
-      this.addSystemMessage(`Agent mode: ${m.label} — ${m.desc}`);
+    const items = this.agentModeItems();
+    if (!items.length) return;
+    const current = items.find((m) => m.current)?.id;
+    const modes = this.acp?.getModes();
+    openAcpPickerMenu(this.agentBtnEl, items, current, (item) => {
+      if (modes) void this.acp?.setMode(item.id);
+      else void this.acp?.setConfigOption(this.findModeOption()!.id, item.id);
+      this.rememberConfigOverride("mode", item.id);
     });
   }
 
   private showThinkingMenu() {
-    const s = this.plugin.settings;
-    const modes = this.availableThinkingModes();
-    if (!modes.length) {
-      new Notice("This model doesn't support extended reasoning.");
+    const opt = this.findThinkingOption();
+    if (!opt) {
+      new Notice(`${this.lastThinkOption?.name ?? "Thinking"} isn't available for the current model.`);
       return;
     }
-    this.showModePopover(this.thinkBtnEl, modes, s.thinkingLevel, (m) => {
-      s.thinkingLevel = m.id;
-      this.plugin.saveSettings();
-      this.refreshToolbar();
+    if (opt.type === "boolean") {
+      const next = !opt.currentValue;
+      void this.acp?.setConfigOption(opt.id, next);
+      this.rememberConfigOverride(opt.id, next);
+      return;
+    }
+    const items = flattenSelectOptions(opt.options).map((o) => ({ id: o.value, name: o.name }));
+    if (!items.length) return;
+    openAcpPickerMenu(this.thinkBtnEl, items, opt.currentValue, (item) => {
+      void this.acp?.setConfigOption(opt.id, item.id);
+      this.rememberConfigOverride(opt.id, item.id);
     });
   }
 
-  /** Shared icon+title+description popover used by both the Agent and Thinking selectors. */
-  private showModePopover<T extends string>(
-    anchorEl: HTMLElement,
-    modes: { id: T; icon: string; label: string; desc: string }[],
-    currentId: T,
-    onSelect: (mode: { id: T; icon: string; label: string; desc: string }) => void,
-  ) {
-    this.hideModePopover();
-    const btnRect = anchorEl.getBoundingClientRect();
-    const hostRect = this.contentEl.getBoundingClientRect();
-    const pop = this.contentEl.createDiv({ cls: "oc-agent-popover" });
-    this.modePopoverEl = pop;
-    pop.style.right = `${Math.max(14, hostRect.right - btnRect.right)}px`;
-    pop.style.bottom = `${hostRect.bottom - btnRect.top + 8}px`;
-
-    for (const m of modes) {
-      const sel = m.id === currentId;
-      const item = pop.createDiv({ cls: "oc-agent-item" + (sel ? " sel" : "") });
-      setIcon(item.createDiv({ cls: "oc-agent-item-icon" }), m.icon);
-      const body = item.createDiv({ cls: "oc-agent-item-body" });
-      body.createDiv({ cls: "oc-agent-item-title", text: m.label });
-      body.createDiv({ cls: "oc-agent-item-desc", text: m.desc });
-      if (sel) setIcon(item.createDiv({ cls: "oc-agent-item-check" }), "check");
-      item.addEventListener("click", () => {
-        this.hideModePopover();
-        onSelect(m);
-      });
-    }
-
-    const onDocMouseDown = (ev: MouseEvent) => {
-      const t = ev.target as Node;
-      if (!pop.contains(t) && !anchorEl.contains(t)) this.hideModePopover();
-    };
-    const onEsc = (ev: KeyboardEvent) => {
-      if (ev.key === "Escape") this.hideModePopover();
-    };
-    setTimeout(() => {
-      document.addEventListener("mousedown", onDocMouseDown);
-      document.addEventListener("keydown", onEsc);
-    }, 0);
-    this.modePopoverCleanup = () => {
-      document.removeEventListener("mousedown", onDocMouseDown);
-      document.removeEventListener("keydown", onEsc);
-    };
+  /** Persists the user's choice (specs/002-acp-only-chat-ux) so the next
+   *  session opens on the same model/mode/thinking level instead of
+   *  whatever the harness's own raw default is — reapplied in
+   *  applyConfigOverrides() right after connect(). Session-scoped only:
+   *  a harness with no matching option simply ignores an unknown id. */
+  private rememberConfigOverride(optionId: string, value: string | boolean) {
+    this.plugin.settings.acpConfigOverrides = { ...this.plugin.settings.acpConfigOverrides, [optionId]: value };
+    void this.plugin.saveSettings();
   }
 
-  private hideModePopover() {
-    if (this.modePopoverEl) {
-      this.modePopoverEl.remove();
-      this.modePopoverEl = null;
+  /** Reapplies last-picked config options to a freshly connected session —
+   *  called once per connect(), not on every turn, since setConfigOption is
+   *  otherwise session-scoped only (data-model.md correction: the harness
+   *  doesn't remember a plugin's prior choice across sessions on its own). */
+  private async applyConfigOverrides() {
+    const overrides = this.plugin.settings.acpConfigOverrides;
+    if (!overrides) return;
+    const options = this.acp?.getConfigOptions() ?? [];
+    for (const [optionId, value] of Object.entries(overrides)) {
+      if (optionId === "mode" && !options.some((o) => o.id === "mode")) {
+        const modes = this.acp?.getModes();
+        if (modes?.availableModes?.some((m) => m.id === value)) await this.acp?.setMode(String(value));
+        continue;
+      }
+      if (options.some((o) => o.id === optionId)) await this.acp?.setConfigOption(optionId, value);
     }
-    if (this.modePopoverCleanup) {
-      this.modePopoverCleanup();
-      this.modePopoverCleanup = null;
-    }
-  }
-
-  private enabledToolDefinitions() {
-    const all = this.plugin.tools.definitions();
-    const en = this.plugin.settings.enabledTools;
-    return en.length ? all.filter((t) => en.includes(t.name)) : all;
   }
 
   // ---------- @-mention / attach ----------
 
-  /** Detect an in-progress `@query` token at the end of the message. Value-based
-   *  (no `selectionStart` dependency) so it works exactly like the `/` slash menu. */
-  private activeMention(): { at: number; query: string } | null {
+  /** Detect an in-progress `@query` or `[[query` token at the end of the
+   *  message. Value-based (no `selectionStart` dependency) so it behaves
+   *  exactly like the `/` slash menu. `wikilink` marks the `[[` trigger, which
+   *  inserts a note reference without attaching its content (W3.6). */
+  private activeMention(): { at: number; query: string; wikilink: boolean } | null {
     const val = this.composerEl.value;
     const m = val.match(/(?:^|[\s([{.,;:!?])@([^\s@\[\]]*)$/);
-    if (!m) return null;
-    return { at: val.length - m[1].length - 1, query: m[1] };
+    if (m) return { at: val.length - m[1].length - 1, query: m[1], wikilink: false };
+    const w = val.match(/\[\[([^\]\n]*)$/);
+    if (w) return { at: val.length - w[1].length - 2, query: w[1], wikilink: true };
+    return null;
   }
 
   /** All vault notes + image attachments, recent-first, for the native file-search modal. */
@@ -1054,17 +2466,20 @@ export class ChatView extends ItemView {
       return;
     }
     this.mentionArmed = false;
-    const end = act.at + 1 + act.query.length;
-    new NoteMentionModal(this.plugin.app, items, (item) => this.applyMention(item, act.at, end)).open();
+    const end = act.wikilink ? act.at + 2 + act.query.length : act.at + 1 + act.query.length;
+    new NoteMentionModal(this.plugin.app, items, (item) => this.applyMention(item, act.at, end, act.wikilink)).open();
   }
 
-  /** Apply a chosen mention: insert a [[wikilink]] (note) or attach an image. */
-  private applyMention(item: MentionItem, start: number, end: number) {
+  /** Apply a chosen mention: insert a `[[wikilink]]` (note) or attach an image.
+   *  `[[`-triggered links are recorded as reference-only so the note is offered
+   *  to the agent by path rather than force-attached (W3.6). */
+  private applyMention(item: MentionItem, start: number, end: number, wikilink = false) {
     if (item.kind === "image") {
-      this.replaceComposerRange(start, end, "");
-      void this.mentionImage(item.path);
+      this.replaceComposerRange(start, end, wikilink ? `![[${item.path}]]` : "");
+      if (!wikilink) void this.mentionImage(item.path);
     } else {
       this.replaceComposerRange(start, end, `[[${item.link}]]`);
+      if (wikilink) this.referenceOnlyLinks.add(item.link);
     }
     this.mentionArmed = true;
     this.composerEl.focus();
@@ -1090,20 +2505,29 @@ export class ChatView extends ItemView {
     this.composerEl.style.height = Math.min(this.composerEl.scrollHeight, 240) + "px";
   }
 
-  // ---------- slash commands ----------
+  // ---------- slash commands (specs/002-acp-only-chat-ux User Story 5) ----------
 
-  private static COMMANDS = [
+  /** Fixed, plugin-local commands — always available, never sent to the
+   *  harness. Everything else the "/" menu offers comes from the connected
+   *  harness's declared `AvailableCommand`s (research.md R7). */
+  private static LOCAL_COMMANDS = [
     { name: "/clear", hint: "Start a new session" },
-    { name: "/web", hint: "Search the web (Tavily) — e.g. /web latest Tailscale news" },
     { name: "/help", hint: "Show available commands" },
   ];
+
+  /** Merges the fixed local commands with whatever the connected harness
+   *  currently declares, live (`available_commands_update`). */
+  private allSlashCommands(): { name: string; hint: string }[] {
+    const dynamic = (this.acp?.getCommands() ?? []).map((c) => ({ name: `/${c.name}`, hint: c.description ?? "" }));
+    return [...ChatView.LOCAL_COMMANDS, ...dynamic];
+  }
 
   private updateSlashMenu() {
     const val = this.composerEl.value;
     this.hideSlash();
     if (!val.startsWith("/") || val.includes("\n")) return;
     const first = val.trim().split(" ")[0];
-    const filtered = ChatView.COMMANDS.filter((c) => c.name.startsWith(first));
+    const filtered = this.allSlashCommands().filter((c) => c.name.startsWith(first));
     if (!filtered.length) return;
     const menu = this.contentEl.createDiv({ cls: "oc-slash" });
     this.slashMenuEl = menu;
@@ -1132,7 +2556,7 @@ export class ChatView extends ItemView {
     const items = this.slashMenuEl?.querySelectorAll(".oc-slash-item");
     if (!items?.length) return;
     const name = items[idx].querySelector(".oc-slash-name")?.textContent ?? "";
-    const cmd = ChatView.COMMANDS.find((c) => c.name === name);
+    const cmd = this.allSlashCommands().find((c) => c.name === name);
     if (cmd) this.runSlashCommand(cmd);
   }
 
@@ -1145,38 +2569,23 @@ export class ChatView extends ItemView {
 
   private runSlashCommand(cmd: { name: string; hint: string }) {
     this.hideSlash();
-    switch (cmd.name) {
-      case "/clear":
-        this.newSession();
-        this.composerEl.value = "";
-        break;
-      case "/web": {
-        const rest = this.composerEl.value.replace("/web", "").trim();
-        this.composerEl.value = "";
-        if (!rest) return this.addSystemMessage("type a query after /web");
-        void this.startWebSearch(rest);
-        break;
-      }
-      case "/help":
-        this.addSystemMessage(ChatView.COMMANDS.map((c) => `${c.name} — ${c.hint}`).join("\n"));
-        this.composerEl.value = "";
-        break;
+    if (cmd.name === "/clear") {
+      this.newSession();
+      this.composerEl.value = "";
+      return;
     }
-  }
-
-  private async startWebSearch(query: string) {
-    this.streaming = true;
-    this.addUserMessage(`/web ${query}`);
-    try {
-      const res = await this.plugin.tools.exec("web_search", { query }, this.plugin.index);
-      this.addToolRow("web_search", query, "ok");
-      const md = this.beginAssistantMessage();
-      renderMarkdown(this.plugin.app, md, res.ok ? `Found results for **${query}**:\n\n${res.output}` : res.output, this.sessionPath, this).catch(() => {});
-    } catch (err) {
-      this.addToolRow("error", String((err as Error).message ?? err), "error");
-    } finally {
-      this.streaming = false;
+    if (cmd.name === "/help") {
+      this.addSystemMessage(this.allSlashCommands().map((c) => `${c.name} — ${c.hint}`).join("\n"));
+      this.composerEl.value = "";
+      return;
     }
+    // A harness-declared command — the plugin doesn't execute it itself; fill
+    // it into the composer so the user can add input, then send normally
+    // (the harness interprets the "/" syntax in the prompt text — see send()).
+    this.composerEl.value = `${cmd.name} `;
+    this.composerEl.focus();
+    const len = this.composerEl.value.length;
+    this.composerEl.setSelectionRange(len, len);
   }
 
   private setStatus(txt: string) {
@@ -1184,7 +2593,8 @@ export class ChatView extends ItemView {
   }
 
   async onClose() {
-    this.hideModePopover();
+    this.toolbarLayout?.destroy();
+    this.toolbarLayout = null;
     if (this.acp) await this.acp.close().catch(() => {});
   }
 }
