@@ -348,7 +348,12 @@ What each action maps to over Tailscale + HTTPS:
 - **Exit:** it's the tool you actually live in; no known data-loss or credential-leak issues.
 
 ### Phase 6 — Public release (deferred, when/if wanted)
-- Marketplace compliance work deferred from old G2: remote-code ruling on gateway+managed-binary, permissions minimization, disclosure copy, harness packaging decision (standalone vs LRA-style extension).
+- Marketplace compliance work deferred from old G2: remote-code ruling on gateway+managed-binary, permissions minimization, disclosure copy, harness packaging decision (standalone vs LRA-style extension **vs Docker image** — see consideration below).
+- **Harness packaging — Docker option (consideration, 2026-09-18; prompted by the sibling `obsidian-bookmarks` project adopting a container-first backend).** For a distributable release, ship the harness as a Docker image the plugin attaches to via URL + token, instead of a per-OS launchd/systemd install. This is the model Karakeep and similar self-hosted tools use, and it removes the "hidden per-OS install + always-on Obsidian" burden. Fit is **partial, not clean**, unlike bookmarks:
+  - **Containerizes cleanly:** the gateway daemon + `mcp-rules-proxy.mjs` (pure Node, no host-specific deps).
+  - **Fights the current design:** ACP workers are *user-installed, separately-credentialed* CLIs (opencode/Pi/Claude Code/Gemini/Goose) spawned as the configured command per Principle III; and keys live in the **OS keychain** (§2.7). Baking a specific agent into the image contradicts harness-agnosticism, and the keychain model has no container equivalent (would need mounted secrets / env injection).
+  - **Host reach:** the worker talks to the host's Obsidian Local REST API at `127.0.0.1:27124`; from a container that needs host networking or a bridge, and LRA is only alive while Obsidian runs on that host anyway.
+  - **Candidate shapes to evaluate in Phase 6:** (a) container = gateway+proxy only, agents + LRA stay on the host; (b) "batteries-included" image bundling one default agent (e.g. opencode) as a convenience while still allowing an external configured command; (c) keep launchd as the primary personal deployment, offer Docker only as a release-time distribution alternative. No decision now — recorded so the bookmarks precedent is on the table when this phase is picked up.
 - Community submission package: manifest, docs site, privacy page, screenshots, GIF demo.
 - Accessibility pass, i18n readiness (strings externalized), BRAT beta → feedback loop → 1.0.
 - **Exit:** published with Health and Review both >3/4 (your stated bar).

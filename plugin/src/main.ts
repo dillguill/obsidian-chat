@@ -8,12 +8,52 @@ import { join, delimiter } from "path";
 import { ChatView, VIEW_TYPE_CHAT } from "./ui/chat-view";
 import { ObsidianChatSettingTab, DEFAULT_SETTINGS, type ObsidianChatSettings } from "./settings";
 import { VaultIndex } from "./retrieval/index";
+import { AcpBridgeClient } from "./acp/client";
 
 export default class ObsidianChatPlugin extends Plugin {
   settings: ObsidianChatSettings = DEFAULT_SETTINGS;
   index!: VaultIndex;
   private mcpProxyProc: ChildProcessWithoutNullStreams | null = null;
   private bridgeProc: ChildProcessWithoutNullStreams | null = null;
+
+  /** The ACP session outlives any single chat view. Closing the tab — or
+   *  Obsidian re-laying out the workspace, which destroys and rebuilds the
+   *  view — must not end the conversation on the harness, so the client is
+   *  owned here and views merely subscribe to it. */
+  private acpClient: AcpBridgeClient | null = null;
+  private acpClientConfig: { baseUrl: string; token: string } | null = null;
+  /** Note backing the live session, so a reopened view can restore its
+   *  transcript instead of coming back blank in front of a live session. */
+  currentSessionPath: string | null = null;
+
+  /** The shared ACP client, rebuilt if the bridge settings changed under it. */
+  acp(): AcpBridgeClient {
+    const { baseUrl, token } = this.settings.gateway;
+    if (this.acpClient && (this.acpClientConfig?.baseUrl !== baseUrl || this.acpClientConfig?.token !== token)) {
+      void this.acpClient.close().catch(() => {});
+      this.acpClient = null;
+    }
+    if (!this.acpClient) {
+      this.acpClient = new AcpBridgeClient({ baseUrl, token });
+      this.acpClientConfig = { baseUrl, token };
+    }
+    return this.acpClient;
+  }
+
+  /** True when a conversation is live on the harness right now. */
+  hasLiveAcpSession(): boolean {
+    return !!this.acpClient?.getSessionId();
+  }
+
+  /** Ends the harness-side session for good — explicit "New session", or
+   *  plugin unload. Ordinary view teardown must NOT call this. */
+  async closeAcpSession(): Promise<void> {
+    const client = this.acpClient;
+    this.acpClient = null;
+    this.acpClientConfig = null;
+    this.currentSessionPath = null;
+    if (client) await client.close().catch(() => {});
+  }
 
   /** Re-applies view-scoped settings (density) to every open chat view (W6.9). */
   refreshOpenChatViews(): void {
@@ -149,6 +189,7 @@ export default class ObsidianChatPlugin extends Plugin {
   }
 
   onunload() {
+    void this.closeAcpSession();
     this.stopHostedHarness();
   }
 

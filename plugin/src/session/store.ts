@@ -3,7 +3,7 @@
  *  conversation. Everything is Markdown so Obsidian Sync, Graph View, and
  *  Dataview work for free. No `model`/`provider` field — the plugin is an
  *  ACP client and doesn't know this (Constitution Principle II). */
-import type { ActivityItem, ChatMessage } from "../chat/types";
+import type { ActivityItem, ChatMessage, Role } from "../chat/types";
 
 export interface SessionMeta {
   created: number;
@@ -61,8 +61,146 @@ export function renderBody(title: string, messages: ChatMessage[]): string {
     }
     lines.push("");
   }
+  // The prose above is for humans. The canonical record is this one block:
+  // `parseSessionNote` reads it back byte-exact, so reopening a session never
+  // depends on re-parsing rendered Markdown (which a heading inside an
+  // assistant reply would otherwise break).
+  lines.push(`<!-- ${TRANSCRIPT_MARKER}: ${base64Encode(JSON.stringify({ v: 1, messages: messages.map(withoutImageData) }))} -->`, "");
   return lines.join("\n");
 }
+
+/** Reads the transcript back out of a session note — the canonical block when
+ *  the note has one, otherwise a best-effort parse of the rendered prose so
+ *  notes written before the canonical block still reopen (and so a
+ *  hand-edited note is not silently read as empty). */
+export function parseSessionNote(body: string): ChatMessage[] {
+  const match = body.match(new RegExp(`<!-- ${TRANSCRIPT_MARKER}: ([A-Za-z0-9+/=]+) -->`));
+  if (match) {
+    try {
+      const parsed = JSON.parse(base64Decode(match[1])) as { messages?: ChatMessage[] };
+      if (Array.isArray(parsed.messages)) return parsed.messages;
+    } catch {
+      // Malformed canonical block — fall through to the prose parser rather
+      // than reporting the conversation as empty.
+    }
+  }
+  return parseLegacyNote(body);
+}
+
+/** Role headings exactly as `renderBody` writes them. Matching the emoji+word
+ *  pair (not a bare `\bAssistant\b` anywhere in an `##` line) is what keeps a
+ *  reply that happens to contain `## Assistant behaviour` from being read as
+ *  the start of a new message. */
+const LEGACY_ROLES: Record<string, Role> = {
+  "👤 User": "user",
+  "🤖 Assistant": "assistant",
+  "🔑 System": "system",
+  "🔧 Tool": "tool",
+};
+const LEGACY_ROLE_RE = /^##\s+(👤 User|🤖 Assistant|🔑 System|🔧 Tool)\s*\(/;
+const LEGACY_THOUGHT_RE = /^###\s+🧠\s+Thought(?:\s*\((\d+)s\))?\s*$/;
+const LEGACY_ACTIVITY_RE = /^<!-- oc-activity-b64: ([A-Za-z0-9+/=]+) -->$/;
+
+/** Parses the human-readable body. Only a real role heading ends a message —
+ *  ordinary `#`/`##`/`###` headings are content, which is what a Markdown
+ *  answer is full of. */
+function parseLegacyNote(body: string): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  let role: Role | null = null;
+  let buf: string[] = [];
+  let reasoning: { text: string; durationSeconds?: number }[] = [];
+  let activity: ActivityItem[] | null = null;
+  let inThought = false;
+  let thoughtDuration: number | undefined;
+  let thoughtBuf: string[] = [];
+
+  const flushThought = () => {
+    if (!inThought) return;
+    const text = thoughtBuf.join("\n").trim();
+    if (text) reasoning.push(thoughtDuration !== undefined ? { text, durationSeconds: thoughtDuration } : { text });
+    thoughtBuf = [];
+    thoughtDuration = undefined;
+    inThought = false;
+  };
+
+  const flush = () => {
+    flushThought();
+    const content = buf.join("\n").trim();
+    if (role && (content || reasoning.length || activity?.length)) {
+      const message: ChatMessage = { role, content };
+      if (reasoning.length) message.reasoning = reasoning;
+      if (activity?.length) message.activity = activity;
+      out.push(message);
+    }
+    buf = [];
+    reasoning = [];
+    activity = null;
+  };
+
+  for (const line of body.split("\n")) {
+    const roleMatch = line.match(LEGACY_ROLE_RE);
+    if (roleMatch) {
+      flush();
+      role = LEGACY_ROLES[roleMatch[1]];
+      continue;
+    }
+    if (role === null) continue; // preamble before the first role heading (the `# Title`)
+    const thoughtMatch = line.match(LEGACY_THOUGHT_RE);
+    if (thoughtMatch) {
+      flushThought();
+      inThought = true;
+      thoughtDuration = thoughtMatch[1] !== undefined ? Number(thoughtMatch[1]) : undefined;
+      continue;
+    }
+    if (line.trim() === "<!-- end-thoughts -->") {
+      flushThought(); // explicit marker — a blank line alone can't end a thought
+      continue;
+    }
+    const activityMatch = line.match(LEGACY_ACTIVITY_RE);
+    if (activityMatch) {
+      // Decoded where it appears, so a turn that made no tool calls can't be
+      // handed the next turn's trail.
+      activity = decodeActivity(activityMatch[1]);
+      continue;
+    }
+    if (inThought) thoughtBuf.push(line);
+    else buf.push(line);
+  }
+  flush();
+  return out;
+}
+
+/** Image bytes never go into the note — they would bloat it by megabytes and
+ *  put user content in the vault in a form nothing can read. The attachment's
+ *  name and type are kept so a reopened session can still show a placeholder. */
+function withoutImageData(message: ChatMessage): ChatMessage {
+  if (!message.images?.length) return message;
+  return { ...message, images: message.images.map((img) => ({ ...img, dataUrl: "" })) };
+}
+
+/** Reads back what `metaToFrontmatter` wrote. `null` when the note has no
+ *  frontmatter, so callers can tell "new note" from "created at epoch".
+ *  Second precision only — `fmt` does not record milliseconds. */
+export function parseSessionMeta(body: string): SessionMeta | null {
+  const match = body.match(/^---\n([\s\S]*?)\n---/);
+  if (!match) return null;
+  const field = (name: string) => match[1].match(new RegExp(`^${name}:\\s*(.+)$`, "m"))?.[1]?.trim();
+  const created = parseStamp(field("created"));
+  const updated = parseStamp(field("updated"));
+  const tokens = Number(field("tokens"));
+  if (created === null || updated === null || !Number.isFinite(tokens)) return null;
+  return { created, updated, tokens };
+}
+
+/** Inverse of `fmt` — local time, matching how it was written. */
+function parseStamp(value: string | undefined): number | null {
+  const m = value?.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [, y, mo, d, hh, mm, ss] = m.map(Number) as unknown as number[];
+  return new Date(y, mo - 1, d, hh, mm, ss).getTime();
+}
+
+const TRANSCRIPT_MARKER = "oc-transcript-b64";
 
 /** Compute an approximate token count (chars/4) for the meter. */
 export function approxTokens(messages: ChatMessage[]): number {
@@ -94,15 +232,4 @@ function decodeActivity(b64: string): ActivityItem[] | null {
   } catch {
     return null;
   }
-}
-
-/** Every stored activity trail in a session body, in note order (W7.4). */
-export function extractActivityTrails(body: string): ActivityItem[][] {
-  const out: ActivityItem[][] = [];
-  const re = /<!-- oc-activity-b64: ([A-Za-z0-9+/=]+) -->/g;
-  for (const match of body.matchAll(re)) {
-    const items = decodeActivity(match[1]);
-    if (items?.length) out.push(items);
-  }
-  return out;
 }

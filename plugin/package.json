@@ -2,11 +2,13 @@
   "name": "obsidian-chat-plugin",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Obsidian plugin — vault-native AI workspace (see PLAN.md)",
   "license": "MIT",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production"
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "test": "node --test 'src/**/*.test.ts'"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",

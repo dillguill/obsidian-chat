@@ -11,7 +11,7 @@ import type { ContentBlock } from "@agentclientprotocol/sdk";
 import { extractWikilinks } from "../chat/ground";
 import type { VaultIndex } from "../retrieval/index";
 import { renderMarkdown } from "./markdown";
-import { metaToFrontmatter, renderBody, approxTokens, extractActivityTrails } from "../session/store";
+import { metaToFrontmatter, renderBody, approxTokens, parseSessionNote, parseSessionMeta } from "../session/store";
 import { renderApprovalCard, type WritePreview } from "./approval";
 import { SessionSuggestModal } from "./session-suggest";
 import { vaultFileDataUrl, VaultImagePickModal, IMAGE_EXT } from "./image-picker";
@@ -133,6 +133,8 @@ function capacitorKeyboard(): CapacitorKeyboard | undefined {
 
 export class ChatView extends ItemView {
   private acp: AcpBridgeClient | null = null;
+  /** Teardown for the listeners this view registered on the shared client. */
+  private acpUnsubscribers: (() => void)[] = [];
   /** Local transcript for the ACP path (the harness owns session state; this
    *  is only for sessions-as-notes persistence — data-model.md Session). */
   private acpHistory: ChatMessage[] = [];
@@ -180,6 +182,8 @@ export class ChatView extends ItemView {
   /** Newest assistant block — the only one offering Regenerate (W7.8). */
   private lastAssistantBlockEl: HTMLElement | null = null;
   private sessionPath = "";
+  /** `created` of the note at `sessionPath`, so re-saving never restamps it. */
+  private sessionCreated: number | null = null;
   private streaming = false;
   private citations: string[] = [];
 
@@ -423,6 +427,13 @@ export class ChatView extends ItemView {
       .connect()
       .then(() => this.refreshToolbar())
       .catch(() => {});
+    // Reopening the view while a session is still live must show that
+    // conversation, not an empty transcript in front of an agent that
+    // remembers everything.
+    if (this.plugin.hasLiveAcpSession() && this.plugin.currentSessionPath) {
+      await this.loadSession(this.plugin.currentSessionPath);
+      return;
+    }
     this.showWelcome();
   }
 
@@ -1803,22 +1814,31 @@ export class ChatView extends ItemView {
     if (this.acp) await this.acp.cancel();
   }
 
-  /** Lazily constructs the ACP client and wires its listeners, without
-   *  connecting — safe to call repeatedly (idempotent). */
+  /** Borrows the plugin-owned ACP client and wires this view's listeners,
+   *  without connecting — safe to call repeatedly (idempotent). The client
+   *  itself is NOT owned here: it outlives the view (see `detachAcp`). */
   private ensureAcp(): AcpBridgeClient {
     if (!this.acp) {
-      const s = this.plugin.settings;
-      this.acp = new AcpBridgeClient({ baseUrl: s.gateway.baseUrl, token: s.gateway.token });
-      this.acp.onEvent((e) => this.handleStreamEvent(e));
-      this.acp.onPermissionRequest((p) => void this.handlePermissionRequest(p));
-      // Agent mode / thinking level / "/" commands are entirely harness-declared
-      // (specs/002-acp-only-chat-ux R5/R6/R7) — re-render whenever they change.
-      this.acp.onStateChange(() => {
-        this.refreshToolbar();
-        this.updateConnection();
-      });
+      this.acp = this.plugin.acp();
+      this.acpUnsubscribers.push(
+        this.acp.onEvent((e) => this.handleStreamEvent(e)),
+        this.acp.onPermissionRequest((p) => void this.handlePermissionRequest(p)),
+        // Agent mode / thinking level / "/" commands are entirely harness-declared
+        // (specs/002-acp-only-chat-ux R5/R6/R7) — re-render whenever they change.
+        this.acp.onStateChange(() => {
+          this.refreshToolbar();
+          this.updateConnection();
+        }),
+      );
     }
     return this.acp;
+  }
+
+  /** Drops this view's subscriptions without touching the session. */
+  private detachAcp(): void {
+    for (const unsubscribe of this.acpUnsubscribers) unsubscribe();
+    this.acpUnsubscribers = [];
+    this.acp = null;
   }
 
   /** Sends one turn over ACP (contracts/plugin-bridge-acp.md). Unlike the old
@@ -2103,15 +2123,20 @@ export class ChatView extends ItemView {
     }
     // No `model`/`provider` field — the plugin doesn't know this in the ACP
     // world (Constitution Principle II; data-model.md Session).
+    // `created` is the session's own birthday, so it is kept across re-saves
+    // (and across a reopen, where loadSession reads it back from the note).
+    const now = Date.now();
+    this.sessionCreated ??= now;
     const meta = {
-      created: Date.now(),
-      updated: Date.now(),
+      created: this.sessionCreated,
+      updated: now,
       tokens: approxTokens(messages),
     };
     const body = metaToFrontmatter(meta) + "\n" + renderBody("Chat session", messages);
     const f = this.plugin.app.vault.getAbstractFileByPath(this.sessionPath);
     if (f instanceof TFile) await this.plugin.app.vault.modify(f, body);
     else await this.plugin.app.vault.create(this.sessionPath, body);
+    this.plugin.currentSessionPath = this.sessionPath;
   }
 
   private async newSession() {
@@ -2124,11 +2149,10 @@ export class ChatView extends ItemView {
     this.messagesEl.empty();
     this.renderChips([]);
     this.sessionPath = "";
+    this.sessionCreated = null;
     this.acpHistory = [];
-    if (this.acp) {
-      await this.acp.close();
-      this.acp = null;
-    }
+    this.detachAcp();
+    await this.plugin.closeAcpSession();
     await this.refreshToolbar(); // hide mode/thinking controls until the new session reconnects
     void this.ensureAcp()
       .connect()
@@ -2152,80 +2176,60 @@ export class ChatView extends ItemView {
     new SessionSuggestModal(this.plugin.app, sessions, (f) => this.loadSession(f.path)).open();
   }
 
+  /** Reopens a saved session note. This rebuilds BOTH the visible transcript
+   *  and `acpHistory` — without the latter, the next turn would persist only
+   *  itself and overwrite the reopened note.
+   *
+   *  Note that this restores the *record*, not the agent's memory: the harness
+   *  session behind a reopened note is gone, so the agent does not have this
+   *  conversation in context. Resuming it (ACP `session/load`/`session/resume`)
+   *  is tracked in docs/TODO-session-continuity.md. */
   private async loadSession(path: string) {
     const f = this.plugin.app.vault.getAbstractFileByPath(path);
     if (!(f instanceof TFile)) return;
     const body = await this.plugin.app.vault.cachedRead(f);
+    const messages = parseSessionNote(body);
+    // Until ACP resumption lands (docs/TODO-session-continuity.md) a reopened
+    // note cannot be rejoined on the harness. Opening a *different*
+    // conversation therefore ends the live one — otherwise the next turn would
+    // append to this note while the agent is still holding another
+    // conversation in context.
+    const replacedLiveSession = this.plugin.currentSessionPath !== path && this.plugin.hasLiveAcpSession();
+    if (replacedLiveSession) {
+      this.detachAcp();
+      await this.plugin.closeAcpSession();
+    }
     this.messagesEl.empty();
     this.sessionPath = path;
-    // Parse the saved body into display blocks; honor # title, ## role (time),
-    // and — nested under a role — ### 🧠 Thought (Ns) sections (US4/FR-010).
-    const lines = body.split("\n");
-    let pendingRole: ChatMessage["role"] | null = null;
-    let pendingBuf: string[] = [];
-    let pendingThoughts: { text: string; durationSeconds?: number }[] = [];
-    let inThought = false;
-    let thoughtDuration: number | undefined;
-    let thoughtBuf: string[] = [];
-    // Stored activity trails are consumed in note order, one per assistant turn (W7.4).
-    const activityTrails = extractActivityTrails(body);
-    let activityIdx = 0;
-
-    const flushThought = () => {
-      if (!inThought) return;
-      const text = thoughtBuf.join("\n").trim();
-      if (text) pendingThoughts.push({ text, durationSeconds: thoughtDuration });
-      thoughtBuf = [];
-      inThought = false;
-    };
-    const flush = () => {
-      flushThought();
-      const text = pendingBuf.join("\n").trim();
-      if (pendingRole === "assistant") {
-        for (const t of pendingThoughts) this.renderStoredThought(t.text, t.durationSeconds);
-        const trail = activityTrails[activityIdx++];
-        if (trail?.length) this.renderStoredActivity(trail);
-        if (text) {
-          const md = this.beginAssistantMessage();
-          renderMarkdown(this.plugin.app, md, text, this.sessionPath, this).catch(() => md.setText(text));
-        }
-        this.markRegenerable(this.lastAssistantBlockEl);
-      } else if (pendingRole === "user" && text) {
-        this.addUserMessage(text);
-      } else if (pendingRole && text) {
-        this.addSystemMessage(text);
-      }
-      pendingBuf = [];
-      pendingThoughts = [];
-    };
-    for (const line of lines) {
-      // renderBody (session/store.ts) writes "## 👤 User (...)" etc. — the role
-      // word follows an emoji, not "## " directly, so it must be matched
-      // anywhere in the heading rather than immediately after "## ".
-      const roleMatch = line.match(/^##\s+.*\b(User|Assistant|System|Tool)\b/);
-      const thoughtMatch = line.match(/^###\s+🧠\s+Thought(?:\s*\((\d+)s\))?/);
-      if (roleMatch) {
-        flush();
-        pendingRole = roleMatch[1].includes("User") ? "user" : roleMatch[1].includes("Assistant") ? "assistant" : roleMatch[1].includes("System") ? "system" : "tool";
-      } else if (thoughtMatch) {
-        flushThought();
-        inThought = true;
-        thoughtDuration = thoughtMatch[1] !== undefined ? Number(thoughtMatch[1]) : undefined;
-      } else if (line.trim() === "<!-- end-thoughts -->") {
-        flushThought(); // explicit marker — a blank line alone can't end a thought section
-      } else if (line.startsWith("<!-- oc-activity-b64:")) {
-        // Extracted separately above; never part of the message body.
-      } else if (line.startsWith("#")) {
-        flush();
-        pendingRole = null;
-      } else if (inThought) {
-        thoughtBuf.push(line);
-      } else {
-        pendingBuf.push(line);
-      }
-    }
-    flush();
+    this.sessionCreated = parseSessionMeta(body)?.created ?? null;
+    this.acpHistory = messages;
+    for (const message of messages) this.renderStoredMessage(message);
+    if (replacedLiveSession) this.addSystemMessage("Reopened. The agent doesn't have this conversation in context yet.");
     this.scrollToBottom();
+  }
+
+  /** Renders one persisted message back into the transcript, with thoughts
+   *  (FR-010) and activity (W7.4) restored collapsed. */
+  private renderStoredMessage(message: ChatMessage): void {
+    if (message.role === "assistant") {
+      for (const r of message.reasoning ?? []) this.renderStoredThought(r.text, r.durationSeconds);
+      if (message.activity?.length) this.renderStoredActivity(message.activity);
+      if (message.content) {
+        const md = this.beginAssistantMessage();
+        renderMarkdown(this.plugin.app, md, message.content, this.sessionPath, this).catch(() =>
+          md.setText(message.content),
+        );
+      }
+      this.markRegenerable(this.lastAssistantBlockEl);
+      return;
+    }
+    if (message.role === "user") {
+      // Image bytes are deliberately not persisted (session/store.ts), so only
+      // attachments that still carry data can be shown.
+      this.addUserMessage(message.content, message.images?.filter((img) => img.dataUrl));
+      return;
+    }
+    if (message.content) this.addSystemMessage(message.content);
   }
 
   // ---------- composer toolbar ----------
@@ -2595,6 +2599,10 @@ export class ChatView extends ItemView {
   async onClose() {
     this.toolbarLayout?.destroy();
     this.toolbarLayout = null;
-    if (this.acp) await this.acp.close().catch(() => {});
+    // The harness session deliberately outlives this view: closing the tab, or
+    // Obsidian rebuilding the leaf on a layout change, must not end the
+    // conversation. Only this view's subscriptions go away. The session is
+    // ended explicitly by "New session" and by plugin unload.
+    this.detachAcp();
   }
 }

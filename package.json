@@ -13,6 +13,7 @@
     "mcp-proxy": "npm run -w harness mcp-proxy",
     "plugin:dev": "npm run -w obsidian-chat-plugin dev",
     "plugin:build": "npm run -w obsidian-chat-plugin build",
-    "typecheck": "npm run -w obsidian-chat-plugin build"
+    "typecheck": "npm run -w obsidian-chat-plugin build",
+    "test": "npm run -w obsidian-chat-plugin test"
   }
 }
