@@ -9,46 +9,36 @@
 
 ```
 ┌──────────────────────────────┐
-│ Obsidian plugin (this repo)  │   thin ACP client + vault-native UI
-│  plugin/src/ui/*, acp/client │   no model calls, no tool execution
+│ Chat client (any device)     │   plugin/src/acp/client.ts + ui/*
+│                              │   no model calls, no tool execution
 └──────────────┬───────────────┘
-               │  HTTP + SSE (bearer token, per device)
-               │  contracts/plugin-bridge-acp.md
-┌──────────────▼───────────────┐
-│ harness/src/acp-bridge.mjs   │   :8765 — spawns and fronts one harness
-│  POST /sessions              │   session/new, mode, config-option,
-│  GET  /sessions/:id/events   │   prompt, cancel, approvals; SSE replay
-└──────────────┬───────────────┘
-               │  ACP over stdio (JSON-RPC)
-┌──────────────▼───────────────┐
-│ the configured harness       │   e.g. `opencode acp` (harness.config.json)
-│  model + agent loop + tools  │   owns the conversation and the tool loop
-└──────────────┬───────────────┘
-               │  MCP (HTTP), server entry `vault`
-┌──────────────▼───────────────┐
-│ harness/src/mcp-rules-proxy  │   :8766 — enforces the folder blacklist,
-│                              │   then forwards unmodified
-└──────────────┬───────────────┘
-               │  MCP (HTTP, self-signed TLS)
-┌──────────────▼───────────────┐
-│ Obsidian **desktop** +       │   :27124 /mcp/ — the vault exposes itself.
-│ Local REST API plugin        │   This is the only thing that touches notes.
-└──────────────────────────────┘
+               │  HTTP + SSE (bearer token per device)
+┌──────────────▼───────────────────────────────────────────┐
+│ Obsidian desktop on the host — plugin host mode          │
+│  plugin/src/host/server.ts   :8765                       │
+│   /sessions/*  chat relay, SSE replay, approvals         │
+│   /mcp         vault MCP tools (loopback + secret only)  │
+└──────────────┬──────────────────────────▲────────────────┘
+               │ ACP over stdio            │ MCP (HTTP, loopback)
+┌──────────────▼──────────────────────────┴────────────────┐
+│ the configured harness, e.g. `opencode acp`              │
+│  model + agent loop; owns the conversation               │
+└──────────────────────────────────────────────────────────┘
 ```
 
-The desktop Obsidian app **is** the vault server: the always-on machine runs
-Obsidian with Local REST API enabled, and the harness reaches notes only through
-it. One machine should enable `settings.host` (which spawns the bridge and the
-proxy as children of Obsidian); every other install — another desktop, a phone —
-is a pure client pointed at that machine's bridge over Tailscale.
+The host is just Obsidian with *Host on this device* enabled: the plugin spawns
+the harness (respawning it with backoff if it exits), relays it to every chat
+client, and is itself the vault's MCP server. Every other install is a pure
+client pointed at the host's address. Nothing runs outside Obsidian except the
+harness.
 
 ## 2. A turn, end to end
 
 1. Composer → `ChatView.send()` → `AcpBridgeClient.prompt(blocks)`.
    Blocks carry the user text, any `@mention`-attached note bodies, context
    chips, images, and advisory rules text.
-2. Bridge → `session/prompt` on the spawned harness.
-3. Harness streams `session/update` notifications; the bridge buffers them
+2. Host answers `202` and sends `session/prompt` to the harness.
+3. Harness streams `session/update` notifications; the host buffers them
    with sequence numbers and relays them over SSE.
 4. `AcpBridgeClient.dispatch()` splits them: chat content is mapped to
    `StreamEvent` (`token`, `reasoning`, `tool_call`, `plan`, `usage`,
@@ -57,13 +47,16 @@ is a pure client pointed at that machine's bridge over Tailscale.
 5. `ChatView.handleStreamEvent()` renders — reasoning accordions, activity
    groups, plan panel, usage meter, streaming answer.
 6. Tool calls that need approval arrive as `session/request_permission`; the
-   bridge parks them in `/approvals/:requestId` and the plugin renders an
-   inline card. The decision goes back through the bridge to the harness.
-7. When `session/prompt` resolves, the plugin appends the reply to
-   `acpHistory` and persists the session note.
+   host parks them in `/approvals/:requestId` (cancelled after 10 minutes)
+   and the plugin renders an inline card.
+7. When `session/prompt` resolves, the host waits for the update stream to go
+   quiet, then publishes `turn_end` (with `stopReason`) on the same stream.
+   The client ends the turn on that event, so it can never finish before the
+   last token, then appends the reply to `acpHistory` and saves the note.
 
 Reconnect: the plugin reopens the SSE stream with `Last-Event-ID`, so the
-bridge replays exactly what was missed (no duplicated or lost content).
+host replays exactly what was missed. A heartbeat every 15 s keeps idle
+streams open, and the retry budget counts consecutive failures only.
 
 ## 3. What the plugin may touch locally
 
@@ -83,9 +76,9 @@ Everything else is out:
 - **No model calls.** No provider adapters, keys, or HTTP to an LLM API.
 - **No tool execution.** The plugin never performs `read_file`/`write_note` on
   the agent's behalf; it never inspects a tool call to decide whether it may run.
-- **No access control.** Blacklist enforcement for agent tool calls lives in
-  `mcp-rules-proxy`; the plugin's own `blacklistFolders` setting only keeps
-  excluded folders out of the plugin's mention index.
+- **No access control in the client.** Blacklist enforcement for agent tool
+  calls lives in the host's vault MCP server (`host/vault-mcp.ts`), which reads
+  the same `blacklistFolders` setting the mention index uses.
 
 The rule for future contributors:
 
@@ -96,29 +89,24 @@ The rule for future contributors:
 
 | Path | Role |
 |---|---|
-| `plugin/src/acp/client.ts` | The only path to the harness: sessions, prompt, cancel, approvals, modes, config options, commands, usage/plan/session-info updates, connection state. |
-| `plugin/src/chat/tool-input.ts` | Bounds and sanitises tool arguments before they reach the UI (a write's arguments contain the whole note body). |
+| `plugin/src/acp/client.ts` | The only path to the host: sessions, prompt, cancel, approvals, modes, config options, commands, usage/plan/session-info updates, connection state. |
+| `plugin/src/host/server.ts` | Host mode: spawns and respawns the harness, ACP `initialize`, HTTP/SSE relay, per-device auth, approval parking, `turn_end`. |
+| `plugin/src/host/jsonrpc.ts` | Newline-delimited JSON-RPC peer for ACP over stdio. |
+| `plugin/src/host/vault-mcp.ts` | The vault's MCP tools, run in-process with the blacklist enforced. |
+| `plugin/src/chat/tool-input.ts` | Bounds and sanitises tool arguments before they reach the UI. |
 | `plugin/src/ui/activity.ts` | Pure tool presentation: name → verb → icon → label, group stats. No Obsidian import. |
-| `plugin/src/ui/chat-view.ts` | The view: transcript, composer, activity groups, approval cards, plan, usage, sessions, context chips. |
+| `plugin/src/ui/chat-view.ts` | The view: transcript, composer, activity, approval cards, plan, usage, sessions, context chips. |
 | `plugin/src/session/store.ts` | Session notes as Markdown, including the base64 activity trail. |
-| `plugin/src/ui/approval.ts` | Inline approval card (approve/reject only — never edits, never batches). |
-| `harness/src/acp-bridge.mjs` | Spawns the harness; HTTP/SSE façade; per-device ownership; approval parking; SSE replay. |
-| `harness/src/mcp-rules-proxy.mjs` | Blacklist enforcement in front of LRA's MCP endpoint; exact per-tool path fields. |
-| `harness/harness.config.json` | Harness command, cwd (the vault), proxy URL, blacklist, LRA credentials. |
+| `plugin/src/ui/approval.ts` | Inline approval card (approve/reject only). |
 
 ## 5. Trust and configuration notes
 
-- **Tokens:** `harness/tokens.json` maps a bearer token to a device id. The
-  bridge rejects anything else (401) and enforces that a session/approval
-  belongs to the device that created it (403).
-- **TLS:** the LRA leg uses a self-signed certificate, so the proxy disables
-  verification for that one loopback host only.
-- **Exposure:** the bridge is meant for a Tailscale network, not the public
-  internet. It sets permissive CORS because the mobile WebView
-  (`capacitor://localhost`) is a real cross-origin client — the token, not the
-  origin, is the security boundary.
-- **Blacklist agreement:** `harness/harness.config.json`'s
-  `rules.blacklistFolders` and the plugin's `blacklistFolders` setting should
-  stay identical so the agent and the mention index agree. Both currently
-  mirror this vault's `AGENTS.md` mandate (`Journals/`, `_attachments/`,
-  `.trash/`).
+- **Device codes:** the host's *Paired devices* list maps a name to a bearer
+  token; each device enters its own code. The host's own client uses a token
+  minted at startup. Sessions and approvals belong to the device that created
+  them (403 otherwise).
+- **MCP endpoint:** `/mcp` accepts only loopback connections carrying a secret
+  minted at startup and handed to the harness in `session/new`.
+- **Exposure:** the host listens on all interfaces so phones can reach it;
+  keep it on a private network (Tailscale or LAN). CORS is permissive because
+  the mobile WebView is a real cross-origin client; the token is the boundary.

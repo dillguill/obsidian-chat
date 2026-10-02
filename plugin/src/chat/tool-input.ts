@@ -4,8 +4,8 @@
  *  before it reaches the UI — and by `ui/activity.ts`, which derives a row's
  *  target from it. Keeping the key lists here avoids two drifting copies.
  *
- *  Key choices are grounded in the P0 live probe (2026-09-13): LRA's vault
- *  tools all take `path`, and `vault_move`/`vault_copy` add `destination`.
+ *  The vault MCP tools (`host/vault-mcp.ts`) all take `path`, and `move` adds
+ *  `destination`; the other keys cover common harness-native tools.
  */
 
 /** Input keys carrying a vault/filesystem path, highest priority first. */

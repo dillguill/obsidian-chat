@@ -75,6 +75,9 @@ export class AcpBridgeClient {
   /** Harness-supplied session title (W7.11) — `null` until one arrives
    *  (`session_info_update`; opencode does not emit it today). */
   private sessionTitle: string | null = null;
+  /** The in-flight `prompt()`, settled by the `turn_end` SSE event — which the
+   *  host publishes after the turn's last update, on the same ordered stream. */
+  private pendingTurn: { resolve: (stopReason: string) => void; reject: (err: Error) => void } | null = null;
 
   constructor(private cfg: AcpBridgeConfig) {}
 
@@ -258,7 +261,7 @@ export class AcpBridgeClient {
     if (this.closed || this.sessionId === null) return;
     if (this.sseFail >= MAX_RETRIES) {
       this.setConnection("unreachable", `gave up after ${this.sseFail} reconnects`);
-      this.emit({ type: "error", message: `gave up after ${this.sseFail} reconnects — start a new session` });
+      this.failTurn(new AcpUnavailableError(`lost the connection to the host after ${this.sseFail} retries`));
       return;
     }
     const delay = Math.min(1000 * Math.pow(2, this.sseFail - 1), 15000);
@@ -302,15 +305,14 @@ export class AcpBridgeClient {
       },
       (res) => {
         if (res.statusCode === 404) {
-          this.emit({ type: "error", message: "session is dead (404) — start a new session" });
-          this.sessionId = null;
           res.resume();
+          this.sessionDied("the host no longer has this session");
           return;
         }
         if (!res.statusCode || res.statusCode >= 400) {
           res.resume();
           this.sseFail++;
-          this.emit({ type: "error", message: `SSE HTTP ${res.statusCode}` });
+          this.setConnection("connecting", `event stream HTTP ${res.statusCode}`);
           this.scheduleReconnect();
           return;
         }
@@ -319,7 +321,7 @@ export class AcpBridgeClient {
     );
     req.on("error", (err: Error) => {
       this.sseFail++;
-      this.emit({ type: "error", message: `bridge unreachable: ${String(err.message ?? err)}` }); // FR-012
+      this.setConnection("connecting", `host unreachable: ${String(err.message ?? err)}`); // FR-012
       this.scheduleReconnect();
     });
     req.end();
@@ -332,8 +334,7 @@ export class AcpBridgeClient {
     })
       .then((resp) => {
         if (resp.status === 404) {
-          this.emit({ type: "error", message: "session is dead (404) — start a new session" });
-          this.sessionId = null;
+          this.sessionDied("the host no longer has this session");
           return;
         }
         if (!resp.ok || !resp.body) throw new Error(`SSE HTTP ${resp.status}`);
@@ -341,7 +342,7 @@ export class AcpBridgeClient {
       })
       .catch((err) => {
         this.sseFail++;
-        this.emit({ type: "error", message: `bridge unreachable: ${String((err as Error).message ?? err)}` }); // FR-012
+        this.setConnection("connecting", `host unreachable: ${String((err as Error).message ?? err)}`); // FR-012
         this.scheduleReconnect();
       });
   }
@@ -389,6 +390,10 @@ export class AcpBridgeClient {
   }
 
   private parseBlock(block: string) {
+    // Any traffic (heartbeats included) proves the stream is healthy again, so
+    // the retry budget counts consecutive failures, not lifetime drops.
+    if (this.sseFail) this.sseFail = 0;
+    if (this.connection !== "connected") this.setConnection("connected");
     let id = 0;
     let evName = "message";
     let data = "";
@@ -398,6 +403,7 @@ export class AcpBridgeClient {
       else if (line.startsWith("data: ")) data += line.slice(6);
     }
     if (id) this.lastEventId = id;
+    if (!data) return; // heartbeat comment
     this.dispatch(evName, data);
   }
 
@@ -445,6 +451,17 @@ export class AcpBridgeClient {
       if (event) this.emit(event);
       return;
     }
+    if (evName === "turn_end") {
+      const turn = this.pendingTurn;
+      this.pendingTurn = null;
+      if (parsed.error) turn?.reject(new Error(parsed.error));
+      else turn?.resolve(parsed.stopReason ?? "end_turn");
+      return;
+    }
+    if (evName === "session_dead") {
+      this.sessionDied(parsed.reason ?? "the harness restarted");
+      return;
+    }
     if (evName === "permission_request") {
       const { requestId, ...request } = parsed;
       if (this.seenPermissionRequests.has(requestId)) return; // already surfaced — replay dedup
@@ -461,12 +478,32 @@ export class AcpBridgeClient {
    *  turn (e.g. user text plus any `@mention`-attached note context). */
   async prompt(blocks: ContentBlock[]): Promise<void> {
     if (!this.sessionId) throw new Error("no session — connect() first");
+    this.failTurn(new Error("superseded by a new prompt"));
+    const ended = new Promise<string>((resolve, reject) => (this.pendingTurn = { resolve, reject }));
     const resp = await this.call(`/sessions/${this.sessionId}/prompt`, "POST", { prompt: blocks });
-    if (resp.status === 503) throw new AcpUnavailableError("harness unavailable on the host");
-    if (resp.status >= 400) throw new Error(`session/prompt failed: HTTP ${resp.status}`);
-    // The response body (PromptResponse.stopReason) resolves the turn; the
-    // streamed content already arrived via session/update over SSE.
-    this.emit({ type: "done" });
+    if (resp.status >= 400) {
+      this.pendingTurn = null;
+      if (resp.status === 503) throw new AcpUnavailableError("harness unavailable on the host");
+      throw new Error(`session/prompt failed: HTTP ${resp.status}`);
+    }
+    // The host answers 202 at once; the turn ends when `turn_end` arrives on
+    // the event stream, after every update it produced.
+    const stopReason = await ended;
+    this.emit({ type: "done", finishReason: stopReason });
+  }
+
+  private failTurn(err: Error): void {
+    const turn = this.pendingTurn;
+    this.pendingTurn = null;
+    turn?.reject(err);
+  }
+
+  /** The host dropped this session (harness restart, host restart). Ends any
+   *  in-flight turn and lets the next `connect()` start a fresh session. */
+  private sessionDied(reason: string): void {
+    this.sessionId = null;
+    this.failTurn(new AcpUnavailableError(`session ended: ${reason}`));
+    this.setConnection("idle");
   }
 
   /** session/cancel */
@@ -506,6 +543,7 @@ export class AcpBridgeClient {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.failTurn(new Error("session closed"));
     if (this.retryTimer) clearTimeout(this.retryTimer);
     if (this.sessionId) {
       await this.call(`/sessions/${this.sessionId}`, "DELETE").catch(() => null);

@@ -696,7 +696,7 @@ export class ChatView extends ItemView {
     this.connEl.createSpan({ cls: "oc-conn-dot" });
     this.connEl.createSpan({
       cls: "oc-conn-text",
-      text: state === "connecting" ? "Connecting to harness…" : "Harness unreachable — retrying",
+      text: state === "connecting" ? "Connecting to host…" : "Host unreachable",
     });
     if (state === "unreachable") {
       const details = this.connEl.createEl("button", { cls: "oc-queue-btn", text: "Details" });
@@ -1734,7 +1734,7 @@ export class ChatView extends ItemView {
       await this.sendViaAcp(text);
     } catch (err) {
       if (err instanceof AcpUnavailableError) {
-        this.addToolRow("error", `Bridge/harness unavailable: ${err.message}`, "error"); // FR-012
+        this.addToolRow("error", `Host unavailable: ${err.message}`, "error"); // FR-012
       } else {
         this.addToolRow("error", `Error: ${String((err as Error).message ?? err)}`, "error");
       }

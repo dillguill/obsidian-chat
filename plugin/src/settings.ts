@@ -3,6 +3,7 @@
  *  Principle II); this file only holds plugin-local UX/connection state. */
 import { App, Platform, PluginSettingTab, Setting, setIcon, TextComponent } from "obsidian";
 import type ObsidianChatPlugin from "./main";
+import { randomToken } from "./host/server";
 
 /** ACP bridge connection (specs/001-acp-mcp-migration). No `model` field —
  *  the model/provider is a config value on the harness itself (Principle
@@ -18,8 +19,8 @@ export interface ObsidianChatSettings {
   chatFolder: string;
   /** Folders the agent must not read/search/edit (vault-relative, e.g. "Private/").
    *  Defaults mirror this vault's own AGENTS.md mandate (Journals/, _attachments/,
-   *  .trash/) — the harness's mcp-rules-proxy enforces the same list, so both
-   *  ends stay in agreement (specs/003-workspace-parity W5.1). */
+   *  .trash/). The host's vault MCP server (`host/vault-mcp.ts`) enforces this
+   *  same list for agent tool calls, so agent and mention index agree. */
   blacklistFolders: string[];
   /** Inject vault-rules.md / .chat/rules.md / AGENTS.md as advisory context. */
   injectVaultRules: boolean;
@@ -40,18 +41,18 @@ export interface ObsidianChatSettings {
    *  default model can be a paid-only one). The plugin still owns none of
    *  the values or their meaning (FR-008) — this is opaque id->value replay. */
   acpConfigOverrides: Record<string, string | boolean>;
-  /** Harness process lifecycle (desktop only). When `enabled`, this device's
-   *  plugin instance spawns harness/src/{acp-bridge,mcp-rules-proxy}.mjs as
-   *  child processes on load and kills them on unload — the always-on
-   *  Obsidian desktop app IS the server, so the harness never runs as a
-   *  separately-managed process. Off by default: only the one designated
-   *  host machine should turn this on; every other install (other desktops,
-   *  mobile) stays a pure remote client of that host's bridge. */
+  /** Host mode (desktop only). When `enabled`, this Obsidian instance runs
+   *  the configured ACP harness as a child process, serves chat clients over
+   *  HTTP/SSE, and serves the vault's MCP tools to the harness — see
+   *  `host/server.ts`. Off by default: only the always-on machine turns it
+   *  on; every other install connects to that machine's address. */
   host: {
     enabled: boolean;
-    /** Absolute path to the harness/ directory on this machine (contains
-     *  src/acp-bridge.mjs, src/mcp-rules-proxy.mjs, harness.config.json). */
-    harnessDir: string;
+    /** Any ACP-speaking harness, e.g. `opencode acp`. */
+    command: string;
+    port: number;
+    /** Paired devices: name → bearer token. */
+    devices: Record<string, string>;
   };
 }
 
@@ -64,7 +65,7 @@ export const DEFAULT_SETTINGS: ObsidianChatSettings = {
   sendShortcut: "enter",
   toolAllowlist: {},
   acpConfigOverrides: {},
-  host: { enabled: false, harnessDir: "" },
+  host: { enabled: false, command: "opencode acp", port: 8765, devices: {} },
 };
 
 export class ObsidianChatSettingTab extends PluginSettingTab {
@@ -114,54 +115,72 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
         );
     }
 
-    containerEl.createEl("h4", { text: "ACP bridge" });
-    new Setting(containerEl)
-      .setName("Base URL")
-      .setDesc("Your always-on machine's ACP bridge over Tailscale, e.g. https://100.x.y.z:8765")
-      .addText((t) =>
-        t.setValue(this.plugin.settings.gateway.baseUrl).onChange((v) => {
-          this.plugin.settings.gateway.baseUrl = v;
-          this.save();
-        }),
-      );
-    new Setting(containerEl)
-      .setName("Device token")
-      .setDesc("Per-device bearer token from the harness tokens.json.")
-      .addText((t) => {
-        t.inputEl.type = "password";
-        return t.setValue(this.plugin.settings.gateway.token).onChange((v) => {
-          this.plugin.settings.gateway.token = v;
-          this.save();
-        });
-      });
-
     if (Platform.isDesktopApp) {
-      containerEl.createEl("h4", { text: "Harness hosting (this device)" });
+      containerEl.createEl("h4", { text: "Host" });
       containerEl.createEl("p", {
-        text: "Only the always-on machine should enable this. It spawns the harness's acp-bridge and mcp-rules-proxy as child processes when Obsidian starts and kills them when it quits — every other device just connects to that machine's Base URL above.",
+        text: "Turn this on for the one always-on computer. Obsidian then runs your agent harness and serves the vault to it — nothing else to install or keep running. Other devices connect to this computer.",
         cls: "setting-item-description",
       });
       new Setting(containerEl)
-        .setName("Host the harness on this device")
-        .setDesc("Requires reloading the plugin (or restarting Obsidian) to take effect.")
+        .setName("Host on this device")
         .addToggle((t) =>
-          t.setValue(this.plugin.settings.host.enabled).onChange((v) => {
+          t.setValue(this.plugin.settings.host.enabled).onChange(async (v) => {
             this.plugin.settings.host.enabled = v;
+            await this.plugin.saveSettings();
+            await this.plugin.restartHost();
+            this.display();
+          }),
+        );
+      if (this.plugin.settings.host.enabled) {
+        new Setting(containerEl)
+          .setName("Harness command")
+          .setDesc("Any harness that speaks the Agent Client Protocol, e.g. `opencode acp`, `gemini --experimental-acp`, `goose acp`. Applied when you leave the field.")
+          .addText((t) => {
+            t.setPlaceholder("opencode acp").setValue(this.plugin.settings.host.command);
+            t.inputEl.addEventListener("change", async () => {
+              this.plugin.settings.host.command = t.getValue().trim();
+              await this.plugin.saveSettings();
+              await this.plugin.restartHost();
+            });
+          });
+        new Setting(containerEl)
+          .setName("Port")
+          .setDesc("Other devices connect to http://<this computer>:<port>.")
+          .addText((t) => {
+            t.setValue(String(this.plugin.settings.host.port));
+            t.inputEl.addEventListener("change", async () => {
+              const port = Number(t.getValue());
+              if (!Number.isInteger(port) || port < 1024 || port > 65535) return;
+              this.plugin.settings.host.port = port;
+              await this.plugin.saveSettings();
+              await this.plugin.restartHost();
+            });
+          });
+        this.renderDevices(containerEl);
+      }
+    }
+
+    if (!this.plugin.settings.host.enabled || !Platform.isDesktopApp) {
+      containerEl.createEl("h4", { text: "Connect to host" });
+      new Setting(containerEl)
+        .setName("Host address")
+        .setDesc("The host computer's address and port, e.g. http://100.x.y.z:8765 over Tailscale or your local network.")
+        .addText((t) =>
+          t.setValue(this.plugin.settings.gateway.baseUrl).onChange((v) => {
+            this.plugin.settings.gateway.baseUrl = v.trim();
             this.save();
           }),
         );
       new Setting(containerEl)
-        .setName("Harness directory")
-        .setDesc("Absolute path to the harness/ folder (contains src/acp-bridge.mjs, harness.config.json).")
-        .addText((t) =>
-          t
-            .setPlaceholder("/path/to/obsidian-chat/harness")
-            .setValue(this.plugin.settings.host.harnessDir)
-            .onChange((v) => {
-              this.plugin.settings.host.harnessDir = v;
-              this.save();
-            }),
-        );
+        .setName("Device code")
+        .setDesc("Created on the host under Host → Paired devices.")
+        .addText((t) => {
+          t.inputEl.type = "password";
+          return t.setValue(this.plugin.settings.gateway.token).onChange((v) => {
+            this.plugin.settings.gateway.token = v.trim();
+            this.save();
+          });
+        });
     }
 
     containerEl.createEl("h4", { text: "Grounding" });
@@ -219,6 +238,38 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
     }
 
     containerEl.createEl("p", { text: "Changes save automatically, but some take effect on the next chat turn.", cls: "setting-item-description" });
+  }
+
+  /** Pairing: each device gets its own code, so one can be revoked alone. */
+  private renderDevices(containerEl: HTMLElement): void {
+    let name = "";
+    new Setting(containerEl)
+      .setName("Paired devices")
+      .setDesc("Add a device, then enter its code in that device's Obsidian Chat settings.")
+      .addText((t) => t.setPlaceholder("e.g. phone").onChange((v) => (name = v.trim())))
+      .addButton((b) =>
+        b.setButtonText("Add").onClick(async () => {
+          if (!name || this.plugin.settings.host.devices[name]) return;
+          this.plugin.settings.host.devices[name] = randomToken();
+          await this.plugin.saveSettings();
+          this.display();
+        }),
+      );
+    for (const [device, code] of Object.entries(this.plugin.settings.host.devices)) {
+      new Setting(containerEl)
+        .setName(device)
+        .setDesc(code)
+        .addExtraButton((b) =>
+          b.setIcon("copy").setTooltip("Copy code").onClick(() => void navigator.clipboard.writeText(code)),
+        )
+        .addExtraButton((b) =>
+          b.setIcon("trash-2").setTooltip("Revoke").onClick(async () => {
+            delete this.plugin.settings.host.devices[device];
+            await this.plugin.saveSettings();
+            this.display();
+          }),
+        );
+    }
   }
 
   private save() {

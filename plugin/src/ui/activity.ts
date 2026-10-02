@@ -32,9 +32,9 @@ export type ToolCategory =
   | "mode"
   | "other";
 
-/** Cleaned LRA/harness tool name → category. Confirmed names from P0. */
+/** Cleaned vault-MCP/harness tool name → category. */
 const NAME_CATEGORY: Record<string, ToolCategory> = {
-  // LRA (vault MCP), after prefix stripping
+  // Vault MCP tools (host/vault-mcp.ts), after prefix stripping
   list: "list",
   read: "read",
   get_document_map: "read",

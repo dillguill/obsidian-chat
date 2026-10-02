@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Obsidian plugin — vault-native AI workspace (see PLAN.md)",
+  "description": "Obsidian plugin \u2014 vault-native AI workspace (see PLAN.md)",
   "license": "MIT",
   "scripts": {
     "dev": "node esbuild.config.mjs",
