@@ -74,7 +74,7 @@ ad hoc file I/O bypassing the vault abstraction.
 ## Governance
 
 This constitution supersedes prior informal architecture notes (e.g.
-PLAN.md, SPIKES.md) where they conflict with the principles above; those
+SPIKES.md) where they conflict with the principles above; those
 documents remain useful context but are not authoritative once superseded.
 Amendments require a written rationale, an explicit version bump per the
 policy below, and review of any in-flight specs/plans for compliance.

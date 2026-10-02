@@ -2,7 +2,7 @@
 
 No `NEEDS CLARIFICATION` markers were left in the Technical Context — every decision below was
 resolved during an extended brainstorming pass by directly inspecting the vendored ACP SDK
-(`node_modules/@agentclientprotocol/sdk`) and by reading real prior-art source (Claudian, cloned
+(`node_modules/@agentclientprotocol/sdk`) and by reading real prior-art source (the reference plugin, cloned
 locally) rather than assuming. This document consolidates those findings.
 
 ## R1: Does ACP support a client-attached MCP server for Obsidian-specific tools?
@@ -16,7 +16,7 @@ locally) rather than assuming. This document consolidates those findings.
   first-class, standard mechanism for a client to hand the harness additional tools per session.
   This is exactly the mechanism the bridge already uses.
 - **Alternatives considered**: Building a bespoke Obsidian-tools MCP server (frontmatter/tags/
-  canvas-specific tools) — rejected after reading Claudian's actual source: it doesn't build any
+  canvas-specific tools) — rejected after reading the reference plugin's actual source: it doesn't build any
   such tools either, it just points the coding agent's generic file tools at the vault directory,
   since frontmatter/tags are plain text to a generic file tool. `obsidian-mcp-tools`
   (jacksteamdev) already exists as a mature, separate plugin for anything genuinely beyond plain
@@ -26,7 +26,7 @@ locally) rather than assuming. This document consolidates those findings.
 
 - **Decision**: Host-side skill installation. `kepano/obsidian-skills` installed into whichever
   configured harness supports the Agent Skills spec (confirmed: Claude Code, opencode).
-- **Rationale**: Matches how Claudian itself handles conventions — via Skills, not custom tool
+- **Rationale**: Matches how the reference plugin itself handles conventions — via Skills, not custom tool
   code or plugin-injected prompt text.
 - **Alternatives considered**: Plugin-injected advisory context (same pattern as the existing
   `vault-rules.md` injection) — would work uniformly across harnesses regardless of Agent Skills
@@ -42,7 +42,7 @@ locally) rather than assuming. This document consolidates those findings.
   offered `PermissionOption`s (schema: `PermissionOptionKind = "allow_once" | "allow_always" |
   "reject_once" | "reject_always"`, confirmed at `schema/types.gen.d.ts:637`) — there is no field
   for returning edited content, so inline editing cannot be implemented as a protocol response
-  regardless of UI design. Checked both Claudian (word-level diff preview, approve/reject, no
+  regardless of UI design. Checked both the reference plugin (word-level diff preview, approve/reject, no
   edit) and Obsidian Copilot Agent (Approve/Approve-for-Session/Reject, strictly per-call, no
   batch control) — neither comparable does inline editing or batching either, confirming this
   isn't a plugin limitation being under-built, it's the validated pattern.
@@ -68,8 +68,8 @@ locally) rather than assuming. This document consolidates those findings.
   `current_mode_update`), switched via `session/set_mode`.
 - **Rationale**: `SessionModeState` (`currentModeId` + `availableModes: SessionMode[]`) is a
   first-class ACP primitive (`schema/types.gen.d.ts:2561`), separate from and more specific than
-  the generic `SessionConfigOption` category mechanism — this is the same primitive Claude Code's
-  own mode switcher is built on. The plugin's permission-request handling becomes unconditional
+  the generic `SessionConfigOption` category mechanism — this is the same primitive harness-native
+  mode switchers are built on. The plugin's permission-request handling becomes unconditional
   (always show the approval card); if a harness's active mode means it won't ask, the plugin
   simply never receives that `request_permission` call — no plugin-side "auto mode" branch needed.
 - **Alternatives considered**: A plugin-owned `auto`/`review`/`plan` enum translated into
@@ -99,12 +99,12 @@ locally) rather than assuming. This document consolidates those findings.
   (`AvailableCommand[]`: `name`, `description`, free-text `input`; schema:
   `schema/types.gen.d.ts:3782`), with only `/clear` and `/help` kept as fixed local entries.
   `/web` (today's only other hardcoded command, calling the local BYOK tool path) is dropped.
-- **Rationale**: Matches how Claudian and Obsidian Copilot both work — commands/skills surfaced
+- **Rationale**: Matches how the reference plugin and Obsidian Copilot both work — commands/skills surfaced
   by the underlying coding agent, not reimplemented by the Obsidian-side plugin.
 
 ## R8: How should the reasoning/thinking display look and behave?
 
-- **Decision**: Adopt Claudian's actual accordion component directly (read from
+- **Decision**: Adopt the reference plugin's actual accordion component directly (read from
   `src/features/chat/rendering/ThinkingBlockRenderer.ts` and
   `src/style/components/thinking.css` in the real repo, not a description of it): a clickable
   header with a live-ticking "Thinking Ns..." label while streaming, auto-collapses on burst end
@@ -113,9 +113,9 @@ locally) rather than assuming. This document consolidates those findings.
 - **Rationale**: `agent_thought_chunk` is a plain `ContentChunk` with no segment/message id
   (confirmed in schema — it shares the exact shape of `agent_message_chunk`), so burst boundaries
   are inferred client-side by adjacency (a burst closes when interrupted by a message chunk or a
-  tool call), not a native protocol field. This differs from Claudian's own boundary detection,
-  which is exact because it wraps the Claude Agent SDK directly (which does send explicit
-  thinking-block start/stop signals) — noted as a known, harmless difference in mechanism, not
+  tool call), not a native protocol field. This differs from plugins that wrap a vendor agent
+  SDK directly, whose boundary detection is exact because those SDKs send explicit
+  thinking-block start/stop signals — noted as a known, harmless difference in mechanism, not
   outcome.
 
 ## R9: Does the bridge already relay everything needed for R5–R7, or does it need changes?

@@ -1,4 +1,4 @@
-/** Chat view — workspace-style layout (Claude/Claudian-like).
+/** Chat view — workspace-style layout.
  *  Desktop: right-docked sidebar. Mobile: full-screen page.
  *  No chat bubbles / avatars — a continuous flowing transcript with inline
  *  tool rows (icon + label + checkmark/diff), "Thought for Xs" blocks, and a
@@ -1414,9 +1414,8 @@ export class ChatView extends ItemView {
 
   // ---------- threaded, collapsible thinking (specs/002-acp-only-chat-ux US4) ----------
   //
-  // `agent_thought_chunk` has no start/stop marker of its own (unlike the
-  // Claude Agent SDK's content-block events, which Claudian's equivalent
-  // component wraps directly — research.md R8), so a burst's boundary is
+  // `agent_thought_chunk` has no start/stop marker of its own (unlike some
+  // vendor agent SDKs' content-block events — research.md R8), so a burst's boundary is
   // inferred here: it stays open across consecutive "reasoning" events and
   // closes the instant a "token" or "tool_call" event interrupts it.
 

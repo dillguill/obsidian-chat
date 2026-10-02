@@ -31,7 +31,8 @@ Vault tools the harness gets: `list`, `read`, `search`, `write`, `append`, `edit
 `delete` (to trash). Folders on the blacklist are invisible to them.
 
 Harnesses without native ACP support work through their ACP adapter; set the adapter's command as
-the harness command.
+the harness command. For example, Claude Code uses
+[`@zed-industries/claude-agent-acp`](https://www.npmjs.com/package/@zed-industries/claude-agent-acp).
 
 ## Build & install
 

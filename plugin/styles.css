@@ -1,4 +1,4 @@
-/* Obsidian Chat — Claudian-style workspace themes.
+/* Obsidian Chat — workspace themes.
  * Flowing transcript (no bubbles/avatars), inline tool rows, thought blocks,
  * composer toolbar, context chips. Driven by Obsidian CSS variables. */
 
@@ -203,7 +203,7 @@
 @keyframes oc-fade { from { opacity: 0; } to { opacity: 1; } }
 
 /* ---------- Thought blocks (threaded, collapsible — specs/002-acp-only-chat-ux
-   US4). Adapted directly from Claudian's thinking.css: a clickable header with
+   US4). Adapted directly from the reference plugin's thinking.css: a clickable header with
    a live-ticking label while streaming, auto-collapses to a frozen label when
    the burst ends, click to re-expand. Multiple bursts in one turn render as
    multiple sequential blocks — that's the "threaded" part, no protocol-level

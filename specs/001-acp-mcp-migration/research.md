@@ -42,7 +42,7 @@ the bridge's spawn target, selected purely by which local command it launches:
 - Claude Code: listed as a supported ACP agent.
 - Gemini CLI: listed as a supported ACP agent.
 - Goose: ships ACP provider support, documented as the recommended path for using
-  Claude Code/ChatGPT-style subscriptions through Goose without per-token API costs.
+  subscription-based agents through Goose without per-token API costs.
 
 **Rationale**: This validates FR-002/FR-013 — swapping the harness is genuinely a config-only
 change (which local command the bridge spawns), because all four already speak ACP without any
