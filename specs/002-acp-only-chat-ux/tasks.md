@@ -171,7 +171,7 @@ plugin change; connect to a harness declaring neither, and see neither control a
 
 ## Phase 6: User Story 4 - Follow the assistant's reasoning (Priority: P2)
 
-**Goal**: Adopt Claudian's accordion pattern for reasoning display, threaded per burst.
+**Goal**: Adopt the reference plugin's accordion pattern for reasoning display, threaded per burst.
 
 **Independent Test**: Watch reasoning stream live with a ticking label, see it auto-collapse when
 it ends, re-expand it, see multiple bursts in one turn as separate blocks, and see collapsed
@@ -179,7 +179,7 @@ blocks when reopening a past session.
 
 ### Implementation for User Story 4
 
-- [ ] T024 [US4] Add thinking-accordion styles to `plugin/styles.css`, adapted directly from Claudian's `src/style/components/thinking.css` (header, live/muted states, tree-branch-style indent) per research.md R8
+- [ ] T024 [US4] Add thinking-accordion styles to `plugin/styles.css`, adapted directly from the reference plugin's `src/style/components/thinking.css` (header, live/muted states, tree-branch-style indent) per research.md R8
 - [ ] T025 [US4] Implement Reasoning Block rendering in `plugin/src/ui/chat-view.ts` (data-model.md Reasoning Block): on each `reasoning` `StreamEvent`, append to the currently-open block if one exists, or start a new one with a live-ticking "Thinking Ns…" header; close the current block (freeze to "Thought for Ns", collapse) the moment a `token` or `tool_call` event interrupts it; clicking a closed header toggles expand/collapse
 - [ ] T026 [US4] Ensure `plugin/src/ui/chat-view.ts`'s `loadSession` path renders any saved reasoning blocks pre-collapsed (not auto-expanded) when reopening a session note
 

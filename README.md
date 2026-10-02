@@ -1,93 +1,62 @@
 # Obsidian Chat
 
-An Obsidian plugin that turns Obsidian into an **AI research/notetaking IDE** — BYOK AI chat,
-grounded retrieval, and a safe tool-calling framework (Claudian/Copilot-style), with a design that
-treats mobile as first-class. Personal-use-first; public release deferred.
+An Obsidian plugin that puts an AI agent in your vault: chat on desktop or phone, with the agent
+reading, searching and editing notes through tools you approve.
 
-> Status: **Phases 0–2b complete · re-architected onto ACP/MCP (2026-09).** The harness is now a
-> thin ACP bridge + MCP rules proxy, not a custom job/gateway protocol — see
-> [`specs/001-acp-mcp-migration/`](specs/001-acp-mcp-migration/) for the spec/plan/tasks, and
-> [`docs/PHASE3.md`](docs/PHASE3.md) for prior Phase 3 history (superseded where it conflicts).
+**What you need:** Obsidian and an agent harness that speaks the
+[Agent Client Protocol](https://agentclientprotocol.com) (ACP), such as opencode, Gemini CLI or
+Goose. Nothing else: no extra plugins, no background services, no Node install.
 
----
+## How it works
 
-## Highlights (built)
+```
+Phone / other desktop ──HTTP/SSE──┐
+                                  ▼
+               Obsidian on the host computer (this plugin, host mode)
+                 ├─ runs the harness as a child process, speaking ACP over stdio
+                 ├─ relays the chat to every device (replay on reconnect)
+                 └─ serves the vault to the harness as MCP tools (loopback only)
+```
 
-- **BYOK chat, streaming** — OpenAI-compatible + Anthropic adapters; provider **presets**
-  (OpenRouter / OpenAI / Anthropic / Groq / Ollama / Mistral / xAI / OpenCode / Custom) that
-  auto-fill base URLs; a model picker that lists all of a provider's models with **pin-to-top**.
-- **Research mode** (default) + **Auto / Review / Plan** write-approval modes.
-- **Research assistant with tools** — `read_file`, `search_vault` (BM25 relevance), `list_folder`,
-  `web_search` (Tavily), and CRUD (`create_note`, `edit_note` w/ diff, `rename_move_file`,
-  `create_folder`, `set_property`, `manage_tags`, `delete_file` → trash).
-  Vault notes enter a turn only via **`@mention`**, a **tool call**, or **auto mode**.
-- **Approval** — write tools are gated (review by default) with persistent per-tool
-  **Always allow / Deny / Allow once**; Plan mode previews only.
-- **Permissions** — blacklist folders (autocomplete) + `.chat/rules.md` (nearest-wins).
-- **Sessions as notes** — saved to a configurable vault folder (default `chat/`).
-- **`@`-mention / attach, vision, inline edit (word diff), slash commands, plan mode.**
+- **One computer is the host.** Turn on *Settings → Obsidian Chat → Host on this device*, and set
+  the harness command (default `opencode acp`). Obsidian starts the harness when it opens and
+  stops it when it quits, and restarts it if it crashes.
+- **Other devices are clients.** Pair one under *Host → Paired devices*, then enter the host
+  address (e.g. `http://100.x.y.z:8765` over Tailscale or your LAN) and the device code in that
+  device's settings.
+- **The harness owns the model.** Pick providers and models in the harness's own config; the
+  plugin never sees API keys. Switch harness by changing the command.
 
-## The harness: ACP bridge + MCP rules proxy
+Vault tools the harness gets: `list`, `read`, `search`, `write`, `append`, `edit`, `move`,
+`delete` (to trash). Folders on the blacklist are invisible to them.
 
-The always-on machine (`harness/`) runs two small processes instead of a custom job protocol:
+Harnesses without native ACP support work through their ACP adapter; set the adapter's command as
+the harness command. For example, Claude Code uses
+[`@zed-industries/claude-agent-acp`](https://www.npmjs.com/package/@zed-industries/claude-agent-acp).
 
-- **`acp-bridge.mjs`** spawns whichever ACP-speaking coding agent is configured (opencode, Claude
-  Code, Gemini CLI, Goose) and fronts it over HTTP/SSE for the plugin, with per-device auth and
-  replay-on-reconnect. Swapping harness or model provider is a config change on the host — no
-  plugin or bridge code changes (Constitution Principle II/III).
-- **`mcp-rules-proxy.mjs`** sits between the harness and the vault's MCP server (Obsidian's Local
-  REST API plugin's built-in MCP, `/mcp/` since v5.0) and enforces the folder-blacklist
-  access-control gate that LRA's own MCP server doesn't know about.
+## Build & install
 
-See [`harness/README.md`](harness/README.md) for setup and
-[`specs/001-acp-mcp-migration/`](specs/001-acp-mcp-migration/) for the full design.
+```bash
+npm install
+npm run plugin:build      # typecheck + bundle → plugin/main.js
+bash plugin/install.sh    # copies main.js/manifest.json/styles.css into the vault
+```
+
+`install.sh` copies rather than symlinks, so re-run it after every build and reload the plugin.
 
 ## Repo layout
 
 ```
-plugin/    Obsidian plugin (TypeScript + esbuild). Build → plugin/main.js
-harness/   Always-on machine: ACP bridge + MCP rules proxy (launchd + Tailscale)
-spikes/    Phase 0 spikes (g3-phone, g6-retrieval, …)
-docs/      Phase + gate docs (historical; PHASE3.md superseded by specs/001-acp-mcp-migration/)
-specs/     Spec Kit feature specs (spec/plan/tasks per feature)
-PLAN.md    Master plan (decisions, architecture, phases) — historical, see specs/ for current work
+plugin/   The Obsidian plugin (TypeScript + esbuild)
+  src/host/   host mode: HTTP/SSE server, ACP stdio peer, vault MCP server
+  src/acp/    the chat client every device uses
+  src/ui/     chat view
+docs/     Architecture and history
+specs/    Feature specs
 ```
 
-## Build & install (plugin)
-
-```bash
-cd plugin
-npm install
-npm run build        # tsc -noEmit + esbuild → main.js
-bash install.sh      # COPIES main.js/manifest/styles.css into the vault
-```
-
-> ⚠️ `install.sh` **copies**, not symlinks. After every build you must re-run
-> `bash install.sh` (in `plugin/`) and reload/toggle the plugin in Obsidian, or changes won't
-> appear.
-
-## Harness (dev)
-
-```bash
-cd harness
-cp harness.config.example.json harness.config.json   # gitignored — edit for your host
-npm install
-npm run mcp-proxy &
-npm run bridge
-```
-
-See [`harness/README.md`](harness/README.md) for full setup (LRA MCP prerequisite, per-device
-tokens, switching harness/provider).
-
-## Docs
-
-- [`specs/001-acp-mcp-migration/`](specs/001-acp-mcp-migration/) — current architecture: spec, plan, tasks.
-- [`PLAN.md`](PLAN.md) — earlier master plan (historical; superseded where it conflicts with the spec above).
-- [`docs/PHASE3.md`](docs/PHASE3.md) — Phase 3 spec + plan (historical).
-- [`docs/PHASE1.md`](docs/PHASE1.md) · [`docs/PHASE2A.md`](docs/PHASE2A.md) · [`docs/PHASE2B.md`](docs/PHASE2B.md) — phase status.
-- [`docs/G1-scorecard.md`](docs/G1-scorecard.md) · [`docs/G8-mobile-constraints.md`](docs/G8-mobile-constraints.md) — gates.
-- [`SPIKES.md`](SPIKES.md) — Phase 0 spike log.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
 
 ## License
 
-MIT (personal-use-first; see PLAN.md §2.8).
+MIT

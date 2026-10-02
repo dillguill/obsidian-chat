@@ -1,20 +1,18 @@
 /** Obsidian Chat plugin entry point.
  *  Registers the chat view (two layouts), the settings tab, a ribbon + command
  *  to open the chat, and owns the shared VaultIndex (read-only, for @mention). */
-import { Plugin, WorkspaceLeaf, Platform, Notice, TFile, TFolder, type Editor } from "obsidian";
-import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
-import { existsSync } from "fs";
-import { join, delimiter } from "path";
+import { Plugin, WorkspaceLeaf, Platform, Notice, TFile, TFolder, FileSystemAdapter, type Editor } from "obsidian";
 import { ChatView, VIEW_TYPE_CHAT } from "./ui/chat-view";
 import { ObsidianChatSettingTab, DEFAULT_SETTINGS, type ObsidianChatSettings } from "./settings";
 import { VaultIndex } from "./retrieval/index";
 import { AcpBridgeClient } from "./acp/client";
+import { AcpHost } from "./host/server";
 
 export default class ObsidianChatPlugin extends Plugin {
   settings: ObsidianChatSettings = DEFAULT_SETTINGS;
   index!: VaultIndex;
-  private mcpProxyProc: ChildProcessWithoutNullStreams | null = null;
-  private bridgeProc: ChildProcessWithoutNullStreams | null = null;
+  /** Present only on the host device: serves the harness and the vault. */
+  host: AcpHost | null = null;
 
   /** The ACP session outlives any single chat view. Closing the tab — or
    *  Obsidian re-laying out the workspace, which destroys and rebuilds the
@@ -28,7 +26,11 @@ export default class ObsidianChatPlugin extends Plugin {
 
   /** The shared ACP client, rebuilt if the bridge settings changed under it. */
   acp(): AcpBridgeClient {
-    const { baseUrl, token } = this.settings.gateway;
+    // The host device talks to its own server over loopback with a token it
+    // minted itself; every other device uses the configured host address.
+    const { baseUrl, token } = this.host
+      ? { baseUrl: `http://127.0.0.1:${this.host.port}`, token: this.host.localToken }
+      : this.settings.gateway;
     if (this.acpClient && (this.acpClientConfig?.baseUrl !== baseUrl || this.acpClientConfig?.token !== token)) {
       void this.acpClient.close().catch(() => {});
       this.acpClient = null;
@@ -180,67 +182,52 @@ export default class ObsidianChatPlugin extends Plugin {
 
     this.addSettingTab(new ObsidianChatSettingTab(this.app, this));
 
-    this.startHostedHarness();
+    this.startHost();
     // onunload() only fires on plugin disable/reload, NOT on a full Obsidian
-    // quit (confirmed: it never runs in that path) — `beforeunload` is what
-    // Electron actually fires as the window/app is closing, so it's the only
-    // reliable place to stop these processes when the app itself quits.
-    this.registerDomEvent(window, "beforeunload", () => this.stopHostedHarness());
+    // quit — `beforeunload` is what Electron fires as the app closes, so it's
+    // the only reliable place to stop the harness when the app itself quits.
+    this.registerDomEvent(window, "beforeunload", () => this.stopHost());
   }
 
   onunload() {
     void this.closeAcpSession();
-    this.stopHostedHarness();
+    this.stopHost();
   }
 
-  /** Spawns the harness's own long-lived processes (harness/README.md) as
-   *  children of this Obsidian process, on the one device designated as
-   *  host (settings.host.enabled) — so the harness lives and dies with the
-   *  always-on Obsidian app instead of being a separately-managed service
-   *  someone has to remember to restart by hand. */
-  private startHostedHarness() {
-    if (!Platform.isDesktopApp || !this.settings.host.enabled) return;
-    const dir = this.settings.host.harnessDir;
-    if (!dir) {
-      new Notice("Obsidian Chat: harness hosting is enabled but no harness directory is set.");
+  /** On the device designated as host, serve the harness and the vault from
+   *  inside Obsidian: nothing to install or keep running beyond Obsidian and
+   *  the harness CLI itself. */
+  startHost(): void {
+    if (this.host || !Platform.isDesktopApp || !this.settings.host.enabled) return;
+    const adapter = this.app.vault.adapter;
+    if (!(adapter instanceof FileSystemAdapter)) return;
+    if (!this.settings.host.command.trim()) {
+      new Notice("Obsidian Chat: hosting is on but no harness command is set.");
       return;
     }
-    const proxyScript = join(dir, "src", "mcp-rules-proxy.mjs");
-    const bridgeScript = join(dir, "src", "acp-bridge.mjs");
-    const configPath = join(dir, "harness.config.json");
-    if (!existsSync(proxyScript) || !existsSync(bridgeScript) || !existsSync(configPath)) {
-      new Notice(`Obsidian Chat: harness directory "${dir}" is missing acp-bridge.mjs, mcp-rules-proxy.mjs, or harness.config.json.`);
-      return;
-    }
-
-    this.mcpProxyProc = this.spawnHarnessProcess("mcp-proxy", proxyScript, dir);
-    this.bridgeProc = this.spawnHarnessProcess("bridge", bridgeScript, dir);
-  }
-
-  private spawnHarnessProcess(label: "mcp-proxy" | "bridge", script: string, cwd: string): ChildProcessWithoutNullStreams {
-    // Obsidian's Electron process launches with a minimal PATH (no login-shell
-    // init, so no nvm/homebrew entries) — a bare `spawn("node", ...)` fails
-    // with ENOENT there even when `node` works in a terminal. Prepend the
-    // common macOS install locations so resolution succeeds regardless.
-    const extraDirs = ["/opt/homebrew/bin", "/usr/local/bin", `${process.env.HOME ?? ""}/.nvm/shims`];
-    const path = [...extraDirs, process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin"].filter(Boolean).join(delimiter);
-    const proc = spawn("node", [script], { cwd, env: { ...process.env, PATH: path } });
-    proc.stdout.on("data", (chunk) => console.log(`[harness:${label}]`, chunk.toString().trimEnd()));
-    proc.stderr.on("data", (chunk) => console.error(`[harness:${label}]`, chunk.toString().trimEnd()));
-    proc.on("error", (err) => new Notice(`Obsidian Chat: harness ${label} failed to start — ${err.message}`));
-    proc.on("exit", (code, signal) => {
-      if (signal) return; // killed by stopHostedHarness()
-      console.error(`[harness:${label}] exited unexpectedly (code ${code})`);
-      new Notice(`Obsidian Chat: harness ${label} exited unexpectedly (code ${code}). Check the console.`);
+    this.host = new AcpHost({
+      app: this.app,
+      command: this.settings.host.command,
+      port: this.settings.host.port,
+      cwd: adapter.getBasePath(),
+      devices: () => this.settings.host.devices,
+      blacklist: () => this.settings.blacklistFolders,
+      log: (msg) => console.log(`[obsidian-chat host] ${msg}`),
     });
-    return proc;
+    this.host.start();
   }
 
-  private stopHostedHarness() {
-    this.bridgeProc?.kill();
-    this.bridgeProc = null;
-    this.mcpProxyProc?.kill();
-    this.mcpProxyProc = null;
+  stopHost(): void {
+    this.host?.stop();
+    this.host = null;
+  }
+
+  /** Applies a changed host setting: drops the live session (it belonged to
+   *  the old harness) and restarts the server. */
+  async restartHost(): Promise<void> {
+    await this.closeAcpSession();
+    this.stopHost();
+    this.startHost();
   }
 
   async activateView() {
@@ -263,7 +250,12 @@ export default class ObsidianChatPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = (await this.loadData()) ?? {};
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    // Older installs stored a harness directory; the host block is now
+    // self-contained, so fill any missing fields from the defaults.
+    this.settings.host = { ...DEFAULT_SETTINGS.host, ...(data.host ?? {}) };
+    delete (this.settings.host as { harnessDir?: string }).harnessDir;
   }
 
   async saveSettings() {

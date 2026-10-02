@@ -174,7 +174,7 @@ Then in Obsidian: command palette → "Reload app without saving" (or toggle the
 - The send button keeps floating bottom-right; ensure it doesn't overlap the last line by keeping `padding-right: 38px` on the textarea.
 
 ### W2.2 Toolbar compact mode (replace the media query)
-- Port Claudian's measure-don't-guess approach:
+- Port the reference plugin's measure-don't-guess approach:
   - New small class `ToolbarLayout` **inside `chat-view.ts`** (no new file): constructor takes `toolbarEl`; `refresh()` removes `oc-toolbar-compact`, measures whether items wrapped by comparing each child's `offsetTop`, then adds `oc-toolbar-compact` when any child sits below the first row. Observe with `ResizeObserver` on `toolbarEl` + a `MutationObserver` on its children; disconnect in `onClose()`; schedule via `requestAnimationFrame`.
   - Call `refresh()` after `this.refreshToolbar()` (it already runs on harness state changes).
 - CSS: `.oc-toolbar-compact .oc-toolbtn-text { display: none; }` and `.oc-toolbar-compact .oc-toolbtn-chevron { display: none; }` — replaces the entire `@media (max-width: 600px)` label-hiding block. Keep the `font-size: 16px` iOS zoom guard and the touch-target rules in the media query.
@@ -262,7 +262,7 @@ Then in Obsidian: command palette → "Reload app without saving" (or toggle the
 - `renderChips()` renders `contextChips` (removal `×` per chip) **and** the existing citation rendering stays as-is for citations (citations are non-removable). Keep the two visually identical (reuse `.oc-chip` classes).
 - Chip label rules: selection = `N lines selected` (sub = note basename); note/folder/active-note = basename.
 - `buildAcpPromptBlocks()` gains one step before the user text: map `contextChips` → text blocks:
-  - selection → `# Selected text\n<editor_selection path="{path}" lines="{start}-{end}">\n{text}\n</editor_selection>` (XML shape copied from Claudian's prompt convention),
+  - selection → `# Selected text\n<editor_selection path="{path}" lines="{start}-{end}">\n{text}\n</editor_selection>` (XML shape copied from the reference plugin's prompt convention),
   - note/active-note → `# Note context\n[[path]]\n\n{content}`,
   - folder → `# Folder reference\n[[path]]`.
   Order: selection blocks, then notes, then folders, then the `@mention` block (existing), then rules (existing), then user text.

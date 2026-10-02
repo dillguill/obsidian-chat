@@ -12,10 +12,10 @@ Finish what specs/001-acp-mcp-migration started (FR-001/FR-006/FR-011 were never
 out) by deleting the plugin's entire BYOK/local-tool-execution stack, leaving ACP as the only
 path. On top of that ACP-only foundation, re-plumb three UX surfaces onto real, already-vendored
 ACP primitives instead of plugin-hardcoded concepts: write approval becomes an inline
-per-call card (no batching, no inline edit — validated against Claudian and Obsidian Copilot
+per-call card (no batching, no inline edit — validated against the reference plugin and Obsidian Copilot
 Agent), agent mode and thinking level become fully harness-declared (`SessionMode`,
 `SessionConfigOption`), and the "/" command list becomes harness-declared
-(`AvailableCommand`). Reasoning display adopts Claudian's actual accordion pattern. A real,
+(`AvailableCommand`). Reasoning display adopts the reference plugin's actual accordion pattern. A real,
 currently-live bug is fixed as a side effect of the BYOK deletion: session notes fail to save
 today for anyone running ACP-only with zero BYOK providers configured, because
 `persistSession()` unconditionally calls into BYOK-only provider lookup.
@@ -68,7 +68,7 @@ specs/001-acp-mcp-migration's existing assumption, carried forward unchanged).
 | II. Provider Agnosticism | This feature deletes the plugin's last remaining provider-specific code (`chat/anthropic.ts`, `openai-compat.ts`, `models.ts`) and removes the plugin's own hardcoded mode/thinking-level enums in favor of harness-declared values. | PASS |
 | III. Minimal Custom Glue | No new custom component. The two bridge additions (relay `configOptions`/mode state on `session/new`; add `session/set_mode` and `session/set_config_option` routes) extend the ACP bridge's existing, already-permitted job (ACP relay) — they don't add a third component, and they stay harness-agnostic (pure pass-through of standard ACP methods, no harness-specific branching). | PASS |
 | IV. Delete Over Accumulate | This feature's single largest change is deletion: `chat/anthropic.ts`, `openai-compat.ts`, `models.ts`, `runtime.ts`, `engine.ts`, `ground.ts`, `tools/contract.ts`, `tools/runner.ts`, Tavily/web-search code, and the BYOK-only fields of `settings.ts`, removed outright rather than kept behind a flag. | PASS |
-| V. Simplicity / YAGNI | Two features considered and explicitly rejected after checking real prior art: a plugin-owned "batch approve-all" UI (neither Claudian nor Obsidian Copilot Agent do this — dropped), and a custom Obsidian-specific MCP tool server (Claudian just uses generic file tools; existing `mcpServers` wiring already covers this — nothing built). | PASS |
+| V. Simplicity / YAGNI | Two features considered and explicitly rejected after checking real prior art: a plugin-owned "batch approve-all" UI (neither the reference plugin nor Obsidian Copilot Agent do this — dropped), and a custom Obsidian-specific MCP tool server (the reference plugin just uses generic file tools; existing `mcpServers` wiring already covers this — nothing built). | PASS |
 
 Initial gate result: **PASS**. Re-evaluated after Phase 1 design below.
 
@@ -135,7 +135,7 @@ plugin/                                  # Obsidian plugin — ACP-only after th
 │                                         #   chatFolder, blacklistFolders, injectVaultRules,
 │                                         #   gateway config, toolAllowlist
 └── styles.css                            # MODIFIED: thinking-accordion styles (adapted from
-                                          #   Claudian's thinking.css), mobile toolbar spacing
+                                          #   the reference plugin's thinking.css), mobile toolbar spacing
                                           #   fix, inline approval-card styles
 
 harness/                                 # Two small, targeted additions — not a new component

@@ -2,9 +2,9 @@
 
 > Built 2026-09-02. Goal: the chat becomes a full Open WebUI replacement, grounded in the vault. Exit = anything you'd take to Open WebUI works better here.
 
-## UI/UX pass (done first, per request) — a clean, Claudian-inspired interface
+## UI/UX pass (done first, per request) — a clean, reference-plugin-inspired interface
 
-Redesigned to a **workspace-style chat** matching Claudian (no bubbles/avatars — a flowing transcript), adapted from the original card layout after review.
+Redesigned to a **workspace-style chat** matching the reference plugin (no bubbles/avatars — a flowing transcript), adapted from the original card layout after review.
 
 **Layout (`src/ui/chat-view.ts` + `styles.css`):**
 - **Header**: ✳ app name + a history (🕘) menu and "＋" new-session button.

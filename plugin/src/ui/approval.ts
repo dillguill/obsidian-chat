@@ -2,7 +2,7 @@
  *  (`session/request_permission`) — specs/002-acp-only-chat-ux, User Story 2.
  *
  *  Renders directly in the chat transcript instead of a blocking `Modal`.
- *  Checked against Claudian and Obsidian Copilot Agent (research.md R3):
+ *  Checked against the reference plugin and Obsidian Copilot Agent (research.md R3):
  *  both approve/reject per call, never batch multiple proposed writes into
  *  one "approve all" control and never allow inline-editing the proposed
  *  content (ACP's `RequestPermissionResponse` only supports picking one of

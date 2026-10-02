@@ -1,5 +1,0 @@
----
-type: task
-topics:
-  - "[[Obsidian]]"
----

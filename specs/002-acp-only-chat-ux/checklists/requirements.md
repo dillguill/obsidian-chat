@@ -32,5 +32,5 @@
 ## Notes
 
 - This spec references ACP/MCP by name in a few requirements (FR-001, FR-002, FR-012) rather than staying fully protocol-agnostic. That mirrors specs/001-acp-mcp-migration's own style: this project's constitution (Principle I) mandates these named standards as the approach itself, so naming them is the WHAT, not an incidental implementation detail.
-- Every decision in this spec was reached through an extended brainstorming pass that included direct verification against the real `@agentclientprotocol/sdk` schema already vendored in this repo, and against two comparable Obsidian AI plugins (Claudian, Obsidian Copilot) — no [NEEDS CLARIFICATION] markers were needed as a result.
+- Every decision in this spec was reached through an extended brainstorming pass that included direct verification against the real `@agentclientprotocol/sdk` schema already vendored in this repo, and against two comparable Obsidian AI plugins (the reference plugin, Obsidian Copilot) — no [NEEDS CLARIFICATION] markers were needed as a result.
 - All items pass on first review; no iteration was required.

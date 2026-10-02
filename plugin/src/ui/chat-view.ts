@@ -1,4 +1,4 @@
-/** Chat view — workspace-style layout (Claude/Claudian-like).
+/** Chat view — workspace-style layout.
  *  Desktop: right-docked sidebar. Mobile: full-screen page.
  *  No chat bubbles / avatars — a continuous flowing transcript with inline
  *  tool rows (icon + label + checkmark/diff), "Thought for Xs" blocks, and a
@@ -18,10 +18,18 @@ import { vaultFileDataUrl, VaultImagePickModal, IMAGE_EXT } from "./image-picker
 import { NoteMentionModal, type MentionItem } from "./mention";
 import { openAcpPickerMenu, flattenSelectOptions } from "./acp-picker-menu";
 import { AcpModelSuggestModal } from "./acp-model-suggest";
-import { applyToolEvent, formatDuration, groupDiff, groupLabel, toolIcon } from "./activity";
+import { applyToolEvent, formatDuration, groupDiff, toolIcon, workLabel } from "./activity";
 import { basename } from "./activity";
 import { ConnectionInfoModal, type KeyboardDebugInfo } from "./connection-info";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
+
+/** ACP stop reasons worth telling the user about (`end_turn` and the
+ *  user's own `cancelled` are not). */
+const STOP_REASON_TEXT: Record<string, string> = {
+  max_tokens: "Stopped: the reply hit the model's length limit. Send “continue” to pick up where it left off.",
+  max_turn_requests: "Stopped: the agent hit its step limit for one turn. Send “continue” to keep going.",
+  refusal: "The model declined to continue.",
+};
 
 export const VIEW_TYPE_CHAT = "obsidian-chat-view";
 
@@ -553,9 +561,9 @@ export class ChatView extends ItemView {
     this.composerEl?.focus();
   }
 
-  /** Replays a stored turn's activity as one collapsed group (W7.4) — same DOM
-   *  as a live group, minus the timer and live header. */
-  private renderStoredActivity(items: ActivityItem[]): void {
+  /** Replays a stored turn's work — thoughts and tool calls — as one collapsed
+   *  group (W7.4), the same DOM as a live group minus the timer. */
+  private renderStoredActivity(items: ActivityItem[], reasoning: { text: string; durationSeconds?: number }[] = []): void {
     const wrap = this.messagesEl.createDiv({ cls: "oc-activity" });
     wrap.setAttribute("data-expanded", "false");
     const header = wrap.createEl("button", { cls: "oc-activity-header", attr: { type: "button" } });
@@ -563,7 +571,7 @@ export class ChatView extends ItemView {
     const failed = items.some((i) => i.status === "failed");
     if (failed) iconEl.addClass("oc-activity-failed");
     setIcon(iconEl, failed ? "alert-triangle" : "check");
-    header.createSpan({ cls: "oc-activity-label", text: groupLabel(items) });
+    header.createSpan({ cls: "oc-activity-label", text: workLabel(items, reasoning.length) });
     const diff = groupDiff(items);
     if (diff) header.createSpan({ cls: "oc-activity-diff", text: `+${diff.add} −${diff.del}` });
     const chevEl = header.createSpan({ cls: "oc-activity-chevron" });
@@ -573,6 +581,7 @@ export class ChatView extends ItemView {
       chevEl.empty();
       setIcon(chevEl, expanded ? "chevron-down" : "chevron-right");
     });
+    for (const r of reasoning) this.renderStoredThought(body, r.text, r.durationSeconds);
     for (const item of items) {
       const row = body.createDiv({ cls: "oc-tool" + (item.status === "failed" ? " oc-tool-error" : "") });
       const ri = row.createSpan({ cls: "oc-tool-icon" });
@@ -696,7 +705,7 @@ export class ChatView extends ItemView {
     this.connEl.createSpan({ cls: "oc-conn-dot" });
     this.connEl.createSpan({
       cls: "oc-conn-text",
-      text: state === "connecting" ? "Connecting to harness…" : "Harness unreachable — retrying",
+      text: state === "connecting" ? "Connecting to host…" : "Host unreachable",
     });
     if (state === "unreachable") {
       const details = this.connEl.createEl("button", { cls: "oc-queue-btn", text: "Details" });
@@ -1025,7 +1034,7 @@ export class ChatView extends ItemView {
     try {
       await this.sendViaAcp(this.lastTurnText); // no user message echoed
     } catch (err) {
-      this.addToolRow("error", `Error: ${String((err as Error).message ?? err)}`, "error");
+      this.addStatusRow("error", `Error: ${String((err as Error).message ?? err)}`);
     } finally {
       this.clearPendingAttachments();
       this.streaming = false;
@@ -1035,18 +1044,13 @@ export class ChatView extends ItemView {
     }
   }
 
-  /** Standalone error/status row (bridge/transport errors, not real ACP tool
-   *  calls) — always breaks out of any open activity group. */
-  private addToolRow(name: string, detail: string, status?: "ok" | "error" | string) {
+  /** A one-line status row in the transcript — a turn's error, or why it
+   *  stopped. Breaks out of any open activity group; never styled as a tool. */
+  private addStatusRow(kind: "error" | "notice", text: string) {
     this.finalizeActivityGroup();
-    const row = this.messagesEl.createDiv({ cls: "oc-tool" + (name === "error" ? " oc-tool-error" : "") });
-    const iconEl = row.createSpan({ cls: "oc-tool-icon" });
-    setIcon(iconEl, name === "error" ? "alert-triangle" : "wrench");
-    row.createSpan({ cls: "oc-tool-verb", text: `/${name}` });
-    row.createSpan({ cls: "oc-tool-label", text: detail || name });
-    if (status && status !== "ok" && status !== "error") {
-      this.renderDiffStat(row.createSpan({ cls: "oc-tool-right" }), status);
-    }
+    const row = this.messagesEl.createDiv({ cls: `oc-status oc-status-${kind}` });
+    setIcon(row.createSpan({ cls: "oc-status-icon" }), kind === "error" ? "alert-triangle" : "info");
+    row.createSpan({ cls: "oc-status-text", text });
     this.scrollToBottom();
     return row;
   }
@@ -1067,6 +1071,9 @@ export class ChatView extends ItemView {
    *  (`toolRows`/`activityGroups` — specs/003-workspace-parity W1.3). */
   private toolRows = new Map<string, {
     item: ActivityItem;
+    /** The item array of the group this row lives in, which may already be
+     *  finalized — late updates still land on the right row. */
+    items: ActivityItem[];
     idx: number;
     rowEl: HTMLElement;
     iconEl: HTMLElement;
@@ -1088,6 +1095,8 @@ export class ChatView extends ItemView {
   private activityLiveText = "";
   private activityTimer: number | null = null;
   private activityUserToggled = false;
+  /** Thought bursts inside the current group, for its settled label. */
+  private activityThoughts = 0;
   /** Finished activity items for the current turn — attached to the assistant
    *  history entry at turn end so a reopened session replays the trail (W7.4). */
   private turnActivity: ActivityItem[] = [];
@@ -1166,6 +1175,13 @@ export class ChatView extends ItemView {
    *  run is live the header shows the newest action plus an elapsed ticker. */
   private ensureActivityGroup(): void {
     if (this.activityGroupEl) return;
+    // Work that follows some answer text starts below it, and the text after
+    // the work starts a new bubble below that, so the transcript reads in order.
+    if (this.pendingAssistantMd) {
+      this.pendingAssistantMd.removeClass("streaming");
+      this.pendingAssistantMd = null;
+      this.pendingAcc = "";
+    }
     const wrap = this.messagesEl.createDiv({ cls: "oc-activity" });
     wrap.setAttribute("data-expanded", "true");
     const header = wrap.createEl("button", { cls: "oc-activity-header", attr: { type: "button" } });
@@ -1187,6 +1203,7 @@ export class ChatView extends ItemView {
     this.activityLabelEl = labelEl;
     this.activityDiffEl = diffEl;
     this.activityItems = [];
+    this.activityThoughts = 0;
     this.activityStartedAt = Date.now();
     this.activityLiveText = "Working…";
     labelEl.setText(this.activityLiveText);
@@ -1204,8 +1221,20 @@ export class ChatView extends ItemView {
    *  the next tool call starts a new group. */
   private finalizeActivityGroup(): void {
     if (!this.activityGroupEl) return;
+    this.finalizeThought();
     this.stopActivityTimer();
     const items = this.activityItems;
+    if (!items.length && !this.activityThoughts) {
+      // Opened for a thought that turned out to be whitespace — leave no trace.
+      this.activityGroupEl.remove();
+      this.activityGroupEl = null;
+      this.activityHeaderEl = null;
+      this.activityBodyEl = null;
+      this.activityIconEl = null;
+      this.activityLabelEl = null;
+      this.activityDiffEl = null;
+      return;
+    }
     const secs = Math.max(0, (Date.now() - this.activityStartedAt) / 1000);
     const failed = items.some((i) => i.status === "failed");
     if (this.activityIconEl) {
@@ -1214,7 +1243,7 @@ export class ChatView extends ItemView {
       this.activityIconEl.toggleClass("oc-activity-failed", failed);
       setIcon(this.activityIconEl, failed ? "alert-triangle" : "check");
     }
-    if (this.activityLabelEl) this.activityLabelEl.setText(groupLabel(items, secs));
+    if (this.activityLabelEl) this.activityLabelEl.setText(workLabel(items, this.activityThoughts, secs));
     if (this.activityDiffEl) {
       const d = groupDiff(items);
       this.activityDiffEl.setText(d ? `+${d.add} −${d.del}` : "");
@@ -1238,7 +1267,8 @@ export class ChatView extends ItemView {
     this.activityItems = [];
     this.activityLiveText = "";
     this.activityUserToggled = false;
-    this.toolRows.clear();
+    // toolRows is NOT cleared here: a tool can still be running when thinking
+    // or text interrupts its group, and its later updates must find its row.
   }
 
   /** Opens a tool row's target note when it resolves to a real vault file. */
@@ -1252,8 +1282,8 @@ export class ChatView extends ItemView {
    *  place — ACP resends only changed fields (the target often arrives on the
    *  second update, and the title is absent from `completed`). */
   private addOrUpdateToolCall(ev: Extract<StreamEvent, { type: "tool_call" }>) {
-    this.ensureActivityGroup();
     let entry = this.toolRows.get(ev.toolCallId);
+    if (!entry) this.ensureActivityGroup();
     const item = applyToolEvent(entry?.item, ev);
     if (!entry) {
       const rowEl = this.activityBodyEl!.createDiv({ cls: "oc-tool" });
@@ -1261,12 +1291,16 @@ export class ChatView extends ItemView {
       const verbEl = rowEl.createSpan({ cls: "oc-tool-verb" });
       const labelEl = rowEl.createSpan({ cls: "oc-tool-label" });
       const rightEl = rowEl.createSpan({ cls: "oc-tool-right" });
-      entry = { item, idx: this.activityItems.length, rowEl, iconEl, verbEl, labelEl, rightEl };
+      entry = { item, items: this.activityItems, idx: this.activityItems.length, rowEl, iconEl, verbEl, labelEl, rightEl };
       this.toolRows.set(ev.toolCallId, entry);
       this.activityItems.push(item);
     } else {
       entry.item = item;
-      this.activityItems[entry.idx] = item;
+      entry.items[entry.idx] = item;
+      // Already settled into the turn record (its group finalized) — keep that
+      // copy current too, or the saved trail would show it still running.
+      const ti = this.turnActivity.findIndex((i) => i.id === item.id);
+      if (ti >= 0) this.turnActivity[ti] = item;
     }
 
     entry.iconEl.empty();
@@ -1290,7 +1324,7 @@ export class ChatView extends ItemView {
     if (item.status === "pending" || item.status === "in_progress") {
       this.activityLiveText = [item.verb, item.label].filter(Boolean).join(" ");
     }
-    if (this.activityLabelEl) {
+    if (this.activityLabelEl && entry.items === this.activityItems) {
       const secs = (Date.now() - this.activityStartedAt) / 1000;
       this.activityLabelEl.setText(`${this.activityLiveText} · ${formatDuration(secs)}`);
     }
@@ -1380,9 +1414,8 @@ export class ChatView extends ItemView {
 
   // ---------- threaded, collapsible thinking (specs/002-acp-only-chat-ux US4) ----------
   //
-  // `agent_thought_chunk` has no start/stop marker of its own (unlike the
-  // Claude Agent SDK's content-block events, which Claudian's equivalent
-  // component wraps directly — research.md R8), so a burst's boundary is
+  // `agent_thought_chunk` has no start/stop marker of its own (unlike some
+  // vendor agent SDKs' content-block events — research.md R8), so a burst's boundary is
   // inferred here: it stays open across consecutive "reasoning" events and
   // closes the instant a "token" or "tool_call" event interrupts it.
 
@@ -1417,14 +1450,18 @@ export class ChatView extends ItemView {
     // that open a block on its own; once one's open, appending it is harmless.
     if (!this.pendingThought && !text.trim()) return;
     if (!this.pendingThought) {
-      const wrapperEl = this.messagesEl.createDiv({ cls: "oc-thought-block" });
+      // Thinking is part of the turn's work: it goes in the same group as the
+      // tool calls around it, collapsed, instead of a block of its own.
+      this.ensureActivityGroup();
+      this.activityLiveText = "Thinking";
+      const wrapperEl = this.activityBodyEl!.createDiv({ cls: "oc-thought-block" });
       wrapperEl.setAttribute("data-streaming", "true");
-      wrapperEl.setAttribute("data-expanded", "true");
+      wrapperEl.setAttribute("data-expanded", "false");
       const headerEl = wrapperEl.createDiv({ cls: "oc-thought-header" });
       headerEl.setAttribute("tabindex", "0");
       headerEl.setAttribute("role", "button");
-      headerEl.setAttribute("aria-expanded", "true");
-      headerEl.setAttribute("aria-label", "Extended thinking — click to collapse");
+      headerEl.setAttribute("aria-expanded", "false");
+      headerEl.setAttribute("aria-label", "Extended thinking — click to expand");
       const labelEl = headerEl.createSpan({ cls: "oc-thought-label", text: "Thinking 0s…" });
       const contentEl = wrapperEl.createDiv({ cls: "oc-thought-content" });
       const startedAt = Date.now();
@@ -1436,7 +1473,9 @@ export class ChatView extends ItemView {
     }
     const pt = this.pendingThought;
     pt.text += text;
-    renderMarkdown(this.plugin.app, pt.contentEl, pt.text, this.sessionPath, this).catch(() => pt.contentEl.setText(pt.text));
+    // Plain text while streaming: a full Markdown re-render per chunk is
+    // quadratic, and the block is collapsed anyway. Rendered once at the end.
+    pt.contentEl.setText(pt.text);
     this.scrollToBottom();
   }
 
@@ -1456,18 +1495,18 @@ export class ChatView extends ItemView {
     }
     const durationSeconds = Math.floor((Date.now() - pt.startedAt) / 1000);
     pt.labelEl.setText(`Thought for ${durationSeconds}s`);
+    renderMarkdown(this.plugin.app, pt.contentEl, pt.text, this.sessionPath, this).catch(() => pt.contentEl.setText(pt.text));
+    this.activityThoughts++;
     pt.headerEl.setAttribute("aria-label", "Extended thinking — click to expand");
     pt.wrapperEl.setAttribute("data-streaming", "false");
-    pt.wrapperEl.setAttribute("data-expanded", "false");
-    pt.headerEl.setAttribute("aria-expanded", "false");
     if (pt.text.trim()) this.pendingReasoningBursts.push({ text: pt.text, durationSeconds });
     this.pendingThought = null;
   }
 
   /** Renders a previously-saved reasoning burst, collapsed by default
    *  (FR-010), when reopening a session. */
-  private renderStoredThought(text: string, durationSeconds?: number) {
-    const wrapperEl = this.messagesEl.createDiv({ cls: "oc-thought-block" });
+  private renderStoredThought(parentEl: HTMLElement, text: string, durationSeconds?: number) {
+    const wrapperEl = parentEl.createDiv({ cls: "oc-thought-block" });
     wrapperEl.setAttribute("data-streaming", "false");
     wrapperEl.setAttribute("data-expanded", "false");
     const headerEl = wrapperEl.createDiv({ cls: "oc-thought-header" });
@@ -1487,13 +1526,31 @@ export class ChatView extends ItemView {
     this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
   }
 
+  /** Renders the streaming answer at most once per frame, one render at a
+   *  time: a render per token is quadratic, and overlapping async renders
+   *  into the same element can interleave. The latest text always wins. */
   private streamInto(md: HTMLElement, text: string) {
-    renderMarkdown(this.plugin.app, md, text, this.sessionPath, this)
-      .catch(() => md.setText(text))
-      .finally(() => {
-        md.addClass("streaming");
-        this.scrollToBottom();
-      });
+    this.streamTarget = { md, text };
+    if (this.streamScheduled) return;
+    this.streamScheduled = true;
+    window.requestAnimationFrame(() => void this.flushStream());
+  }
+
+  private streamTarget: { md: HTMLElement; text: string } | null = null;
+  private streamScheduled = false;
+
+  private async flushStream(): Promise<void> {
+    const target = this.streamTarget;
+    this.streamTarget = null;
+    if (target) {
+      await renderMarkdown(this.plugin.app, target.md, target.text, this.sessionPath, this).catch(() => target.md.setText(target.text));
+      // Only the bubble still being written keeps the cursor; a render that
+      // lands after `done` must not put it back.
+      target.md.toggleClass("streaming", target.md === this.pendingAssistantMd);
+      this.scrollToBottom();
+    }
+    if (this.streamTarget) window.requestAnimationFrame(() => void this.flushStream());
+    else this.streamScheduled = false;
   }
 
   // ---------- grounding / context ----------
@@ -1734,9 +1791,9 @@ export class ChatView extends ItemView {
       await this.sendViaAcp(text);
     } catch (err) {
       if (err instanceof AcpUnavailableError) {
-        this.addToolRow("error", `Bridge/harness unavailable: ${err.message}`, "error"); // FR-012
+        this.addStatusRow("error", `Host unavailable: ${err.message}`); // FR-012
       } else {
-        this.addToolRow("error", `Error: ${String((err as Error).message ?? err)}`, "error");
+        this.addStatusRow("error", `Error: ${String((err as Error).message ?? err)}`);
       }
     } finally {
       this.clearPendingAttachments();
@@ -1847,6 +1904,7 @@ export class ChatView extends ItemView {
   private async sendViaAcp(text: string) {
     const acp = this.ensureAcp();
     this.pendingReasoningBursts = [];
+    this.toolRows.clear();
     this.turnSettled = false;
     this.acpHistory.push({ role: "user", content: text, images: this.pendingImages.length ? this.pendingImages : undefined });
     try {
@@ -2048,14 +2106,18 @@ export class ChatView extends ItemView {
       case "token":
         this.finalizeThought();
         this.finalizeActivityGroup();
-        if (!this.pendingAssistantMd) this.pendingAssistantMd = this.beginAssistantMessage();
+        if (!this.pendingAssistantMd) {
+          // A second bubble in the same turn (text, work, more text): keep the
+          // saved reply readable as one message.
+          if (this.lastAssistantText) this.lastAssistantText += "\n\n";
+          this.pendingAssistantMd = this.beginAssistantMessage();
+        }
         this.pendingAcc += e.text;
         this.lastAssistantText += e.text;
         this.streamInto(this.pendingAssistantMd, this.pendingAcc);
         break;
       case "reasoning":
         if (this.turnSettled) break; // stale post-done notification — see turnSettled
-        this.finalizeActivityGroup();
         this.addThoughtDelta(e.text);
         break;
       case "tool_call":
@@ -2064,7 +2126,6 @@ export class ChatView extends ItemView {
         break;
       case "plan":
         this.finalizeThought();
-        this.finalizeActivityGroup();
         this.updatePlan(e.entries);
         break;
       case "usage":
@@ -2081,13 +2142,19 @@ export class ChatView extends ItemView {
         if (this.pendingAssistantMd) this.pendingAssistantMd.removeClass("streaming");
         this.pendingAssistantMd = null;
         this.pendingAcc = "";
+        // A turn that stopped for any reason but a normal finish says so —
+        // otherwise a length or step limit reads as the answer being cut off.
+        {
+          const why = STOP_REASON_TEXT[e.finishReason ?? ""];
+          if (why) this.addStatusRow("notice", why);
+        }
         // Session persistence now happens in sendViaAcp() once session/prompt
         // resolves, using acpHistory — see data-model.md Session.
         break;
       case "error":
         this.finalizeThought();
         this.finalizeActivityGroup();
-        this.addToolRow("error", e.message, "error");
+        this.addStatusRow("error", e.message);
         break;
     }
   }
@@ -2212,8 +2279,9 @@ export class ChatView extends ItemView {
    *  (FR-010) and activity (W7.4) restored collapsed. */
   private renderStoredMessage(message: ChatMessage): void {
     if (message.role === "assistant") {
-      for (const r of message.reasoning ?? []) this.renderStoredThought(r.text, r.durationSeconds);
-      if (message.activity?.length) this.renderStoredActivity(message.activity);
+      if (message.activity?.length || message.reasoning?.length) {
+        this.renderStoredActivity(message.activity ?? [], message.reasoning ?? []);
+      }
       if (message.content) {
         const md = this.beginAssistantMessage();
         renderMarkdown(this.plugin.app, md, message.content, this.sessionPath, this).catch(() =>

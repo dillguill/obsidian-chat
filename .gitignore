@@ -5,7 +5,6 @@ dist/
 .obsidian/workspace*
 spikes/**/secrets.json
 data/
-.claude/
 harness/certs/
 harness/tokens.json
 harness/harness.config.json
