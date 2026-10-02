@@ -1,0 +1,914 @@
+/* Obsidian Chat — Claudian-style workspace themes.
+ * Flowing transcript (no bubbles/avatars), inline tool rows, thought blocks,
+ * composer toolbar, context chips. Driven by Obsidian CSS variables. */
+
+:root {
+  --oc-bg: var(--background-primary);
+  --oc-fg: var(--text-normal);
+  --oc-muted: var(--text-muted);
+  --oc-accent: var(--interactive-accent);
+  --oc-radius: 10px;
+  --oc-gap: 10px;
+}
+
+.oc-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 0;
+  position: relative;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  overflow: hidden;
+  font-size: 15px;
+}
+
+/* ---------- Header ---------- */
+.oc-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+}
+.oc-header-title {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.oc-app-icon {
+  display: flex;
+  align-items: center;
+  color: var(--text-accent, var(--interactive-accent));
+}
+.oc-app-icon svg { width: 18px; height: 18px; }
+.oc-app-name {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+}
+.oc-header-actions { display: flex; align-items: center; gap: 2px; }
+/* .oc-view prefix on interactive elements below beats the active theme's own
+   generic button reset (e.g. Minimal's ".workspace-leaf-content button"), which
+   otherwise overrides our background with a flat translucent gray. */
+.oc-view .oc-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  padding: 6px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.oc-view .oc-icon-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.oc-icon-btn svg { width: 16px; height: 16px; }
+
+/* ---------- Transcript ---------- */
+.oc-messages {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.oc-block { max-width: 100%; }
+.oc-body-md {
+  line-height: 1.6;
+  font-size: 15px;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+.oc-body-md a.internal-link { color: var(--link-color); }
+.oc-user .oc-body-md { color: var(--text-normal); }
+
+.oc-system {
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+  max-width: 90%;
+}
+
+/* Streaming caret */
+.oc-caret { display: none; width: 2px; height: 1em; margin-left: 2px; vertical-align: text-bottom; background: var(--interactive-accent); border-radius: 1px; }
+.oc-body-md.streaming ~ .oc-caret { display: inline-block; animation: oc-blink 1s steps(2, start) infinite; }
+@keyframes oc-blink { 50% { opacity: 0; } }
+
+/* ---------- Activity groups (specs/003-workspace-parity W1.3-W1.5) ----------
+   One collapsible block per consecutive run of tool calls. While the run is
+   live the header reads "Reading AGENTS.md · 4s"; when it settles it collapses
+   to "3 steps · 12s". */
+.oc-activity { margin: 8px 0; }
+.oc-view .oc-activity-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.oc-activity-header:hover { opacity: 0.85; }
+.oc-activity-icon { display: flex; align-items: center; flex: 0 0 auto; color: var(--text-accent, var(--interactive-accent)); }
+.oc-activity-icon svg { width: 14px; height: 14px; }
+.oc-activity-icon.oc-activity-failed { color: var(--color-red); }
+.oc-activity-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-accent, var(--interactive-accent));
+  font-variant-numeric: tabular-nums;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-activity-diff { font-size: 12px; font-weight: 600; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.oc-activity-chevron { display: flex; align-items: center; margin-left: auto; color: var(--text-faint); flex: 0 0 auto; }
+.oc-activity-chevron svg { width: 12px; height: 12px; }
+.oc-activity[data-expanded="false"] .oc-activity-body { display: none; }
+
+/* ---------- Tool rows (W1.4) ---------- */
+.oc-tool {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  padding: 2px 0;
+}
+.oc-tool-icon { display: flex; align-items: center; flex: 0 0 auto; color: var(--text-faint); }
+.oc-tool-icon svg { width: 13px; height: 13px; }
+.oc-tool-verb {
+  font-family: var(--font-monospace);
+  color: var(--text-accent, var(--interactive-accent));
+  flex: 0 0 auto;
+}
+/* Status-title rows carry their whole text in the label. */
+.oc-tool-verb:empty { display: none; }
+.oc-tool-icon:has(+ .oc-tool-verb:empty) { color: var(--text-muted); }
+.oc-tool-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oc-tool-label-link { cursor: pointer; }
+.oc-tool-label-link:hover { color: var(--text-normal); text-decoration: underline; }
+.oc-tool-right {
+  display: flex;
+  align-items: center;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 12px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  color: var(--text-muted);
+}
+.oc-tool-right svg { width: 12px; height: 12px; }
+.oc-tool-error .oc-tool-label,
+.oc-tool-error .oc-tool-verb { color: var(--color-red); }
+.oc-tool-pending .oc-tool-verb { opacity: 0.6; }
+.oc-diff-add { color: var(--color-green); }
+.oc-diff-del { color: var(--color-red); }
+
+/* Shared activity rail (W6.3): every part of the agent's work hangs off the
+   same hairline, so a turn reads as one subtree. */
+.oc-activity-body,
+.oc-plan-body,
+.oc-thought-content {
+  border-inline-start: 2px solid var(--background-modifier-border);
+  margin-inline-start: 7px;
+  padding-inline-start: 16px;
+}
+.oc-activity-body { padding-block: 2px; }
+
+/* Motion (W6.7) */
+.oc-spin svg { animation: oc-spin 900ms linear infinite; }
+@keyframes oc-spin { to { transform: rotate(360deg); } }
+@keyframes oc-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* ---------- Thought blocks (threaded, collapsible — specs/002-acp-only-chat-ux
+   US4). Adapted directly from Claudian's thinking.css: a clickable header with
+   a live-ticking label while streaming, auto-collapses to a frozen label when
+   the burst ends, click to re-expand. Multiple bursts in one turn render as
+   multiple sequential blocks — that's the "threaded" part, no protocol-level
+   segment id needed (research.md R8). */
+.oc-thought-block { margin: 8px 0; }
+.oc-thought-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  cursor: pointer;
+}
+.oc-thought-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-accent, var(--interactive-accent));
+  font-variant-numeric: tabular-nums;
+}
+.oc-thought-block[data-streaming="true"] .oc-thought-label { animation: oc-thought-pulse 1.5s ease-in-out infinite; }
+@keyframes oc-thought-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+.oc-thought-content {
+  padding: 4px 0 4px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  border-left: 2px solid var(--background-modifier-border);
+  margin-inline-start: 2px;
+}
+.oc-thought-block[data-expanded="false"] .oc-thought-content { display: none; }
+
+/* ---------- Context chips ---------- */
+.oc-chips {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 20px 10px;
+}
+.oc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  padding: 5px 8px 5px 10px;
+  color: var(--text-muted);
+}
+.oc-chip-icon { display: flex; align-items: center; color: var(--text-muted); }
+.oc-chip-icon svg { width: 13px; height: 13px; }
+.oc-chip-label { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-view .oc-chip-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 2px;
+  border-radius: 50%;
+}
+.oc-chip-x svg { width: 12px; height: 12px; }
+.oc-view .oc-chip-x:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+
+/* ---------- Composer ---------- */
+.oc-composer {
+  flex: 0 0 auto;
+  padding: 4px 14px 16px;
+}
+.oc-inputbox {
+  display: flex;
+  flex-direction: column;
+  border-radius: 18px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-primary-alt);
+}
+.oc-inputbox:focus-within { border-color: var(--background-modifier-border); }
+.oc-input:focus, .oc-input:focus-visible { outline: none; }
+.oc-input-row {
+  position: relative;
+  padding: 12px 14px 10px;
+}
+.oc-input {
+  display: block;
+  width: 100%;
+  resize: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-normal);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1.45;
+  min-height: 44px;
+  max-height: 240px;
+  padding: 0;
+  /* clears the send button, which floats over the input row's bottom-right corner */
+  padding-right: 38px;
+  outline: none;
+}
+.oc-input::placeholder { color: var(--text-faint); }
+.oc-view .oc-send {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 10px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  cursor: pointer;
+}
+.oc-view .oc-send svg {
+  display: block;
+  width: 18px !important;
+  height: 18px !important;
+  flex: none;
+}
+.oc-view .oc-send:hover { filter: brightness(1.08); }
+
+/* ---------- Composer toolbar: one row of mode chips (model / thinking / agent) ----------
+   Lives inside .oc-inputbox, below the input row; the top border is the divider
+   between the two, matching the input row's rounded card. */
+.oc-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px 8px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.oc-view .oc-toolbtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 7px;
+  white-space: nowrap;
+  min-width: 0; /* lets .oc-toolbtn-text actually shrink/ellipsize below */
+}
+.oc-view .oc-toolbtn:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.oc-toolbtn-icon { display: flex; align-items: center; flex: 0 0 auto; }
+.oc-toolbtn-icon svg { width: 14px; height: 14px; }
+.oc-toolbtn-chevron { display: flex; align-items: center; color: var(--text-faint); flex: 0 0 auto; }
+.oc-toolbtn-chevron svg { width: 11px; height: 11px; }
+.oc-toolbtn-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Agent mode / thinking-level toolbar buttons: hidden entirely (not disabled/
+   placeholder) when the connected harness declares none (FR-008). The picker
+   itself is a plain Obsidian Menu (ui/acp-picker-menu.ts) — no custom popover
+   markup needed here anymore. */
+.oc-toolbtn-hidden { display: none; }
+/* The base `.oc-view .oc-toolbtn` / `.oc-view .oc-usage` rules are more
+   specific than a bare `.oc-toolbtn-hidden`, so the hidden state has to be
+   re-stated at the same specificity or it silently loses. */
+.oc-view .oc-toolbtn-hidden,
+.oc-view .oc-usage.oc-toolbtn-hidden { display: none; }
+/* Thinking button when the harness declared thought_level earlier this
+   session but the currently-selected model doesn't support it — stays
+   visible (unlike oc-toolbtn-hidden) so switching models doesn't make the
+   control disappear/reappear. */
+.oc-toolbtn-disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* ---------- Model suggestions (chat picker) ---------- */
+.oc-model-sugg { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.oc-model-sugg-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.oc-model-sugg-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-model-sugg-provider { color: var(--text-muted); font-size: 12px; }
+.oc-blacklist { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+
+/* ---------- Slash menu ---------- */
+.oc-slash {
+  position: absolute;
+  left: 20px;
+  right: 20px;
+  bottom: 96px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  z-index: 10;
+}
+.oc-slash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 13px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.oc-slash-item.sel, .oc-slash-item:hover { background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); }
+.oc-slash-name { font-weight: 600; }
+.oc-slash-hint { font-size: 12px; color: var(--text-muted); }
+
+/* ---------- @-mention (native file-search suggestions) ---------- */
+.oc-mention-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-mention-type { flex: 0 0 auto; display: inline-flex; align-items: center; margin-left: 8px; color: var(--text-muted); }
+.oc-mention-type svg { width: 14px; height: 14px; }
+
+/* ---------- Code blocks ---------- */
+.oc-body-md pre {
+  background: var(--background-primary-alt);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  font-size: 13px;
+}
+.oc-body-md code { font-family: var(--font-monospace); font-size: 0.92em; }
+.oc-body-md :not(pre) > code { background: var(--background-modifier-border); padding: 1px 5px; border-radius: 5px; }
+
+/* ---------- Scrollbar ---------- */
+.oc-messages::-webkit-scrollbar { width: 8px; }
+.oc-messages::-webkit-scrollbar-thumb { background: var(--background-modifier-border); border-radius: 8px; }
+
+/* ---------- Mobile ---------- */
+@media (max-width: 600px) {
+  .oc-view { padding-top: env(safe-area-inset-top); }
+  /* Obsidian's own bottom tab bar overlays view content on mobile rather than
+     reserving space for it, so the composer needs real clearance above the home
+     indicator's safe area, not just the safe area itself. */
+  .oc-composer { padding-bottom: calc(56px + env(safe-area-inset-bottom)); padding-left: 12px; padding-right: 12px; }
+
+  /* Keyboard up: the keyboard is a pure overlay on this device — neither
+     `innerHeight` nor `visualViewport.height` changes — and Obsidian has already
+     clamped `.app-container` to end at the keyboard's top edge (measured: 524px
+     = 852 - 328). All that is then needed below the card is a plain gap instead
+     of the tab-bar clearance, applied inline from JS.
+
+     The composer is pinned to the view's bottom outright rather than by flex:
+     measured on the device it sat ~180px above the view's end with free space
+     pooled *below* it (`msgs=28`, `comp=133`, `view=413`), which is what a
+     container that is not distributing as a flex column looks like — so no
+     `flex-grow`/`margin: auto` arrangement can be trusted here. The transcript
+     reserves the composer's height instead (see `applyComposerHeight`). */
+  .oc-view .oc-composer-wrap {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 2;
+  }
+  .oc-view .oc-messages { flex: 1 1 auto; min-height: 0; }
+
+  /* iOS auto-zooms the whole page when a focused input's font-size is under 16px. */
+  .oc-input { font-size: 16px; }
+
+  /* Touch targets: mouse-sized buttons are too small to tap reliably. */
+  .oc-view .oc-toolbtn { padding: 9px 10px; }
+  .oc-view .oc-chip-x { padding: 6px; }
+  .oc-toolbar { gap: 4px; }
+
+  /* Model keeps its (ellipsized) label — it's the one worth reading at a
+     glance. Mode/thinking/attach go icon-only: with all four buttons
+     present, giving every one of them a label wraps the row to a second
+     line. Title attributes (set in refreshToolbar) carry the full text as
+     a tooltip, and tapping still opens the full picker. */
+  .oc-toolbtn-model .oc-toolbtn-text { max-width: 32vw; }
+  .oc-toolbtn-agent .oc-toolbtn-text,
+  .oc-toolbtn-think .oc-toolbtn-text,
+  .oc-toolbtn-attach .oc-toolbtn-text,
+  .oc-toolbtn-model .oc-toolbtn-chevron { display: none; }
+
+  /* Roomier, less sidebar-cramped feel on a full-width screen. */
+  .oc-messages { padding: 12px 18px 16px; gap: 20px; }
+  .oc-chips { padding: 0 18px 10px; }
+}
+
+/* ---------- Vision attachments (composer pills) ---------- */
+.oc-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 10px 12px 0;
+}
+.oc-attach {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  padding: 5px 6px;
+  max-width: 220px;
+}
+.oc-attach-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: cover;
+  border-radius: 6px;
+  flex: 0 0 auto;
+}
+.oc-attach-meta { min-width: 0; flex: 1; }
+.oc-attach-name {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 130px;
+}
+.oc-view .oc-attach-x {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  color: var(--text-muted);
+  padding: 3px;
+  border-radius: 50%;
+}
+.oc-view .oc-attach-x:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.oc-attach-x svg { width: 12px; height: 12px; }
+
+/* User-message attached image thumbnails */
+.oc-user-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.oc-user-img {
+  max-width: 220px;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+}
+
+/* ---------- Inline approval card (specs/002-acp-only-chat-ux US2) ---------- */
+.oc-approval-card {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  background: var(--background-primary-alt);
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.oc-approval-head { font-weight: 600; font-size: 13px; }
+.oc-approval-summary { color: var(--text-muted); font-size: 13px; margin-top: 2px; }
+.oc-approval-diff {
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.oc-approval-actions { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.oc-approval-remember { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); margin-right: auto; }
+.oc-approval-remember-disabled { opacity: 0.5; }
+.oc-approval-deny, .oc-approval-allow, .oc-approval-undo {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 6px;
+}
+.oc-approval-applied { color: var(--color-green); font-size: 12px; }
+.oc-approval-denied { color: var(--text-muted); font-size: 12px; }
+.oc-approval-undone { color: var(--text-muted); font-size: 12px; font-style: italic; }
+
+/* ---------- Vault image picker ---------- */
+.oc-image-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+.oc-view .oc-image-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: 0;
+  color: var(--text-normal);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.oc-view .oc-image-row:hover { background: var(--background-modifier-hover); }
+.oc-image-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Changes card (W7.5) ---------- */
+.oc-changes {
+  margin: 8px 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 10px;
+  padding: 6px 10px;
+}
+.oc-view .oc-changes-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 2px 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.oc-changes-title { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.oc-changes-chevron { display: flex; align-items: center; margin-left: auto; color: var(--text-faint); }
+.oc-changes-chevron svg { width: 12px; height: 12px; }
+.oc-changes[data-expanded="false"] .oc-changes-body { display: none; }
+.oc-changes-body { padding-top: 4px; }
+.oc-changes-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 13px; }
+.oc-changes-icon { display: flex; align-items: center; color: var(--text-faint); }
+.oc-changes-icon svg { width: 13px; height: 13px; }
+.oc-changes-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-view .oc-changes-undo,
+.oc-view .oc-changes-undo-all {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.oc-view .oc-changes-undo:hover:not(:disabled),
+.oc-view .oc-changes-undo-all:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.oc-changes-undo:disabled { opacity: 0.5; cursor: default; }
+.oc-changes-undo-all { margin-top: 6px; }
+
+/* ---------- Connection info modal (W7.10) ---------- */
+.oc-conn-info {
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+/* =========================================================================
+   specs/003-workspace-parity — aesthetic + functional additions
+   ========================================================================= */
+
+/* ---------- User turn marker + turn separation (W6.2/W6.6) ---------- */
+.oc-user {
+  border-inline-start: 2px solid var(--background-modifier-border);
+  padding-inline-start: 10px;
+}
+.oc-turn {
+  border: 0;
+  border-top: 1px solid var(--background-modifier-border);
+  margin: 18px 0 14px;
+  opacity: 0.55;
+}
+
+/* ---------- Welcome / empty state (W6.1) ---------- */
+.oc-welcome {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 8px 2px;
+}
+.oc-welcome-sub { font-size: 13px; color: var(--text-muted); }
+.oc-welcome-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.oc-view .oc-welcome-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+}
+.oc-view .oc-welcome-action:hover { background: var(--background-modifier-hover); }
+.oc-welcome-action svg { width: 14px; height: 14px; }
+.oc-welcome-recent { display: flex; flex-direction: column; gap: 2px; margin-top: 4px; }
+.oc-welcome-recent-title { font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.04em; }
+.oc-view .oc-recent-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: transparent;
+  border: 0;
+  color: var(--text-normal);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.oc-view .oc-recent-item:hover { background: var(--background-modifier-hover); }
+.oc-recent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-recent-date { flex: 0 0 auto; font-size: 12px; color: var(--text-faint); }
+
+/* ---------- Plan checklist (W4.1) ---------- */
+.oc-plan { margin: 8px 0; }
+.oc-view .oc-plan-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.oc-plan-title { font-size: 13px; font-weight: 500; color: var(--text-accent, var(--interactive-accent)); }
+.oc-plan-count { font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.oc-plan-chevron { display: flex; align-items: center; margin-left: auto; color: var(--text-faint); }
+.oc-plan-chevron svg { width: 12px; height: 12px; }
+.oc-plan[data-expanded="false"] .oc-plan-body { display: none; }
+.oc-plan-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; font-size: 13px; color: var(--text-muted); }
+.oc-plan-icon { display: flex; align-items: center; flex: 0 0 auto; color: var(--text-faint); }
+.oc-plan-icon svg { width: 13px; height: 13px; }
+.oc-plan-icon.oc-plan-done { color: var(--color-green); }
+.oc-plan-row[data-status="in_progress"] .oc-plan-text { color: var(--text-normal); }
+.oc-plan-text { flex: 1; min-width: 0; }
+.oc-plan-prio { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--interactive-accent); }
+
+/* ---------- Usage / context meter (W4.2) ---------- */
+/* Circular context meter: a 14px ring whose filled arc tracks usage (0-100 via
+   --oc-usage-pct, set in JS). Conic-gradient rather than an SVG arc — one node,
+   no stroke math, degrades to a solid dot where conic is unsupported. */
+/* No margin-left:auto — the ring is one chip among the toolbar row's icons and
+   keeps the same spacing as them (auto pushed it flush to the row's end, which
+   read as excess padding on mobile). */
+.oc-view .oc-usage {
+  --oc-usage-pct: 0;
+  display: block;
+  align-self: center;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background:
+    radial-gradient(closest-side, var(--background-primary-alt) calc(100% - 2.5px), transparent calc(100% - 2.5px)),
+    conic-gradient(var(--interactive-accent) calc(var(--oc-usage-pct) * 1%), var(--background-modifier-border) 0);
+}
+.oc-view .oc-usage.oc-usage-warn { background:
+    radial-gradient(closest-side, var(--background-primary-alt) calc(100% - 2.5px), transparent calc(100% - 2.5px)),
+    conic-gradient(var(--color-orange) calc(var(--oc-usage-pct) * 1%), var(--background-modifier-border) 0); }
+.oc-view .oc-usage.oc-usage-critical { background:
+    radial-gradient(closest-side, var(--background-primary-alt) calc(100% - 2.5px), transparent calc(100% - 2.5px)),
+    conic-gradient(var(--color-red) calc(var(--oc-usage-pct) * 1%), var(--background-modifier-border) 0); }
+
+/* ---------- Queue row (W2.4) ---------- */
+.oc-queue {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 20px 8px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.oc-queue[hidden] { display: none; }
+.oc-queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-view .oc-queue-btn {
+  background: transparent;
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 4px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.oc-view .oc-queue-btn:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+
+/* ---------- Jump to latest (W2.3) ---------- */
+.oc-view .oc-jump {
+  position: absolute;
+  right: 18px;
+  bottom: 104px;
+  z-index: 6;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  color: var(--text-normal);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+}
+.oc-jump svg { width: 13px; height: 13px; }
+.oc-jump[hidden] { display: none; }
+
+/* ---------- Connection status (W7.10) ---------- */
+.oc-conn {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 20px;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.oc-conn[hidden] { display: none; }
+.oc-conn-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.oc-conn[data-state="connecting"] .oc-conn-dot { background: var(--color-orange); }
+.oc-conn[data-state="unreachable"] .oc-conn-dot { background: var(--color-red); }
+.oc-conn-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+
+/* ---------- Message actions + code copy (W3.7/W7.7) ---------- */
+.oc-msg-actions { display: flex; gap: 8px; margin-top: 4px; }
+.oc-view .oc-msg-action {
+  display: inline-flex;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  color: var(--text-faint);
+  padding: 3px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.oc-view .oc-msg-action:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.oc-msg-action svg { width: 13px; height: 13px; }
+@media (hover: hover) {
+  .oc-msg-actions { opacity: 0; transition: opacity 120ms ease; }
+  .oc-block:hover .oc-msg-actions,
+  .oc-block:focus-within .oc-msg-actions { opacity: 1; }
+}
+.oc-body-md pre { position: relative; }
+.oc-view .oc-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.oc-view .oc-code-copy:hover { color: var(--text-normal); }
+.oc-code-copy svg { width: 13px; height: 13px; }
+@media (hover: hover) {
+  .oc-code-copy { opacity: 0; transition: opacity 120ms ease; }
+  .oc-body-md pre:hover .oc-code-copy { opacity: 1; }
+}
+
+/* ---------- Composer drag & drop (W3.4) ---------- */
+.oc-inputbox.oc-drop-active { border-color: var(--interactive-accent); }
+
+/* ---------- Density (W6.9) ---------- */
+.oc-view { --oc-gap: 16px; --oc-activity-pad: 2px; --oc-activity-font: 13px; --oc-input-font: 15px; }
+.oc-view.oc-density-compact {
+  --oc-gap: 10px;
+  --oc-activity-pad: 0px;
+  --oc-activity-font: 12.5px;
+  --oc-input-font: 14px;
+}
+.oc-messages { gap: var(--oc-gap); }
+.oc-activity .oc-tool { padding: var(--oc-activity-pad) 0; font-size: var(--oc-activity-font); }
+.oc-input { font-size: var(--oc-input-font); }
+
+/* ---------- Keyboard focus (W6.8) ---------- */
+.oc-view :focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
+.oc-view .oc-input:focus-visible { outline: none; }
+
+/* ---------- Reduced motion (W6.7) ---------- */
+@media (prefers-reduced-motion: reduce) {
+  .oc-view *, .oc-view *::before, .oc-view *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ---------- Accordion fade-in (W6.7) ---------- */
+.oc-activity[data-expanded="true"] .oc-activity-body,
+.oc-plan[data-expanded="true"] .oc-plan-body,
+.oc-thought-block[data-expanded="true"] .oc-thought-content { animation: oc-fade 150ms ease; }
+
+/* ---------- Mobile touch targets (W7.13) ---------- */
+@media (max-width: 600px) {
+  .oc-view .oc-send { width: 40px; height: 40px; }
+  .oc-view .oc-toolbtn { min-height: 44px; }
+  .oc-view .oc-chip-x { padding: 8px; }
+  .oc-slash-item { padding: 12px 13px; }
+  .oc-view .oc-queue-btn { min-height: 36px; }
+  .oc-welcome-actions { flex-direction: column; align-items: stretch; }
+}

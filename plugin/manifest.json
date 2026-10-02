@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-chat",
+  "name": "Obsidian Chat",
+  "version": "0.1.18",
+  "minAppVersion": "1.5.0",
+  "description": "Vault-native AI workspace: grounded chat, read-only agent tools, and harness connection (BYOK).",
+  "author": "Dillon",
+  "isDesktopOnly": false
+}

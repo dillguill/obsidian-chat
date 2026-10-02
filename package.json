@@ -1,0 +1,19 @@
+{
+  "name": "obsidian-chat-workspace",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Vault-native AI workspace — Obsidian plugin + always-on harness (see PLAN.md)",
+  "license": "MIT",
+  "workspaces": [
+    "harness",
+    "plugin"
+  ],
+  "scripts": {
+    "bridge": "npm run -w harness bridge",
+    "mcp-proxy": "npm run -w harness mcp-proxy",
+    "plugin:dev": "npm run -w obsidian-chat-plugin dev",
+    "plugin:build": "npm run -w obsidian-chat-plugin build",
+    "typecheck": "npm run -w obsidian-chat-plugin build",
+    "test": "npm run -w obsidian-chat-plugin test"
+  }
+}
