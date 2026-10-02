@@ -237,6 +237,15 @@ export function groupLabel(items: ActivityItem[], durationSeconds?: number): str
   return parts.join(" · ");
 }
 
+/** Settled header for a run of agent work: tool steps, or just "Thought"
+ *  when the run held only thinking. */
+export function workLabel(items: ActivityItem[], thoughts: number, durationSeconds?: number): string {
+  if (items.length) return groupLabel(items, durationSeconds);
+  const parts = [thoughts ? "Thought" : "Worked"];
+  if (durationSeconds !== undefined && durationSeconds >= 1) parts.push(formatDuration(durationSeconds));
+  return parts.join(" · ");
+}
+
 /** Aggregate diff across a group's rows. */
 export function groupDiff(items: ActivityItem[]): { add: number; del: number } | undefined {
   let add = 0;

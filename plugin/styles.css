@@ -133,6 +133,8 @@
 .oc-activity-chevron { display: flex; align-items: center; margin-left: auto; color: var(--text-faint); flex: 0 0 auto; }
 .oc-activity-chevron svg { width: 12px; height: 12px; }
 .oc-activity[data-expanded="false"] .oc-activity-body { display: none; }
+/* A long live run scrolls inside its group instead of pushing the answer away. */
+.oc-activity-body { max-height: 40vh; overflow-y: auto; overscroll-behavior: contain; }
 
 /* ---------- Tool rows (W1.4) ---------- */
 .oc-tool {
@@ -173,6 +175,11 @@
   color: var(--text-muted);
 }
 .oc-tool-right svg { width: 12px; height: 12px; }
+/* Status rows: a turn's error, or why it stopped. Not tool rows. */
+.oc-status { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0; font-size: 13px; color: var(--text-muted); }
+.oc-status-icon { display: flex; align-items: center; flex: 0 0 auto; padding-top: 2px; }
+.oc-status-icon svg { width: 13px; height: 13px; }
+.oc-status-error { color: var(--color-red); }
 .oc-tool-error .oc-tool-label,
 .oc-tool-error .oc-tool-verb { color: var(--color-red); }
 .oc-tool-pending .oc-tool-verb { opacity: 0.6; }
@@ -218,14 +225,22 @@
 .oc-thought-block[data-streaming="true"] .oc-thought-label { animation: oc-thought-pulse 1.5s ease-in-out infinite; }
 @keyframes oc-thought-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
 .oc-thought-content {
-  padding: 4px 0 4px 12px;
+  padding-block: 4px;
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-muted);
-  white-space: pre-wrap;
-  border-left: 2px solid var(--background-modifier-border);
-  margin-inline-start: 2px;
 }
+/* Plain text while streaming keeps its line breaks; rendered Markdown must
+   not, or the renderer's inter-element newlines become blank lines. */
+.oc-thought-block[data-streaming="true"] .oc-thought-content { white-space: pre-wrap; }
+.oc-thought-content > :first-child { margin-top: 0; }
+.oc-thought-content > :last-child { margin-bottom: 0; }
+/* Inside a work group the group's rail already marks the subtree; a thought
+   there reads as one more row, not a nested block. */
+.oc-activity-body .oc-thought-block { margin: 0; }
+.oc-activity-body .oc-thought-header { padding: 2px 0; }
+.oc-activity-body .oc-thought-label { font-size: 13px; font-weight: 400; color: var(--text-muted); }
+.oc-activity-body .oc-thought-content { border-inline-start: 0; margin-inline-start: 0; padding-inline-start: 0; max-height: 30vh; overflow-y: auto; }
 .oc-thought-block[data-expanded="false"] .oc-thought-content { display: none; }
 
 /* ---------- Context chips ---------- */
