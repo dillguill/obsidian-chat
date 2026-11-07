@@ -8,12 +8,16 @@ import { VaultIndex } from "./retrieval/index";
 import { AcpBridgeClient } from "./acp/client";
 import { AcpHost } from "./host/server";
 import { migrateDefaultModel, normalizePinnedModels } from "./chat/model-prefs";
+import { SessionStore, type StoreAdapter } from "./session/store";
+import type { ShellAttachConfig } from "./shell/types";
 
 export default class ObsidianChatPlugin extends Plugin {
   settings: ObsidianChatSettings = DEFAULT_SETTINGS;
   index!: VaultIndex;
   /** Present only on the host device: serves the harness and the vault. */
   host: AcpHost | null = null;
+  /** Host-owned append-only conversation store (the chat UI is its viewer). */
+  private sessionStore: SessionStore | null = null;
 
   /** The ACP session outlives any single chat view. Closing the tab — or
    *  Obsidian re-laying out the workspace, which destroys and rebuilds the
@@ -24,6 +28,29 @@ export default class ObsidianChatPlugin extends Plugin {
   /** Note backing the live session, so a reopened view can restore its
    *  transcript instead of coming back blank in front of a live session. */
   currentSessionPath: string | null = null;
+
+  /** The host's JSONL session store, created on first use from the vault adapter. */
+  store(): SessionStore {
+    if (!this.sessionStore) {
+      this.sessionStore = new SessionStore(
+        this.app.vault.adapter as unknown as StoreAdapter,
+        this.settings.sessionStoreFolder || ".chat/sessions",
+      );
+    }
+    return this.sessionStore;
+  }
+
+  /** The new shell attach configuration (US1 wires it to the client). */
+  shellAttachConfig(): ShellAttachConfig {
+    const shell = this.settings.shell;
+    return {
+      mode: shell.mode,
+      command: shell.command,
+      cwd: shell.cwd,
+      remoteUrl: shell.remoteUrl,
+      remoteToken: shell.remoteToken,
+    };
+  }
 
   /** The shared ACP client, rebuilt if the bridge settings changed under it. */
   acp(): AcpBridgeClient {
@@ -308,6 +335,9 @@ export default class ObsidianChatPlugin extends Plugin {
     // Older installs stored a harness directory; the host block is now
     // self-contained, so fill any missing fields from the defaults.
     this.settings.host = { ...DEFAULT_SETTINGS.host, ...(data.host ?? {}) };
+    this.settings.shell = { ...DEFAULT_SETTINGS.shell, ...(data.shell ?? {}) };
+    this.settings.sessionStoreFolder = data.sessionStoreFolder ?? DEFAULT_SETTINGS.sessionStoreFolder;
+    this.settings.activityDensity = data.activityDensity ?? DEFAULT_SETTINGS.activityDensity;
     delete (this.settings.host as { harnessDir?: string }).harnessDir;
     // Model pins/defaults: pins become opaque strings (the pre-ACP BYOK
     // `{providerId, model}` entries are dropped), and a pre-pin install's

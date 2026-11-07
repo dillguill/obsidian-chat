@@ -13,6 +13,22 @@ export interface GatewayConfig {
   token: string;
 }
 
+/** How this install reaches a harness (specs/004-acp-shell).
+ *  `local` = the host spawns the configured harness; `remote` = attach over the
+ *  VPN to a host instance. The legacy `gateway`/`host` blocks remain until the
+ *  US9 deletion phase; new code reads only `shell`. */
+export interface ShellSettings {
+  mode: "local" | "remote";
+  /** Local mode: any ACP-speaking harness, e.g. `opencode acp`. */
+  command: string;
+  /** Local mode: optional working directory override (defaults to the vault root). */
+  cwd?: string;
+  /** Remote mode: ws:// or wss:// host endpoint. */
+  remoteUrl?: string;
+  /** Remote mode: per-device transport token (never shown or logged). */
+  remoteToken?: string;
+}
+
 export interface ObsidianChatSettings {
   gateway: GatewayConfig;
   /** Where chat sessions are stored (vault-relative folder, e.g. "chat/"). */
@@ -53,7 +69,13 @@ export interface ObsidianChatSettings {
    *  let the harness use whatever it is configured with. A value the harness
    *  no longer lists is reported and ignored rather than replayed. */
   defaultModel: string | null;
-  /** Host mode (desktop only). When `enabled`, this Obsidian instance runs
+  /** New shell attach configuration (specs/004-acp-shell). */
+  shell: ShellSettings;
+  /** Vault-relative folder holding the host-owned JSONL session records. */
+  sessionStoreFolder: string;
+  /** Transcript density for agent work: chronological (default) or grouped. */
+  activityDensity: "chronological" | "grouped";
+  /** Host mode (desktop only). Legacy until the US9 deletion phase. When `enabled`, this Obsidian instance runs
    *  the configured ACP harness as a child process, serves chat clients over
    *  HTTP/SSE, and serves the vault's MCP tools to the harness — see
    *  `host/server.ts`. Off by default: only the always-on machine turns it
@@ -79,6 +101,9 @@ export const DEFAULT_SETTINGS: ObsidianChatSettings = {
   acpConfigOverrides: {},
   pinnedModels: [],
   defaultModel: null,
+  shell: { mode: "local", command: "opencode acp" },
+  sessionStoreFolder: ".chat/sessions",
+  activityDensity: "chronological",
   host: { enabled: false, command: "opencode acp", port: 8765, devices: {} },
 };
 

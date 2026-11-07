@@ -11,7 +11,7 @@ import type { ContentBlock } from "@agentclientprotocol/sdk";
 import { extractWikilinks } from "../chat/ground";
 import type { VaultIndex } from "../retrieval/index";
 import { renderMarkdown } from "./markdown";
-import { metaToFrontmatter, renderBody, approxTokens, parseSessionNote, parseSessionMeta } from "../session/store";
+import { metaToFrontmatter, renderBody, approxTokens, parseSessionNote, parseSessionMeta } from "../session/legacy-note";
 import { renderApprovalCard, type WritePreview } from "./approval";
 import { SessionSuggestModal } from "./session-suggest";
 import { vaultFileDataUrl, VaultImagePickModal, IMAGE_EXT } from "./image-picker";

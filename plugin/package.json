@@ -3,12 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Obsidian plugin \u2014 vault-native AI workspace (see PLAN.md)",
+  "description": "Obsidian plugin \u2014 ACP shell frontend for any ACP-compatible harness",
   "license": "MIT",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "test": "node --test 'src/**/*.test.ts'"
+    "test": "node --test \"src/**/*.test.ts\"",
+    "test:conformance": "node scripts/check-conformance.mjs"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
@@ -17,6 +18,8 @@
     "esbuild": "^0.23.0",
     "obsidian": "latest",
     "tslib": "^2.6.2",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "ws": "^8.18.0",
+    "@types/ws": "^8.5.13"
   }
 }

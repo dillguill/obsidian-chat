@@ -8,3 +8,13 @@ data/
 harness/certs/
 harness/tokens.json
 harness/harness.config.json
+
+# Tooling / editor / OS
+.env*
+.env.*
+*.tmp
+*.swp
+.vscode/
+.idea/
+Thumbs.db
+coverage/

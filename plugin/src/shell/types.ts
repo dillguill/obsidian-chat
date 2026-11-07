@@ -1,0 +1,42 @@
+/** Shell attach configuration and environment seams (transport-agnostic). */
+
+export type ShellMode = "local" | "remote";
+
+export interface ShellAttachConfig {
+  mode: ShellMode;
+  /** Local mode: the harness command line, e.g. `opencode acp`. */
+  command: string;
+  /** Local mode: optional working directory override (defaults to vault root). */
+  cwd?: string;
+  /** Remote mode: ws:// or wss:// host endpoint. */
+  remoteUrl?: string;
+  /** Remote mode: per-device transport token (never logged or stored). */
+  remoteToken?: string;
+}
+
+export interface ShellPaths {
+  /** Absolute vault root on this machine. */
+  vaultRoot: string;
+  /** Absolute root the harness uses for the same vault (usually vaultRoot). */
+  harnessRoot: string;
+}
+
+/** The native environment the ACP filesystem capabilities run against. */
+export interface ShellEnvironment {
+  readTextFile(path: string, line?: number, limit?: number): Promise<string>;
+  writeTextFile(path: string, content: string): Promise<void>;
+  /** Best-effort pre-write snapshot; failure must not block the write. */
+  snapshotBeforeWrite?(path: string): Promise<void>;
+  afterWrite?(path: string): Promise<void>;
+  /** True when ACP fs capabilities should be advertised. */
+  canServeVault(): boolean;
+}
+
+export interface AttachStatus {
+  mode: ShellMode | "relay";
+  label: string;
+  state: "idle" | "connecting" | "connected" | "reconnecting" | "unreachable" | "closed";
+  sessionId: string | null;
+  retries: number;
+  lastError: string | null;
+}

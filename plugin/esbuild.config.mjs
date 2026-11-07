@@ -24,6 +24,9 @@ const context = await esbuild.context({
     "@lezer/highlight",
     "@lezer/lr",
     ...builtins,
+    // `ws` probes these optional native addons in try/catch; leave them unresolved.
+    "bufferutil",
+    "utf-8-validate",
   ],
   format: "cjs",
   target: "es2020",

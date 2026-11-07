@@ -1,252 +1,246 @@
-/** Sessions as notes (PLAN §2.8 storage). One note per chat session with YAML
- *  frontmatter (tokens, timestamps) and a readable body that shows the
- *  conversation. Everything is Markdown so Obsidian Sync, Graph View, and
- *  Dataview work for free. No `model`/`provider` field — the plugin is an
- *  ACP client and doesn't know this (Constitution Principle II). */
-import type { ActivityItem, ChatMessage, Role } from "../chat/types";
+/** Append-only JSONL conversation store (FR-053…FR-059).
+ *
+ *  Obsidian-free: the caller injects a `StoreAdapter` (Obsidian's `DataAdapter`
+ *  satisfies it). The host is the only writer; the chat UI is the only viewer.
+ *  No Markdown notes are written.
+ */
+import {
+  type RecordEntry,
+  type RecordLine,
+  type SessionHeader,
+  isEntry,
+  isHeader,
+  parseLine,
+  serializeEntry,
+} from "./record.ts";
 
-export interface SessionMeta {
-  created: number;
-  updated: number;
-  tokens: number;
-  /** Display name of the conversation. Harness-supplied when the harness
-   *  titles its sessions, otherwise the first user message, otherwise a
-   *  timestamped placeholder. Absent on notes written before naming existed. */
+export interface StoreAdapter {
+  exists(path: string): Promise<boolean>;
+  mkdir(path: string): Promise<void>;
+  read(path: string): Promise<string>;
+  write(path: string, data: string): Promise<void>;
+  append(path: string, data: string): Promise<void>;
+  list(path: string): Promise<{ files: string[]; folders: string[] }>;
+  remove?(path: string): Promise<void>;
+}
+
+export interface SessionSummary {
+  sessionId: string;
+  header: SessionHeader;
+  path: string;
+  degraded: boolean;
+}
+
+export interface SessionRead {
+  header: SessionHeader;
+  entries: RecordEntry[];
+  /** True when the file ended in a partial (no newline) line. */
+  degradedTail: boolean;
+  malformedLines: number;
+}
+
+export interface CreateSessionInput {
+  deviceId: string;
+  commandLabel: string;
+  commandFingerprint: string;
+  cwd: string;
+  protocolVersion: number;
+  capabilities: SessionHeader["harness"]["capabilities"];
+  harnessSessionId?: string | null;
   title?: string;
+  agentName?: string;
+  agentVersion?: string;
+  origin?: "live" | "legacy_import";
+  provenance?: SessionHeader["provenance"];
+  now?: number;
+  sessionId?: string;
 }
 
-function fmt(ts: number): string {
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+export const DEFAULT_SESSION_STORE = ".chat/sessions";
+
+/** An entry as supplied by a caller: the store assigns seq/ts/format version. */
+export type NewEntry = {
+  [K in RecordEntry["kind"]]: Omit<Extract<RecordEntry, { kind: K }>, "seq" | "ts" | "v">;
+}[RecordEntry["kind"]];
+
+function join(root: string, name: string): string {
+  return `${root.replace(/\/+$/, "")}/${name}`;
 }
 
-export function metaToFrontmatter(meta: SessionMeta): string {
-  const lines = ["---", `type: chat-session`];
-  // Quoted: a title is user text and can contain `:` or `#`, which would
-  // otherwise change the YAML shape of the note.
-  if (meta.title) lines.push(`title: ${JSON.stringify(meta.title)}`);
-  lines.push(`created: ${fmt(meta.created)}`, `updated: ${fmt(meta.updated)}`, `tokens: ${meta.tokens}`, "---", "");
-  return lines.join("\n");
+function randomId(): string {
+  const c = (globalThis as { crypto?: Crypto }).crypto;
+  if (c?.getRandomValues) {
+    const a = new Uint8Array(12);
+    c.getRandomValues(a);
+    return Array.from(a, (b) => b.toString(16).padStart(2, "0")).join("");
+  }
+  return Math.random().toString(16).slice(2) + Date.now().toString(16);
 }
 
-/** Render the conversation into a readable note body. Reasoning bursts
- *  (specs/002-acp-only-chat-ux US4) are recorded as `### 🧠 Thought (Ns)`
- *  sub-sections before the message's final content, so `ChatView.loadSession`
- *  can render them back as collapsed thought blocks (FR-010). */
-export function renderBody(title: string, messages: ChatMessage[]): string {
-  const lines: string[] = [`# ${title}`, ""];
-  for (const m of messages) {
-    const label = m.role === "user" ? "👤 User" : m.role === "assistant" ? "🤖 Assistant" : m.role === "system" ? "🔑 System" : "🔧 Tool";
-    lines.push(`## ${label} (${fmt(Date.now())})`, "");
-    if (m.reasoning?.length) {
-      for (const r of m.reasoning) {
-        const dur = r.durationSeconds !== undefined ? ` (${r.durationSeconds}s)` : "";
-        lines.push(`### 🧠 Thought${dur}`, "", r.text.trim(), "");
+export class SessionStore {
+  private seq = new Map<string, number>();
+  private chains = new Map<string, Promise<unknown>>();
+  private needsSeparator = new Set<string>();
+
+  private adapter: StoreAdapter;
+  private root: string;
+  private now: () => number;
+
+  constructor(adapter: StoreAdapter, root = DEFAULT_SESSION_STORE, now: () => number = () => Date.now()) {
+    this.adapter = adapter;
+    this.root = root;
+    this.now = now;
+  }
+
+  private recordPath(sessionId: string): string {
+    return join(this.root, `${sessionId}.jsonl`);
+  }
+
+  private async ensureRoot(): Promise<void> {
+    if (await this.adapter.exists(this.root)) return;
+    const parts = this.root.split("/").filter(Boolean);
+    let built = "";
+    for (const part of parts) {
+      built = built ? `${built}/${part}` : part;
+      if (!(await this.adapter.exists(built))) await this.adapter.mkdir(built);
+    }
+  }
+
+  async createSession(input: CreateSessionInput): Promise<string> {
+    await this.ensureRoot();
+    const sessionId = input.sessionId ?? `s_${randomId()}`;
+    const now = input.now ?? this.now();
+    const header: SessionHeader = {
+      kind: "header",
+      v: 1,
+      sessionId,
+      deviceId: input.deviceId,
+      title: input.title,
+      createdAt: now,
+      updatedAt: now,
+      lastSeq: 0,
+      harness: {
+        commandLabel: input.commandLabel,
+        commandFingerprint: input.commandFingerprint,
+        cwd: input.cwd,
+        protocolVersion: input.protocolVersion,
+        agentName: input.agentName,
+        agentVersion: input.agentVersion,
+        capabilities: input.capabilities,
+      },
+      harnessSessionId: input.harnessSessionId ?? null,
+      resume: { state: "fresh-only" },
+      origin: input.origin ?? "live",
+      provenance: input.provenance,
+    };
+    await this.adapter.write(this.recordPath(sessionId), `${JSON.stringify(header)}\n`);
+    this.seq.set(sessionId, 0);
+    return sessionId;
+  }
+
+  /** Appends one entry, assigning its sequence and timestamp. Serialized per
+   *  session so two appends can never interleave. */
+  async append(sessionId: string, entry: NewEntry): Promise<RecordEntry> {
+    const run = async (): Promise<RecordEntry> => {
+      const next = (this.seq.get(sessionId) ?? 0) + 1;
+      const full = {
+        ...entry,
+        seq: next,
+        ts: this.now(),
+        v: 1,
+      } as RecordEntry;
+      const { line, entry: stored } = serializeEntry(full);
+      if (this.needsSeparator.has(sessionId)) {
+        await this.adapter.append(this.recordPath(sessionId), "\n");
+        this.needsSeparator.delete(sessionId);
       }
-      // Thought text can itself contain blank lines, so a blank line alone
-      // can't mark where a thought section ends and the final content
-      // resumes — an explicit marker is needed (loadSession in chat-view.ts).
-      lines.push("<!-- end-thoughts -->", "");
-    }
-    if (m.activity?.length) {
-      // Tool activity is machine-shaped, so it is stored base64'd inside an
-      // HTML comment: invisible in Reading view, byte-exact on reload (W7.4),
-      // and harmless to any other Markdown tool. Capped at the last 50 rows.
-      lines.push(`<!-- oc-activity-b64: ${base64Encode(JSON.stringify({ v: 1, items: m.activity.slice(-50) }))} -->`, "");
-    }
-    lines.push(m.content.trim());
-    // Don't persist base64 — record a display placeholder so the note stays readable.
-    if (m.images?.length) {
-      for (const img of m.images) lines.push(`![image: ${img.name ?? "attached"}]`, "");
-    }
-    lines.push("");
+      await this.adapter.append(this.recordPath(sessionId), `${line}\n`);
+      this.seq.set(sessionId, next);
+      return stored;
+    };
+    const prev = this.chains.get(sessionId) ?? Promise.resolve();
+    const next = prev.then(run, run);
+    this.chains.set(sessionId, next.catch(() => undefined));
+    return next;
   }
-  // The prose above is for humans. The canonical record is this one block:
-  // `parseSessionNote` reads it back byte-exact, so reopening a session never
-  // depends on re-parsing rendered Markdown (which a heading inside an
-  // assistant reply would otherwise break).
-  lines.push(`<!-- ${TRANSCRIPT_MARKER}: ${base64Encode(JSON.stringify({ v: 1, messages: messages.map(withoutImageData) }))} -->`, "");
-  return lines.join("\n");
-}
 
-/** Reads the transcript back out of a session note — the canonical block when
- *  the note has one, otherwise a best-effort parse of the rendered prose so
- *  notes written before the canonical block still reopen (and so a
- *  hand-edited note is not silently read as empty). */
-export function parseSessionNote(body: string): ChatMessage[] {
-  const match = body.match(new RegExp(`<!-- ${TRANSCRIPT_MARKER}: ([A-Za-z0-9+/=]+) -->`));
-  if (match) {
-    try {
-      const parsed = JSON.parse(base64Decode(match[1])) as { messages?: ChatMessage[] };
-      if (Array.isArray(parsed.messages)) return parsed.messages;
-    } catch {
-      // Malformed canonical block — fall through to the prose parser rather
-      // than reporting the conversation as empty.
-    }
+  async read(sessionId: string): Promise<SessionRead> {
+    const path = this.recordPath(sessionId);
+    if (!(await this.adapter.exists(path))) throw new Error(`unknown session: ${sessionId}`);
+    const text = await this.adapter.read(path);
+    return this.parseRecord(sessionId, text);
   }
-  return parseLegacyNote(body);
-}
 
-/** Role headings exactly as `renderBody` writes them. Matching the emoji+word
- *  pair (not a bare `\bAssistant\b` anywhere in an `##` line) is what keeps a
- *  reply that happens to contain `## Assistant behaviour` from being read as
- *  the start of a new message. */
-const LEGACY_ROLES: Record<string, Role> = {
-  "👤 User": "user",
-  "🤖 Assistant": "assistant",
-  "🔑 System": "system",
-  "🔧 Tool": "tool",
-};
-const LEGACY_ROLE_RE = /^##\s+(👤 User|🤖 Assistant|🔑 System|🔧 Tool)\s*\(/;
-const LEGACY_THOUGHT_RE = /^###\s+🧠\s+Thought(?:\s*\((\d+)s\))?\s*$/;
-const LEGACY_ACTIVITY_RE = /^<!-- oc-activity-b64: ([A-Za-z0-9+/=]+) -->$/;
-
-/** Parses the human-readable body. Only a real role heading ends a message —
- *  ordinary `#`/`##`/`###` headings are content, which is what a Markdown
- *  answer is full of. */
-function parseLegacyNote(body: string): ChatMessage[] {
-  const out: ChatMessage[] = [];
-  let role: Role | null = null;
-  let buf: string[] = [];
-  let reasoning: { text: string; durationSeconds?: number }[] = [];
-  let activity: ActivityItem[] | null = null;
-  let inThought = false;
-  let thoughtDuration: number | undefined;
-  let thoughtBuf: string[] = [];
-
-  const flushThought = () => {
-    if (!inThought) return;
-    const text = thoughtBuf.join("\n").trim();
-    if (text) reasoning.push(thoughtDuration !== undefined ? { text, durationSeconds: thoughtDuration } : { text });
-    thoughtBuf = [];
-    thoughtDuration = undefined;
-    inThought = false;
-  };
-
-  const flush = () => {
-    flushThought();
-    const content = buf.join("\n").trim();
-    if (role && (content || reasoning.length || activity?.length)) {
-      const message: ChatMessage = { role, content };
-      if (reasoning.length) message.reasoning = reasoning;
-      if (activity?.length) message.activity = activity;
-      out.push(message);
+  private parseRecord(sessionId: string, text: string): SessionRead {
+    const lines = text.split("\n");
+    const trailingPartial = lines.length > 0 && lines[lines.length - 1].length > 0 && !text.endsWith("\n");
+    let header: SessionHeader | null = null;
+    const entries: RecordEntry[] = [];
+    let malformedLines = 0;
+    let lastSeq = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
+      const parsed: RecordLine | null = parseLine(line);
+      if (!parsed) {
+        if (i === lines.length - 1 && trailingPartial) continue;
+        malformedLines += 1;
+        continue;
+      }
+      if (isHeader(parsed)) {
+        if (i === 0) header = parsed;
+        continue;
+      }
+      if (!isEntry(parsed)) {
+        malformedLines += 1;
+        continue;
+      }
+      entries.push(parsed);
+      lastSeq = Math.max(lastSeq, parsed.seq);
     }
-    buf = [];
-    reasoning = [];
-    activity = null;
-  };
-
-  for (const line of body.split("\n")) {
-    const roleMatch = line.match(LEGACY_ROLE_RE);
-    if (roleMatch) {
-      flush();
-      role = LEGACY_ROLES[roleMatch[1]];
-      continue;
-    }
-    if (role === null) continue; // preamble before the first role heading (the `# Title`)
-    const thoughtMatch = line.match(LEGACY_THOUGHT_RE);
-    if (thoughtMatch) {
-      flushThought();
-      inThought = true;
-      thoughtDuration = thoughtMatch[1] !== undefined ? Number(thoughtMatch[1]) : undefined;
-      continue;
-    }
-    if (line.trim() === "<!-- end-thoughts -->") {
-      flushThought(); // explicit marker — a blank line alone can't end a thought
-      continue;
-    }
-    const activityMatch = line.match(LEGACY_ACTIVITY_RE);
-    if (activityMatch) {
-      // Decoded where it appears, so a turn that made no tool calls can't be
-      // handed the next turn's trail.
-      activity = decodeActivity(activityMatch[1]);
-      continue;
-    }
-    if (inThought) thoughtBuf.push(line);
-    else buf.push(line);
+    if (!header) throw new Error(`session record has no valid header: ${sessionId}`);
+    if (entries.length) this.seq.set(sessionId, lastSeq);
+    if (trailingPartial) this.needsSeparator.add(sessionId);
+    return { header, entries, degradedTail: trailingPartial, malformedLines };
   }
-  flush();
-  return out;
-}
 
-/** Image bytes never go into the note — they would bloat it by megabytes and
- *  put user content in the vault in a form nothing can read. The attachment's
- *  name and type are kept so a reopened session can still show a placeholder. */
-function withoutImageData(message: ChatMessage): ChatMessage {
-  if (!message.images?.length) return message;
-  return { ...message, images: message.images.map((img) => ({ ...img, dataUrl: "" })) };
-}
-
-/** Reads back what `metaToFrontmatter` wrote. `null` when the note has no
- *  frontmatter, so callers can tell "new note" from "created at epoch".
- *  Second precision only — `fmt` does not record milliseconds. */
-export function parseSessionMeta(body: string): SessionMeta | null {
-  const match = body.match(/^---\n([\s\S]*?)\n---/);
-  if (!match) return null;
-  const field = (name: string) => match[1].match(new RegExp(`^${name}:\\s*(.+)$`, "m"))?.[1]?.trim();
-  const created = parseStamp(field("created"));
-  const updated = parseStamp(field("updated"));
-  const tokens = Number(field("tokens"));
-  if (created === null || updated === null || !Number.isFinite(tokens)) return null;
-  const rawTitle = field("title");
-  const title = rawTitle ? unquoteYaml(rawTitle) : undefined;
-  return title ? { created, updated, tokens, title } : { created, updated, tokens };
-}
-
-/** Strips the JSON-style quoting `metaToFrontmatter` writes, and tolerates a
- *  hand-edited plain value. */
-function unquoteYaml(value: string): string {
-  if (value.startsWith('"') && value.endsWith('"')) {
-    try {
-      const parsed = JSON.parse(value);
-      if (typeof parsed === "string") return parsed;
-    } catch {
-      /* fall through to the raw value */
+  async list(): Promise<SessionSummary[]> {
+    if (!(await this.adapter.exists(this.root))) return [];
+    const listing = await this.adapter.list(this.root);
+    const out: SessionSummary[] = [];
+    for (const name of listing.files) {
+      if (!name.endsWith(".jsonl")) continue;
+      const sessionId = name.slice(0, -".jsonl".length);
+      try {
+        const read = await this.read(sessionId);
+        out.push({
+          sessionId,
+          header: read.header,
+          path: join(this.root, name),
+          degraded: read.degradedTail || read.malformedLines > 0,
+        });
+      } catch {
+        // Unreadable record: skip it rather than fabricating a session.
+      }
     }
+    return out.sort((a, b) => b.header.updatedAt - a.header.updatedAt);
   }
-  return value.replace(/^['"]|['"]$/g, "");
-}
 
-/** Inverse of `fmt` — local time, matching how it was written. */
-function parseStamp(value: string | undefined): number | null {
-  const m = value?.match(/^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/);
-  if (!m) return null;
-  const [, y, mo, d, hh, mm, ss] = m.map(Number) as unknown as number[];
-  return new Date(y, mo - 1, d, hh, mm, ss).getTime();
-}
+  async delete(sessionId: string): Promise<void> {
+    if (!this.adapter.remove) throw new Error("adapter does not support remove");
+    await this.adapter.remove(this.recordPath(sessionId));
+    this.seq.delete(sessionId);
+    this.needsSeparator.delete(sessionId);
+  }
 
-const TRANSCRIPT_MARKER = "oc-transcript-b64";
+  async lastSeq(sessionId: string): Promise<number> {
+    if (this.seq.has(sessionId)) return this.seq.get(sessionId)!;
+    const read = await this.read(sessionId);
+    return read.entries.reduce((max, e) => Math.max(max, e.seq), read.header.lastSeq);
+  }
 
-/** Compute an approximate token count (chars/4) for the meter. */
-export function approxTokens(messages: ChatMessage[]): number {
-  let chars = 0;
-  for (const m of messages) chars += m.content.length + 8;
-  return Math.ceil(chars / 4);
-}
-
-/** UTF-8-safe base64 (btoa alone throws on non-Latin1 input). */
-function base64Encode(text: string): string {
-  const bytes = new TextEncoder().encode(text);
-  let bin = "";
-  for (const b of bytes) bin += String.fromCharCode(b);
-  return btoa(bin);
-}
-
-function base64Decode(b64: string): string {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
-}
-
-/** Decodes one stored activity payload; null when absent or malformed. */
-function decodeActivity(b64: string): ActivityItem[] | null {
-  try {
-    const parsed = JSON.parse(base64Decode(b64)) as { items?: ActivityItem[] };
-    return Array.isArray(parsed.items) ? parsed.items : null;
-  } catch {
-    return null;
+  /** Appends a `meta` entry when the harness (or user) changes the title. */
+  async setTitle(sessionId: string, title: string): Promise<void> {
+    await this.append(sessionId, { kind: "meta", title });
   }
 }

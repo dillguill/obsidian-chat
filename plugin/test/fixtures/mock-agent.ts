@@ -1,0 +1,139 @@
+/** In-process mock ACP agent for deterministic tests (T006).
+ *
+ *  Uses the SDK's agent-side app; no child process and no ports. Tests connect
+ *  it directly to the shell client (or through the linked-stream helper).
+ */
+import {
+  PROTOCOL_VERSION,
+  agent,
+  methods,
+  type AgentApp,
+  type RequestPermissionRequest,
+  type SessionUpdate,
+} from "@agentclientprotocol/sdk";
+
+export interface MockAgentOptions {
+  sessionId?: string;
+  /** Updates emitted for every prompt (in order). */
+  updates?: SessionUpdate[];
+  /** Ask for permission during the prompt; options are fixed. */
+  requestPermission?: boolean;
+  permissionOptionId?: string;
+  stopReason?: "end_turn" | "cancelled" | "max_tokens" | "refusal";
+  capabilities?: {
+    loadSession?: boolean;
+    resume?: boolean;
+    mcpHttp?: boolean;
+  };
+  modes?: unknown;
+  configOptions?: unknown;
+  /** Resolve the prompt before emitting the last update (opencode anomaly). */
+  resolveBeforeLastUpdate?: boolean;
+}
+
+const TOOL_CALL: SessionUpdate = {
+  sessionUpdate: "tool_call",
+  toolCallId: "tc_1",
+  title: "Read note",
+  kind: "read",
+  status: "in_progress",
+  locations: [{ path: "/vault/Inbox/demo.md" }],
+  rawInput: { path: "Inbox/demo.md" },
+} as SessionUpdate;
+
+export function defaultUpdates(text = "hello"): SessionUpdate[] {
+  return [
+    { sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking…" } } as SessionUpdate,
+    TOOL_CALL,
+    { sessionUpdate: "tool_call_update", toolCallId: "tc_1", status: "completed" } as SessionUpdate,
+    {
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text },
+    } as SessionUpdate,
+  ];
+}
+
+export function createMockAgent(options: MockAgentOptions = {}): AgentApp {
+  const sessionId = options.sessionId ?? "session_mock_1";
+  const capabilities = options.capabilities ?? {};
+  let currentModes = options.modes ?? undefined;
+  let currentConfig = options.configOptions ?? undefined;
+  let lastUpdates: SessionUpdate[] = [];
+
+  return agent({ name: "mock-agent" } as never)
+    .onRequest(methods.agent.initialize, () => ({
+      protocolVersion: PROTOCOL_VERSION,
+      agentCapabilities: {
+        loadSession: !!capabilities.loadSession,
+        promptCapabilities: { image: true, audio: false, embeddedContext: false },
+        mcpCapabilities: { http: !!capabilities.mcpHttp, sse: false, acp: false },
+        sessionCapabilities: { resume: capabilities.resume ? {} : null, list: {} },
+      },
+      agentInfo: { name: "mock-agent", version: "0.0.1" },
+    }))
+    .onRequest(methods.agent.session.new, () => {
+      lastUpdates = options.updates ?? defaultUpdates();
+      return { sessionId, modes: currentModes as never, configOptions: currentConfig as never };
+    })
+    .onRequest(methods.agent.session.load, () => {
+      lastUpdates = options.updates ?? defaultUpdates("replayed");
+      return { modes: currentModes as never, configOptions: currentConfig as never };
+    })
+    .onRequest(methods.agent.session.resume, () => ({
+      modes: currentModes as never,
+      configOptions: currentConfig as never,
+    }))
+    .onRequest(methods.agent.session.list, () => ({ sessions: [] }))
+    .onRequest(methods.agent.session.close, () => ({}))
+    .onRequest(methods.agent.session.setMode, (ctx) => {
+      currentModes = { ...(currentModes as Record<string, unknown> | undefined), currentModeId: ctx.params.modeId };
+      return {};
+    })
+    .onRequest(methods.agent.session.setConfigOption, (ctx) => {
+      return { configOptions: (currentConfig ?? []) as never };
+    })
+    .onRequest(methods.agent.session.prompt, async (ctx) => {
+      const updates = lastUpdates;
+      if (options.requestPermission) {
+        const request: RequestPermissionRequest = {
+          sessionId: ctx.params.sessionId,
+          toolCall: {
+            toolCallId: "tc_perm",
+            title: "Write note",
+            kind: "edit",
+            status: "pending",
+            content: [{ type: "diff", path: "Inbox/new.md", oldText: "", newText: "new\n" }],
+            locations: [{ path: "/vault/Inbox/new.md" }],
+          } as never,
+          options: [
+            { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+            { optionId: "reject_once", name: "Reject", kind: "reject_once" },
+          ],
+        };
+        await ctx.client.request(methods.client.session.requestPermission, request);
+      }
+      const emit = async (update: SessionUpdate) => {
+        await ctx.client.notify(methods.client.session.update, { sessionId: ctx.params.sessionId, update } as never);
+      };
+      for (let i = 0; i < updates.length; i++) {
+        if (options.resolveBeforeLastUpdate && i === updates.length - 1) {
+          setTimeout(() => void emit(updates[i]), 10);
+          break;
+        }
+        await emit(updates[i]);
+      }
+      return { stopReason: options.stopReason ?? "end_turn" };
+    })
+    .onNotification(methods.agent.session.cancel, () => undefined);
+}
+
+/** Two linked ACP `Stream`s for connecting a client app directly to an agent
+ *  app without a transport (used by tests). */
+export function linkedStreams(): { clientStream: unknown; agentStream: unknown } {
+  const toAgent = new TransformStream();
+  const toClient = new TransformStream();
+  return {
+    clientStream: { writable: toAgent.writable, readable: toClient.readable },
+    agentStream: { writable: toClient.writable, readable: toAgent.readable },
+  };
+}
