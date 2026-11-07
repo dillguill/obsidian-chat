@@ -1207,3 +1207,32 @@
 .oc-view.oc-phone .oc-chip-x { padding: 8px; }
 .oc-view.oc-phone .oc-slash-item { padding: 12px 13px; }
 .oc-view.oc-phone .oc-queue-btn { min-height: 36px; }
+
+/* ---------- ACP shell view (specs/004-acp-shell US1) ---------- */
+.oc-shell-view { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 8px; }
+.oc-shell-header { display: flex; align-items: center; gap: 8px; }
+.oc-shell-title { font-weight: 600; }
+.oc-shell-status { color: var(--text-muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
+.oc-shell-actions { display: flex; gap: 6px; }
+.oc-shell-messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.oc-shell-msg { white-space: pre-wrap; line-height: 1.45; }
+.oc-shell-user { align-self: flex-end; max-width: 85%; background: var(--background-modifier-hover); border-radius: 8px; padding: 6px 10px; }
+.oc-shell-assistant { color: var(--text-normal); }
+.oc-shell-thought { color: var(--text-muted); font-style: italic; font-size: 13px; border-inline-start: 2px solid var(--background-modifier-border); padding-inline-start: 8px; }
+.oc-shell-tool { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.oc-shell-status-row { color: var(--text-faint); font-size: 12px; }
+.oc-shell-plan { border-inline-start: 2px solid var(--background-modifier-border); padding-inline-start: 8px; font-size: 13px; }
+.oc-shell-plan-title { font-weight: 600; }
+.oc-shell-plan-row { color: var(--text-muted); }
+.oc-shell-raw { font-size: 12px; color: var(--text-muted); }
+.oc-shell-raw pre { max-height: 30vh; overflow: auto; white-space: pre-wrap; }
+.oc-shell-permission { border: 1px solid var(--interactive-accent); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.oc-shell-permission-title { font-weight: 600; }
+.oc-shell-permission-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.oc-shell-error { color: var(--color-red); white-space: pre-wrap; }
+.oc-shell-error-hint { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+.oc-shell-composer { display: flex; flex-direction: column; gap: 6px; }
+.oc-shell-input { width: 100%; resize: vertical; }
+.oc-shell-buttons { display: flex; justify-content: flex-end; gap: 6px; }
+.oc-shell-btn { padding: 4px 10px; border-radius: 6px; }
+.oc-shell-hidden { display: none; }

@@ -86,7 +86,9 @@ export class AcpShellClient implements AcpChatClient {
   private lastTurn = 0;
   private lastTurnEndedAt = 0;
   private closed = false;
-  private turnReject: ((err: Error) => void) | null = null;
+  private lost:
+    | { promise: Promise<never>; reject: (err: Error) => void }
+    | null = null;
 
   constructor(options: ShellClientOptions) {
     this.opts = options;
@@ -120,6 +122,11 @@ export class AcpShellClient implements AcpChatClient {
   getState(): AcpConnectionState {
     return this.state;
   }
+  /** Cached capability snapshot for the session record header. */
+  getCapabilitiesSnapshot(): { loadSession: boolean; resume: boolean; mcpHttp: boolean } {
+    return { ...this.capabilities };
+  }
+
   getDebugInfo(): AcpDebugInfo {
     return {
       state: this.state,
@@ -190,17 +197,30 @@ export class AcpShellClient implements AcpChatClient {
       .onNotification(methods.client.session.update, (ctx) => this.handleUpdate(ctx.params));
     const conn = app.connect(transport.stream);
     this.conn = conn;
-    transport.onClose((reason) => this.transportLost(reason));
+    let lostReject: ((err: Error) => void) | null = null;
+    this.lost = {
+      promise: new Promise<never>((_, reject) => {
+        lostReject = reject;
+      }),
+      reject: (err) => lostReject?.(err),
+    };
+    transport.onClose((reason) => {
+      this.lost?.reject(new Error(reason));
+      this.transportLost(reason);
+    });
     try {
-      const init = await conn.agent.request(methods.agent.initialize, {
+      const init = await Promise.race([
+        conn.agent.request(methods.agent.initialize, {
         protocolVersion: PROTOCOL_VERSION,
         clientInfo: { name: "obsidian-chat", version: "2.0.0" },
-        clientCapabilities: {
-          fs: this.opts.environment?.canServeVault()
-            ? { readTextFile: true, writeTextFile: true }
-            : { readTextFile: false, writeTextFile: false },
-        },
-      });
+          clientCapabilities: {
+            fs: this.opts.environment?.canServeVault()
+              ? { readTextFile: true, writeTextFile: true }
+              : { readTextFile: false, writeTextFile: false },
+          },
+        }),
+        this.lost.promise,
+      ]);
       if (init.protocolVersion !== PROTOCOL_VERSION) {
         throw new Error(`unsupported ACP protocol version ${String(init.protocolVersion)} (expected ${PROTOCOL_VERSION})`);
       }
@@ -210,7 +230,7 @@ export class AcpShellClient implements AcpChatClient {
         resume: !!caps.sessionCapabilities?.resume,
         mcpHttp: !!caps.mcpCapabilities?.http,
       };
-      await this.openSession(conn);
+      await Promise.race([this.openSession(conn), this.lost.promise]);
       this.setState("connected", undefined);
       this.retries = 0;
     } catch (err) {
@@ -321,10 +341,13 @@ export class AcpShellClient implements AcpChatClient {
     const turn = this.turnNumber;
     let stopReason: StopReason | string | undefined;
     try {
-      const response: PromptResponse = await conn.agent.request(methods.agent.session.prompt, {
-        sessionId: this.sessionId,
-        prompt: blocks,
-      });
+      const response: PromptResponse = await Promise.race([
+        conn.agent.request(methods.agent.session.prompt, {
+          sessionId: this.sessionId,
+          prompt: blocks,
+        }),
+        this.lost?.promise ?? new Promise<never>(() => undefined),
+      ]);
       stopReason = response.stopReason;
       if (response.usage) {
         this.emit({

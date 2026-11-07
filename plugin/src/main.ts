@@ -10,6 +10,8 @@ import { AcpHost } from "./host/server";
 import { migrateDefaultModel, normalizePinnedModels } from "./chat/model-prefs";
 import { SessionStore, type StoreAdapter } from "./session/store";
 import type { ShellAttachConfig } from "./shell/types";
+import { ShellRuntime } from "./shell/runtime";
+import { ShellChatView, SHELL_VIEW_TYPE } from "./ui/shell-view";
 
 export default class ObsidianChatPlugin extends Plugin {
   settings: ObsidianChatSettings = DEFAULT_SETTINGS;
@@ -18,6 +20,8 @@ export default class ObsidianChatPlugin extends Plugin {
   host: AcpHost | null = null;
   /** Host-owned append-only conversation store (the chat UI is its viewer). */
   private sessionStore: SessionStore | null = null;
+  /** New ACP shell runtime (US1 local attach; host relay arrives in US3). */
+  private runtime: ShellRuntime | null = null;
 
   /** The ACP session outlives any single chat view. Closing the tab — or
    *  Obsidian re-laying out the workspace, which destroys and rebuilds the
@@ -50,6 +54,38 @@ export default class ObsidianChatPlugin extends Plugin {
       remoteUrl: shell.remoteUrl,
       remoteToken: shell.remoteToken,
     };
+  }
+
+  /** The new shell runtime: local attach, record persistence, no legacy bridge. */
+  shellRuntime(): ShellRuntime {
+    if (!this.runtime) {
+      this.runtime = new ShellRuntime({
+        app: this.app,
+        settings: () => ({
+          shell: this.shellAttachConfig(),
+          sessionStoreFolder: this.settings.sessionStoreFolder || ".chat/sessions",
+          blacklistFolders: this.settings.blacklistFolders,
+        }),
+        store: () => this.store(),
+        stopLegacy: async () => {
+          await this.closeAcpSession();
+          this.stopHost();
+        },
+        log: (message) => console.log(`[obsidian-chat shell] ${message}`),
+      });
+    }
+    return this.runtime;
+  }
+
+  /** Opens the ACP shell view in a right-side pane (desktop) or a tab. */
+  async activateShellView(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf: WorkspaceLeaf | null = workspace.getLeavesOfType(SHELL_VIEW_TYPE)[0] ?? null;
+    if (!leaf) {
+      leaf = Platform.isMobile ? workspace.getLeaf(true) : workspace.getRightLeaf(false) ?? workspace.getLeaf(true);
+      if (leaf) await leaf.setViewState({ type: SHELL_VIEW_TYPE, active: true });
+    }
+    if (leaf) workspace.revealLeaf(leaf);
   }
 
   /** The shared ACP client, rebuilt if the bridge settings changed under it. */
@@ -159,15 +195,24 @@ export default class ObsidianChatPlugin extends Plugin {
     this.index = new VaultIndex(this.app, () => this.settings.chatFolder, () => this.settings.blacklistFolders);
 
     this.registerView(VIEW_TYPE_CHAT, (leaf) => new ChatView(leaf, this));
+    this.registerView(SHELL_VIEW_TYPE, (leaf) => new ShellChatView(leaf, this));
 
     this.addRibbonIcon("message-square", "Open Obsidian Chat", () => {
       this.activateView();
+    });
+    this.addRibbonIcon("terminal-square", "Open ACP Shell", () => {
+      void this.activateShellView();
     });
 
     this.addCommand({
       id: "open-chat",
       name: "Open Obsidian Chat",
       callback: () => this.activateView(),
+    });
+    this.addCommand({
+      id: "open-acp-shell",
+      name: "Open ACP Shell (new shell)",
+      callback: () => void this.activateShellView(),
     });
 
     // W3.1: send the editor's current selection to the chat as context.
@@ -243,6 +288,7 @@ export default class ObsidianChatPlugin extends Plugin {
   }
 
   onunload() {
+    void this.runtime?.close();
     void this.closeAcpSession();
     this.stopHost();
   }

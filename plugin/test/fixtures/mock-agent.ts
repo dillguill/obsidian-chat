@@ -29,6 +29,10 @@ export interface MockAgentOptions {
   configOptions?: unknown;
   /** Resolve the prompt before emitting the last update (opencode anomaly). */
   resolveBeforeLastUpdate?: boolean;
+  /** Keep the prompt pending until the client sends session/cancel. */
+  blockUntilCancel?: boolean;
+  /** Delay before resolving a prompt (ms), to test in-flight crashes. */
+  promptDelayMs?: number;
 }
 
 const TOOL_CALL: SessionUpdate = {
@@ -59,6 +63,7 @@ export function createMockAgent(options: MockAgentOptions = {}): AgentApp {
   let currentModes = options.modes ?? undefined;
   let currentConfig = options.configOptions ?? undefined;
   let lastUpdates: SessionUpdate[] = [];
+  let cancelWaiter: (() => void) | null = null;
 
   return agent({ name: "mock-agent" } as never)
     .onRequest(methods.agent.initialize, () => ({
@@ -93,6 +98,13 @@ export function createMockAgent(options: MockAgentOptions = {}): AgentApp {
       return { configOptions: (currentConfig ?? []) as never };
     })
     .onRequest(methods.agent.session.prompt, async (ctx) => {
+      if (options.promptDelayMs) await new Promise((resolve) => setTimeout(resolve, options.promptDelayMs));
+      if (options.blockUntilCancel) {
+        await new Promise<void>((resolve) => {
+          cancelWaiter = resolve;
+        });
+        return { stopReason: "cancelled" as const };
+      }
       const updates = lastUpdates;
       if (options.requestPermission) {
         const request: RequestPermissionRequest = {
@@ -122,9 +134,15 @@ export function createMockAgent(options: MockAgentOptions = {}): AgentApp {
         }
         await emit(updates[i]);
       }
+      // Give the notification writes a turn to flush before resolving: some
+      // transports let the response overtake the last notification otherwise.
+      if (!options.resolveBeforeLastUpdate) await new Promise((resolve) => setTimeout(resolve, 10));
       return { stopReason: options.stopReason ?? "end_turn" };
     })
-    .onNotification(methods.agent.session.cancel, () => undefined);
+    .onNotification(methods.agent.session.cancel, () => {
+      cancelWaiter?.();
+      cancelWaiter = null;
+    });
 }
 
 /** Two linked ACP `Stream`s for connecting a client app directly to an agent

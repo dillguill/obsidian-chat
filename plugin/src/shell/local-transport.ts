@@ -9,15 +9,17 @@ import type { Readable, Writable } from "node:stream";
 import { ndJsonStream, type Stream } from "@agentclientprotocol/sdk";
 import { backoffDelay, type ShellTransport, type TransportConnector } from "./transport.ts";
 
-function desktopRequire<T>(id: string): T {
-  const req = (globalThis as { require?: (moduleId: string) => unknown }).require ?? undefined;
-  // In an Obsidian desktop plugin the CJS bundle's own `require` may not live on
-  // globalThis; fall back to the module-scope one only when it is safe.
-  if (typeof req === "function") return req(id) as T;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const local = (globalThis as any).require;
-  if (typeof local === "function") return local(id) as T;
-  throw new Error("local attach requires the desktop app (Node integration is unavailable)");
+/** Loads a Node built-in lazily: dynamic import works under `node --test` and
+ *  in Electron's Node integration; a global `require` is the fallback for
+ *  environments whose ESM loader refuses built-in specifiers. */
+async function loadNodeModule<T>(id: string): Promise<T> {
+  try {
+    return (await import(/* @vite-ignore */ id)) as T;
+  } catch {
+    const req = (globalThis as { require?: (moduleId: string) => unknown }).require;
+    if (typeof req === "function") return req(id) as T;
+    throw new Error(`local attach requires the desktop app (could not load ${id})`);
+  }
 }
 
 /** Quote-aware command split: no shell interpolation in the argv path. */
@@ -67,10 +69,13 @@ export class LocalTransport implements ShellTransport {
   private callbacks = new Set<(reason: string) => void>();
   private closed = false;
 
-  private constructor(label: string, child: ChildProcessWithoutNullStreams) {
+  private constructor(
+    label: string,
+    child: ChildProcessWithoutNullStreams,
+    nodeStream: typeof import("node:stream"),
+  ) {
     this.label = label;
     this.child = child;
-    const nodeStream = desktopRequire<typeof import("node:stream")>("node:stream");
     const output = nodeStream.Writable.toWeb(child.stdin as Writable) as WritableStream<Uint8Array>;
     const input = nodeStream.Readable.toWeb(child.stdout as Readable) as ReadableStream<Uint8Array>;
     this.stream = ndJsonStream(output, input);
@@ -85,18 +90,24 @@ export class LocalTransport implements ShellTransport {
     });
   }
 
-  static spawn(options: { command: string; cwd: string; onStderr?: (line: string) => void }): LocalTransport {
+  static async spawn(options: {
+    command: string;
+    cwd: string;
+    env?: Record<string, string>;
+    onStderr?: (line: string) => void;
+  }): Promise<LocalTransport> {
     const argv = splitCommand(options.command);
     if (!argv.length) throw new Error("harness command is empty");
-    const cp = desktopRequire<typeof import("node:child_process")>("node:child_process");
+    const cp = await loadNodeModule<typeof import("node:child_process")>("node:child_process");
+    const nodeStream = await loadNodeModule<typeof import("node:stream")>("node:stream");
     const child = cp.spawn(argv[0], argv.slice(1), {
       cwd: options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       // npm-installed CLIs are `.cmd` shims on Windows and only resolve through a shell.
       shell: process.platform === "win32",
-      env: { ...process.env, PATH: harnessPath(process.env.PATH ?? "") },
+      env: { ...process.env, ...(options.env ?? {}), PATH: harnessPath(process.env.PATH ?? "") },
     });
-    const transport = new LocalTransport(argv[0], child);
+    const transport = new LocalTransport(argv[0], child, nodeStream);
     child.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString().trimEnd();
       if (text) options.onStderr?.(text);
@@ -149,8 +160,8 @@ export function harnessPath(original: string): string {
 }
 
 export class LocalTransportConnector implements TransportConnector {
-  private options: { command: string; cwd: string; onStderr?: (line: string) => void };
-  constructor(options: { command: string; cwd: string; onStderr?: (line: string) => void }) {
+  private options: { command: string; cwd: string; env?: Record<string, string>; onStderr?: (line: string) => void };
+  constructor(options: { command: string; cwd: string; env?: Record<string, string>; onStderr?: (line: string) => void }) {
     this.options = options;
   }
   async connect(): Promise<ShellTransport> {

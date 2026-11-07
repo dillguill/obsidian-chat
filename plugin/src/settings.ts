@@ -201,6 +201,64 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
       }
     }
 
+    containerEl.createEl("h4", { text: "ACP Shell" });
+    containerEl.createEl("p", {
+      text: "The new shell attaches to a configured ACP harness. Local mode spawns it from this Obsidian install; remote attach arrives with the host relay (US3).",
+      cls: "setting-item-description",
+    });
+    new Setting(containerEl)
+      .setName("Shell mode")
+      .addDropdown((d) =>
+        d
+          .addOption("local", "Local (spawn harness)")
+          .addOption("remote", "Remote (not implemented yet)")
+          .setValue(this.plugin.settings.shell.mode)
+          .onChange(async (v) => {
+            this.plugin.settings.shell.mode = v === "remote" ? "remote" : "local";
+            await this.plugin.saveSettings();
+            this.display();
+          }),
+      );
+    new Setting(containerEl)
+      .setName("Harness command")
+      .setDesc("Any ACP-speaking harness, e.g. `opencode acp`. Applied on the next shell session.")
+      .addText((t) => {
+        t.setPlaceholder("opencode acp").setValue(this.plugin.settings.shell.command);
+        t.inputEl.addEventListener("change", async () => {
+          this.plugin.settings.shell.command = t.getValue().trim();
+          await this.plugin.saveSettings();
+        });
+      });
+    if (this.plugin.settings.shell.mode === "remote") {
+      new Setting(containerEl)
+        .setName("Remote endpoint")
+        .setDesc("ws:// or wss:// host endpoint (remote attach is implemented in US3).")
+        .addText((t) => {
+          t.setPlaceholder("ws://100.x.y.z:8765/acp").setValue(this.plugin.settings.shell.remoteUrl ?? "");
+          t.inputEl.addEventListener("change", async () => {
+            this.plugin.settings.shell.remoteUrl = t.getValue().trim();
+            await this.plugin.saveSettings();
+          });
+        });
+    }
+    new Setting(containerEl)
+      .setName("Activity density")
+      .setDesc("Chronological is the faithful default; grouped collapses runs of agent work.")
+      .addDropdown((d) =>
+        d
+          .addOption("chronological", "Chronological")
+          .addOption("grouped", "Grouped")
+          .setValue(this.plugin.settings.activityDensity)
+          .onChange(async (v) => {
+            this.plugin.settings.activityDensity = v === "grouped" ? "grouped" : "chronological";
+            await this.plugin.saveSettings();
+          }),
+      );
+    new Setting(containerEl)
+      .setName("Open the ACP shell")
+      .setDesc("Opens the new shell view (US1: local attach, send/cancel, persisted record).")
+      .addButton((b) => b.setButtonText("Open shell").onClick(() => void this.plugin.activateShellView()));
+
     if (Platform.isDesktopApp) {
       containerEl.createEl("h4", { text: "Host" });
       containerEl.createEl("p", {

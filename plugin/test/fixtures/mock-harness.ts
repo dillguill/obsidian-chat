@@ -16,6 +16,7 @@ const stream = ndJsonStream(
   Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>,
 );
 const app = createMockAgent({
+  promptDelayMs: Number(process.env.MOCK_PROMPT_DELAY_MS ?? 0),
   capabilities: {
     loadSession: process.env.MOCK_LOAD_SESSION === "1",
     resume: process.env.MOCK_RESUME === "1",

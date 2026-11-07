@@ -100,19 +100,19 @@ with cancel, kill, and a bad command.
 
 ### Tests for User Story 1
 
-- [ ] T031 [P] [US1] In-process mock-agent one-turn test (initialize → session/new → prompt → updates → `turn`) in `plugin/src/shell/acp-client.test.ts`
-- [ ] T032 [P] [US1] Child-spawn smoke + crash-mid-turn + bad-command tests in `plugin/src/shell/local-transport.test.ts`
-- [ ] T033 [P] [US1] Cancel-resolves-cancelled and in-flight-turn-survives-view-close tests in `plugin/src/shell/acp-client.test.ts`
+- [X] T031 [P] [US1] In-process mock-agent one-turn test (initialize → session/new → prompt → updates → `turn`) in `plugin/src/shell/acp-client.test.ts`
+- [X] T032 [P] [US1] Child-spawn smoke + crash-mid-turn + bad-command tests in `plugin/src/shell/local-transport.test.ts`
+- [X] T033 [P] [US1] Cancel-resolves-cancelled and in-flight-turn-survives-view-close tests in `plugin/src/shell/acp-client.test.ts`
 
 ### Implementation for User Story 1
 
-- [ ] T034 [US1] Finish `plugin/src/shell/local-transport.ts`: quote-aware `splitCommand`, cwd from `FileSystemAdapter.getBasePath()`, Windows `.cmd` exception, bounded respawn, deliberate-stop no-respawn (FR-001/FR-002/FR-003)
-- [ ] T035 [US1] Finish `plugin/src/shell/acp-client.ts` connect/initialize/session-new/prompt/cancel and the late-update attribution window (`late`, `_meta`; constants 2,000/250/5,000 ms) (FR-007…FR-015)
-- [ ] T036 [US1] Wire record creation and turn-boundary appends in `plugin/src/session/store.ts` from the client lifecycle; never a synthetic `turn_end` (FR-010/FR-053)
-- [ ] T037 [US1] Wire host start/stop, harness command/port, and crash state in `plugin/src/main.ts` and `plugin/src/settings.ts` (FR-003/FR-007)
-- [ ] T038 [US1] Add the minimal chat view send/stream/cancel path in `plugin/src/ui/chat-view.ts` (transcript + composer; no tool vocabulary yet) (FR-010/FR-042)
-- [ ] T039 [US1] Add the attach/health indicator and configuration-error surface in `plugin/src/ui/connection-info.ts` and `plugin/src/main.ts` (FR-040)
-- [ ] T040 [US1] Run the plan P1 gate: typecheck, production build, `npm test`, and the conformance greps; record results in the PR/branch notes
+- [X] T034 [US1] Finish `plugin/src/shell/local-transport.ts`: quote-aware `splitCommand`, cwd from `FileSystemAdapter.getBasePath()`, Windows `.cmd` exception, bounded respawn, deliberate-stop no-respawn (FR-001/FR-002/FR-003)
+- [X] T035 [US1] Finish `plugin/src/shell/acp-client.ts` connect/initialize/session-new/prompt/cancel and the late-update attribution window (`late`, `_meta`; constants 2,000/250/5,000 ms) (FR-007…FR-015)
+- [X] T036 [US1] Wire record creation and turn-boundary appends in `plugin/src/session/store.ts` from the client lifecycle; never a synthetic `turn_end` (FR-010/FR-053)
+- [X] T037 [US1] Wire host start/stop, harness command/port, and crash state in `plugin/src/main.ts` and `plugin/src/settings.ts` (FR-003/FR-007)
+- [X] T038 [US1] Add the minimal chat view send/stream/cancel path in `plugin/src/ui/chat-view.ts` (transcript + composer; no tool vocabulary yet) (FR-010/FR-042)
+- [X] T039 [US1] Add the attach/health indicator and configuration-error surface in `plugin/src/ui/connection-info.ts` and `plugin/src/main.ts` (FR-040)
+- [X] T040 [US1] Run the plan P1 gate: typecheck, production build, `npm test`, and the conformance greps; record results in the PR/branch notes
 
 **Checkpoint**: local one-turn MVP works against the mock and the child; cancel/crash/bad-command are honest.
 
