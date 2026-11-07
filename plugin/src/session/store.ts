@@ -9,6 +9,10 @@ export interface SessionMeta {
   created: number;
   updated: number;
   tokens: number;
+  /** Display name of the conversation. Harness-supplied when the harness
+   *  titles its sessions, otherwise the first user message, otherwise a
+   *  timestamped placeholder. Absent on notes written before naming existed. */
+  title?: string;
 }
 
 function fmt(ts: number): string {
@@ -18,15 +22,12 @@ function fmt(ts: number): string {
 }
 
 export function metaToFrontmatter(meta: SessionMeta): string {
-  return [
-    "---",
-    `type: chat-session`,
-    `created: ${fmt(meta.created)}`,
-    `updated: ${fmt(meta.updated)}`,
-    `tokens: ${meta.tokens}`,
-    "---",
-    "",
-  ].join("\n");
+  const lines = ["---", `type: chat-session`];
+  // Quoted: a title is user text and can contain `:` or `#`, which would
+  // otherwise change the YAML shape of the note.
+  if (meta.title) lines.push(`title: ${JSON.stringify(meta.title)}`);
+  lines.push(`created: ${fmt(meta.created)}`, `updated: ${fmt(meta.updated)}`, `tokens: ${meta.tokens}`, "---", "");
+  return lines.join("\n");
 }
 
 /** Render the conversation into a readable note body. Reasoning bursts
@@ -189,7 +190,23 @@ export function parseSessionMeta(body: string): SessionMeta | null {
   const updated = parseStamp(field("updated"));
   const tokens = Number(field("tokens"));
   if (created === null || updated === null || !Number.isFinite(tokens)) return null;
-  return { created, updated, tokens };
+  const rawTitle = field("title");
+  const title = rawTitle ? unquoteYaml(rawTitle) : undefined;
+  return title ? { created, updated, tokens, title } : { created, updated, tokens };
+}
+
+/** Strips the JSON-style quoting `metaToFrontmatter` writes, and tolerates a
+ *  hand-edited plain value. */
+function unquoteYaml(value: string): string {
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      /* fall through to the raw value */
+    }
+  }
+  return value.replace(/^['"]|['"]$/g, "");
 }
 
 /** Inverse of `fmt` — local time, matching how it was written. */

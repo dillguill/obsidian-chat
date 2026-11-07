@@ -18,6 +18,13 @@ export async function renderMarkdown(app: App, el: HTMLElement, text: string, so
 function addCodeCopyButtons(root: HTMLElement): void {
   for (const pre of Array.from(root.querySelectorAll("pre"))) {
     if (pre.querySelector(".oc-code-copy")) continue;
+    // Obsidian marks fenced blocks as `language-<lang>` on the <code>. Showing
+    // the language is cheap context; without a fence there is nothing to say.
+    const codeEl = pre.querySelector("code");
+    const lang = Array.from(codeEl?.classList ?? []).find((c) => c.startsWith("language-"))?.slice(9);
+    if (lang && !pre.querySelector(".oc-lang")) {
+      pre.createSpan({ cls: "oc-lang", text: lang });
+    }
     const btn = createEl("button", {
       cls: "oc-code-copy",
       attr: { type: "button", "aria-label": "Copy code", title: "Copy" },

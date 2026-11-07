@@ -34,13 +34,25 @@ export interface ObsidianChatSettings {
    *  Agent mode and thinking level are entirely harness-declared
    *  (specs/002-acp-only-chat-ux FR-007) — no plugin-owned equivalent. */
   toolAllowlist: Record<string, boolean>;
-  /** Last value picked for each harness-declared config option id (model,
-   *  mode, thought_level, ...), reapplied to every new session right after
+  /** Last value picked for each harness-declared config option id (mode,
+   *  thought_level, ...), reapplied to every new session right after
    *  connect() so it opens on the same choice instead of the harness's own
-   *  raw default — which is not guaranteed to be usable (e.g. opencode's
-   *  default model can be a paid-only one). The plugin still owns none of
-   *  the values or their meaning (FR-008) — this is opaque id->value replay. */
+   *  raw default. The plugin still owns none of the values or their meaning
+   *  (FR-008) — this is opaque id->value replay.
+   *
+   *  `model` is deliberately NOT stored here: a model is the one option with
+   *  a fallback chain (see `defaultModel`), and silently replaying the last
+   *  pick is what left every new session on a model the account could no
+   *  longer use. `migrateDefaultModel()` moves any legacy entry out. */
   acpConfigOverrides: Record<string, string | boolean>;
+  /** Models pinned for quick access in the chat's model picker — opaque
+   *  harness option values, in display order. Pinning is presentation only:
+   *  it never changes what a new session opens on (that's `defaultModel`). */
+  pinnedModels: string[];
+  /** The model a new session should open on, or `null` to send nothing and
+   *  let the harness use whatever it is configured with. A value the harness
+   *  no longer lists is reported and ignored rather than replayed. */
+  defaultModel: string | null;
   /** Host mode (desktop only). When `enabled`, this Obsidian instance runs
    *  the configured ACP harness as a child process, serves chat clients over
    *  HTTP/SSE, and serves the vault's MCP tools to the harness — see
@@ -65,6 +77,8 @@ export const DEFAULT_SETTINGS: ObsidianChatSettings = {
   sendShortcut: "enter",
   toolAllowlist: {},
   acpConfigOverrides: {},
+  pinnedModels: [],
+  defaultModel: null,
   host: { enabled: false, command: "opencode acp", port: 8765, devices: {} },
 };
 
@@ -115,6 +129,53 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
         );
     }
 
+    // Models — a viewer for the two opaque values the chat toolbar writes.
+    // The default is what a new session opens on; pins only reorder the
+    // picker. Duplicated here because this is the only place a bad default
+    // can be cleared while the harness is unreachable.
+    containerEl.createEl("h4", { text: "Models" });
+    const defaultModel = this.plugin.settings.defaultModel;
+    new Setting(containerEl)
+      .setName("Default model")
+      .setDesc(
+        defaultModel ??
+          "Following the harness's own default. In the chat toolbar, pick a model and click its target icon to make it the default.",
+      )
+      .addExtraButton((b) =>
+        b
+          .setIcon("rotate-ccw")
+          .setTooltip("Use the harness default")
+          .setDisabled(!defaultModel)
+          .onClick(async () => {
+            this.plugin.settings.defaultModel = null;
+            await this.plugin.saveSettings();
+            this.plugin.refreshChatToolbars();
+            this.display();
+          }),
+      );
+    new Setting(containerEl)
+      .setName("Pinned models")
+      .setDesc(
+        this.plugin.settings.pinnedModels.length
+          ? "Shown at the top of the chat's model picker."
+          : "None yet — click the pin icon next to a model in the chat's picker.",
+      );
+    if (this.plugin.settings.pinnedModels.length) {
+      const pins = containerEl.createDiv({ cls: "oc-blacklist" });
+      for (const model of this.plugin.settings.pinnedModels) {
+        const chip = pins.createDiv({ cls: "oc-attach oc-attach-file" });
+        chip.createSpan({ cls: "oc-attach-name", text: model });
+        const x = chip.createEl("button", { cls: "oc-attach-x", attr: { "aria-label": "Unpin", type: "button" } });
+        setIcon(x, "x");
+        x.addEventListener("click", async () => {
+          this.plugin.settings.pinnedModels = this.plugin.settings.pinnedModels.filter((m) => m !== model);
+          await this.plugin.saveSettings();
+          this.plugin.refreshChatToolbars();
+          this.display();
+        });
+      }
+    }
+
     if (Platform.isDesktopApp) {
       containerEl.createEl("h4", { text: "Host" });
       containerEl.createEl("p", {
@@ -156,6 +217,10 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
               await this.plugin.restartHost();
             });
           });
+        new Setting(containerEl)
+          .setName("Restart harness")
+          .setDesc("Reloads the agent harness so it picks up new credentials or provider config — no need to quit Obsidian.")
+          .addButton((b) => b.setButtonText("Restart").onClick(() => void this.plugin.restartHarness()));
         this.renderDevices(containerEl);
       }
     }

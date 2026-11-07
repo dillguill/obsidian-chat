@@ -7,6 +7,7 @@ import { ObsidianChatSettingTab, DEFAULT_SETTINGS, type ObsidianChatSettings } f
 import { VaultIndex } from "./retrieval/index";
 import { AcpBridgeClient } from "./acp/client";
 import { AcpHost } from "./host/server";
+import { migrateDefaultModel, normalizePinnedModels } from "./chat/model-prefs";
 
 export default class ObsidianChatPlugin extends Plugin {
   settings: ObsidianChatSettings = DEFAULT_SETTINGS;
@@ -61,6 +62,15 @@ export default class ObsidianChatPlugin extends Plugin {
   refreshOpenChatViews(): void {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)) {
       if (leaf.view instanceof ChatView) leaf.view.applyViewSettings();
+    }
+  }
+
+  /** Re-renders the composer toolbar on every open chat view — model pins and
+   *  the default are edited in settings as well as in the picker, so both
+   *  surfaces have to agree immediately. */
+  refreshChatToolbars(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)) {
+      if (leaf.view instanceof ChatView) leaf.view.refreshModelPrefs();
     }
   }
 
@@ -180,6 +190,22 @@ export default class ObsidianChatPlugin extends Plugin {
       },
     });
 
+    // The harness reads credentials and provider config at startup, so a
+    // rotated key is invisible to a long-running child. Reloading it is how
+    // that takes effect without quitting Obsidian — on the host itself or,
+    // through the host bridge, from any paired device.
+    this.addCommand({
+      id: "restart-harness",
+      name: "Restart harness",
+      checkCallback: (checking) => {
+        const local = Platform.isDesktopApp && this.settings.host.enabled;
+        const remote = !!this.settings.gateway.baseUrl.trim() && !!this.settings.gateway.token.trim();
+        if (!local && !remote) return false;
+        if (!checking) void this.restartHarness();
+        return true;
+      },
+    });
+
     this.addSettingTab(new ObsidianChatSettingTab(this.app, this));
 
     this.startHost();
@@ -222,6 +248,33 @@ export default class ObsidianChatPlugin extends Plugin {
     this.host = null;
   }
 
+  /** Reloads the harness child so it re-reads credentials and provider
+   *  config. Runs locally on the host, or asks the host to do it when this
+   *  device is a remote client. */
+  async restartHarness(): Promise<void> {
+    if (Platform.isDesktopApp && this.settings.host.enabled) {
+      if (!this.settings.host.command.trim()) {
+        new Notice("Obsidian Chat: no harness command is set.");
+        return;
+      }
+      if (this.host) this.host.restartHarness();
+      else this.startHost();
+      new Notice("Obsidian Chat: restarting harness…");
+      return;
+    }
+    const { baseUrl, token } = this.settings.gateway;
+    if (!baseUrl.trim() || !token.trim()) {
+      new Notice("Obsidian Chat: hosting is off and no host address/device code is set.");
+      return;
+    }
+    try {
+      await this.acp().restartHarness();
+      new Notice("Obsidian Chat: harness restart requested");
+    } catch (err) {
+      new Notice(`Obsidian Chat: could not restart harness — ${String((err as Error).message ?? err)}`);
+    }
+  }
+
   /** Applies a changed host setting: drops the live session (it belonged to
    *  the old harness) and restarts the server. */
   async restartHost(): Promise<void> {
@@ -256,6 +309,25 @@ export default class ObsidianChatPlugin extends Plugin {
     // self-contained, so fill any missing fields from the defaults.
     this.settings.host = { ...DEFAULT_SETTINGS.host, ...(data.host ?? {}) };
     delete (this.settings.host as { harnessDir?: string }).harnessDir;
+    // Model pins/defaults: pins become opaque strings (the pre-ACP BYOK
+    // `{providerId, model}` entries are dropped), and a pre-pin install's
+    // `acpConfigOverrides.model` is promoted to `defaultModel` exactly once so
+    // upgrading doesn't silently change which model a session opens on.
+    this.settings.pinnedModels = normalizePinnedModels((data as { pinnedModels?: unknown }).pinnedModels);
+    const migrated = migrateDefaultModel(
+      (data as { defaultModel?: unknown }).defaultModel,
+      data.acpConfigOverrides as Record<string, string | boolean> | undefined,
+    );
+    this.settings.defaultModel = migrated.defaultModel;
+    this.settings.acpConfigOverrides = migrated.overrides;
+    // Write the upgrade back once, so a legacy `pinnedModels` array or a
+    // `model` key inside `acpConfigOverrides` doesn't linger on disk and get
+    // re-migrated (or misread by a downgrade) later.
+    const onDiskPins = JSON.stringify((data as { pinnedModels?: unknown }).pinnedModels ?? []);
+    const upgraded =
+      onDiskPins !== JSON.stringify(this.settings.pinnedModels) ||
+      (data as { defaultModel?: unknown }).defaultModel === undefined;
+    if (upgraded) await this.saveSettings();
   }
 
   async saveSettings() {

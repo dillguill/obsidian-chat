@@ -53,17 +53,24 @@ export function renderApprovalCard(
 
   if (preview.diff?.length) {
     const pre = card.createEl("pre", { cls: "oc-approval-diff" });
-    pre.createEl("code", { text: preview.diff.join("\n") });
+    // Per-line tint: a diff that stays one colour makes the reader parse the
+    // +/- markers themselves. Unchanged lines keep the muted body colour.
+    for (const line of preview.diff) {
+      const kind = line.startsWith("+") ? "oc-diff-line-add" : line.startsWith("-") ? "oc-diff-line-del" : "";
+      pre.createSpan({ cls: `oc-diff-line ${kind}`.trim(), text: line.length ? line : " " });
+    }
   }
 
   const actions = card.createDiv({ cls: "oc-approval-actions" });
 
+  // Primary first: the affirmative decision is the one a reader is looking for,
+  // and Reject stays a quiet outline next to it.
+  const allowBtn = actions.createEl("button", { cls: "oc-approval-allow", text: "Approve" });
+  const denyBtn = actions.createEl("button", { cls: "oc-approval-deny", text: "Reject" });
+
   const rememberLabel = actions.createEl("label", { cls: "oc-approval-remember" });
   const remember = rememberLabel.createEl("input", { attr: { type: "checkbox" } });
-  rememberLabel.createSpan({ text: "Always allow this action" });
-
-  const denyBtn = actions.createEl("button", { cls: "oc-approval-deny", text: "Reject" });
-  const allowBtn = actions.createEl("button", { cls: "oc-approval-allow mod-cta", text: "Approve" });
+  rememberLabel.createSpan({ text: "Always allow" });
 
   let decided = false;
   const decide = (allowed: boolean) => {

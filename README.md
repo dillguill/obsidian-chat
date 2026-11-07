@@ -24,8 +24,11 @@ Phone / other desktop ──HTTP/SSE──┐
 - **Other devices are clients.** Pair one under *Host → Paired devices*, then enter the host
   address (e.g. `http://100.x.y.z:8765` over Tailscale or your LAN) and the device code in that
   device's settings.
-- **The harness owns the model.** Pick providers and models in the harness's own config; the
-  plugin never sees API keys. Switch harness by changing the command.
+- **The harness owns the model; the plugin only remembers your choice.** Providers and API keys live
+  in the harness's own config. In the chat's model picker, clicking a row applies it to the current
+  session, the pin icon keeps favourites at the top, and the target icon sets the default for new
+  sessions — with a "Harness default" row that hands the choice back to the harness. A default the
+  harness no longer offers is reported and skipped rather than replayed.
 
 Vault tools the harness gets: `list`, `read`, `search`, `write`, `append`, `edit`, `move`,
 `delete` (to trash). Folders on the blacklist are invisible to them.

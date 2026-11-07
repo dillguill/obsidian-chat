@@ -18,7 +18,9 @@ import { vaultFileDataUrl, VaultImagePickModal, IMAGE_EXT } from "./image-picker
 import { NoteMentionModal, type MentionItem } from "./mention";
 import { openAcpPickerMenu, flattenSelectOptions } from "./acp-picker-menu";
 import { AcpModelSuggestModal } from "./acp-model-suggest";
+import { resolveModelChoice } from "../chat/model-prefs";
 import { applyToolEvent, formatDuration, groupDiff, toolIcon, workLabel } from "./activity";
+import { relativeDate, titleFromText } from "../chat/session-title";
 import { basename } from "./activity";
 import { ConnectionInfoModal, type KeyboardDebugInfo } from "./connection-info";
 import type { SessionConfigOption } from "@agentclientprotocol/sdk";
@@ -54,11 +56,19 @@ interface ContextChip {
   endLine?: number;
 }
 
-/** Hides optional toolbar labels only when the row actually wraps (W2.2).
+/** Drops the optional toolbar labels to icons when they would otherwise be cut
+ *  off (W2.2, reworked 2026-10-24).
  *
- *  Measured rather than guessed with a media query: the same rule then works
- *  for a narrow desktop sidebar and a phone without a second breakpoint, and
- *  labels come back the moment there is room. */
+ *  Measured, not guessed from a media query: the model name length changes with
+ *  the harness, so the same row can overflow at 400px or fit at 340px. The row
+ *  never wraps (labels+pills on one line); when it cannot fit, the thinking and
+ *  agent-mode chips become icon-only, with their title attributes still carrying
+ *  the value, and the model label gets the freed space. Labels return the moment
+ *  there is room.
+ *
+ *  An ellipsized model name counts as a cutoff too: it is the one label with no
+ *  icon fallback, so the mode/thinking labels yield first. Their icons keep the
+ *  controls recognisable and their title attributes still carry the value. */
 class ToolbarLayout {
   private ro: ResizeObserver | null = null;
   private mo: MutationObserver | null = null;
@@ -82,14 +92,21 @@ class ToolbarLayout {
   }
 
   refresh(): void {
-    const first = this.toolbarEl.firstElementChild;
-    if (!first) return;
-    this.toolbarEl.removeClass("oc-toolbar-compact");
-    const top = first.getBoundingClientRect().top;
-    const wrapped = Array.from(this.toolbarEl.children).some(
-      (el) => Math.abs(el.getBoundingClientRect().top - top) > 2,
+    const bar = this.toolbarEl;
+    // Measure the roomy state first: labels come back when a wider leaf, a
+    // shorter model name, or a hidden mode button makes space for them.
+    bar.removeClass("oc-toolbar-compact");
+
+    // (a) a child pushed past the row's content edge, or (b) an optional label
+    // already ellipsized by a theme/parent constraint. Either means "compact".
+    const edge = bar.getBoundingClientRect().right;
+    const overflows = Array.from(bar.children).some(
+      (el) => el instanceof HTMLElement && el.getBoundingClientRect().right > edge + 1,
     );
-    this.toolbarEl.toggleClass("oc-toolbar-compact", wrapped);
+    const clipped = Array.from(bar.querySelectorAll<HTMLElement>(".oc-toolbtn-text")).some(
+      (el) => el.scrollWidth > el.clientWidth + 1,
+    );
+    bar.toggleClass("oc-toolbar-compact", overflows || clipped);
   }
 
   destroy(): void {
@@ -151,6 +168,8 @@ export class ChatView extends ItemView {
   private chipsEl!: HTMLElement;
   private composerEl!: HTMLTextAreaElement;
   private modelBtnEl!: HTMLElement;
+  /** Small pin shown in the model chip when the live model is a pinned one. */
+  private modelPinEl!: HTMLElement;
   private agentBtnEl!: HTMLElement;
   private thinkBtnEl!: HTMLElement;
   private attachBtnEl!: HTMLElement;
@@ -192,6 +211,17 @@ export class ChatView extends ItemView {
   private sessionPath = "";
   /** `created` of the note at `sessionPath`, so re-saving never restamps it. */
   private sessionCreated: number | null = null;
+  /** Display name of this conversation. Harness-supplied when available,
+   *  otherwise derived from the first message, otherwise a placeholder. */
+  private sessionTitle: string | null = null;
+  /** True once the note carries a name (loaded or renamed): stops a later
+   *  harness title from silently renaming a conversation the user already saw. */
+  private titleLocked = false;
+  private titleBtnEl: HTMLElement | null = null;
+  private liveDotEl: HTMLElement | null = null;
+  /** Body of the most recently settled activity run, so a turn's changed files
+   *  can be folded into it instead of a second card below the answer. */
+  private lastFinishedBodyEl: HTMLElement | null = null;
   private streaming = false;
   private citations: string[] = [];
 
@@ -204,7 +234,9 @@ export class ChatView extends ItemView {
   }
 
   getDisplayText() {
-    return "Obsidian Chat";
+    // The tab (desktop) and the native bar (phone) both read this, so a named
+    // session identifies itself without a second header.
+    return this.sessionTitle ?? "Obsidian Chat";
   }
 
   getIcon() {
@@ -215,6 +247,9 @@ export class ChatView extends ItemView {
     const c = this.contentEl;
     c.empty();
     c.addClass("oc-view");
+    // Phone-only chrome (tab-bar clearance, touch sizing) keys off the device,
+    // not the pane width — a narrow desktop leaf must keep desktop spacing.
+    c.toggleClass("oc-phone", Platform.isPhone);
     c.toggleClass("oc-density-compact", this.plugin.settings.uiDensity === "compact");
 
     // ---- header ----
@@ -230,8 +265,14 @@ export class ChatView extends ItemView {
     } else {
       const header = c.createDiv({ cls: "oc-header" });
       const title = header.createDiv({ cls: "oc-header-title" });
-      setIcon(title.createSpan({ cls: "oc-app-icon" }), "bot");
-      title.createEl("span", { text: "Obsidian Chat", cls: "oc-app-name" });
+      this.liveDotEl = title.createSpan({ cls: "oc-live" });
+      const titleBtn = title.createEl("button", {
+        cls: "oc-session-title-btn",
+        attr: { type: "button", "aria-label": "Rename session" },
+      });
+      this.titleBtnEl = titleBtn;
+      titleBtn.createSpan({ cls: "oc-session-title", text: this.sessionTitle ?? "New chat" });
+      titleBtn.addEventListener("click", () => this.beginTitleRename());
       const hActions = header.createDiv({ cls: "oc-header-actions" });
       const hist = hActions.createEl("button", { cls: "oc-icon-btn", attr: { "aria-label": "History", title: "History" } });
       setIcon(hist, "history");
@@ -250,8 +291,8 @@ export class ChatView extends ItemView {
     this.messagesEl = messages;
 
     // ---- context chips (citations / attachments) ----
-    const chips = c.createDiv({ cls: "oc-chips" });
-    this.chipsEl = chips;
+    // Created inside the composer card below: context belongs to the message
+    // being written, not to the transcript.
     // Scrolling back through the transcript must not fight the stream (W2.3).
     this.registerDomEvent(messages, "scroll", () => {
       const nearBottom = messages.scrollTop + messages.clientHeight >= messages.scrollHeight - 24;
@@ -283,13 +324,19 @@ export class ChatView extends ItemView {
     this.composerBoxEl = composerInner;
     const box = composerInner.createDiv({ cls: "oc-inputbox" });
     this.wireDropTarget(box);
+    // Context chips ride at the top of the card they will be sent with.
+    this.chipsEl = box.createDiv({ cls: "oc-chips" });
     // Pending image attachments render as a compact pill row at the top of the card.
     this.attachmentsEl = box.createDiv({ cls: "oc-attachments" });
     this.attachmentsEl.style.display = "none";
     const inputRow = box.createDiv({ cls: "oc-input-row" });
     const ta = inputRow.createEl("textarea", {
       cls: "oc-input",
-      attr: { placeholder: Platform.isMobileApp ? "Ask anything…" : "Ask Obsidian Chat anything…\n(Enter to send, Shift+Enter for newline)", rows: "2", "aria-label": "Message" },
+      attr: {
+        placeholder: Platform.isMobileApp ? "Ask anything…" : "Ask anything — @ for notes, / for commands",
+        rows: "1",
+        "aria-label": "Message",
+      },
     });
     this.composerEl = ta as HTMLTextAreaElement;
     ta.addEventListener("paste", (e) => this.handlePaste(e));
@@ -326,6 +373,7 @@ export class ChatView extends ItemView {
     });
     ta.addEventListener("input", () => {
       this.applyComposerHeight();
+      this.syncSendEnabled();
       this.updateSlashMenu();
       this.maybeOpenMention();
     });
@@ -393,6 +441,8 @@ export class ChatView extends ItemView {
     this.modelBtnEl = toolbar.createEl("button", { cls: "oc-toolbtn oc-toolbtn-model" });
     setIcon(this.modelBtnEl.createSpan({ cls: "oc-toolbtn-icon" }), "cpu");
     this.modelBtnEl.createSpan({ cls: "oc-toolbtn-text" });
+    this.modelPinEl = this.modelBtnEl.createSpan({ cls: "oc-toolbtn-pin oc-toolbtn-hidden" });
+    setIcon(this.modelPinEl, "pin");
     setIcon(this.modelBtnEl.createSpan({ cls: "oc-toolbtn-chevron" }), "chevron-down");
     this.modelBtnEl.addEventListener("click", () => this.openModelPicker());
 
@@ -413,7 +463,26 @@ export class ChatView extends ItemView {
     this.usageFillEl = this.usageEl;
     this.toolbarLayout = new ToolbarLayout(toolbar);
 
+    // The phone layout is pinned with inline geometry, so anything that
+    // changes the height of the banner, the queue row or the composer card has
+    // to re-run the pin — otherwise a late connection banner is drawn over the
+    // transcript and the queue sits under the composer.
+    const ownerWin = c.ownerDocument.defaultView;
+    const LayoutRO = ownerWin?.ResizeObserver;
+    if (typeof LayoutRO === "function") {
+      this.layoutObserver = new LayoutRO(() => this.applyComposerHeight());
+      for (const el of [this.composerWrapEl, this.connEl, this.queueEl]) {
+        if (el) this.layoutObserver.observe(el);
+      }
+      this.register(() => {
+        this.layoutObserver?.disconnect();
+        this.layoutObserver = null;
+      });
+    }
+
     await this.refreshToolbar();
+    this.applyComposerHeight();
+    this.syncSendEnabled();
     // Jump-to-latest pill (W2.3) — shown only once the reader scrolls up.
     this.jumpEl = c.createEl("button", { cls: "oc-jump", attr: { "aria-label": "Jump to latest" } });
     setIcon(this.jumpEl.createSpan(), "arrow-down");
@@ -452,24 +521,52 @@ export class ChatView extends ItemView {
   private showWelcome(): void {
     if (this.welcomeEl) return;
     const el = this.messagesEl.createDiv({ cls: "oc-welcome" });
-    // Deliberately no brand row: the desktop header (and Obsidian's own mobile
-    // top bar) already names the view, so repeating it read as a duplicate title.
-    el.createDiv({ cls: "oc-welcome-sub", text: "Grounded in your vault — powered by your connected harness." });
-    const actions = el.createDiv({ cls: "oc-welcome-actions" });
-    const action = (icon: string, label: string, onClick: () => void) => {
-      const b = actions.createEl("button", { cls: "oc-welcome-action", attr: { type: "button" } });
-      setIcon(b.createSpan(), icon);
-      b.createSpan({ text: label });
+    // No brand row: the header (and the phone's native bar) already names the
+    // view, so a repeated title read as duplication. The panel asks the one
+    // question a new session has to answer.
+    el.createDiv({ cls: "oc-welcome-title", text: "What are we working on?" });
+    el.createDiv({ cls: "oc-welcome-sub", text: "Grounded in this vault. Nothing leaves your machine." });
+
+    const active = this.app.workspace.getActiveFile();
+    const grid = el.createDiv({ cls: "oc-welcome-grid" });
+    const card = (icon: string, title: string, hint: string, onClick: () => void) => {
+      const b = grid.createEl("button", { cls: "oc-welcome-card", attr: { type: "button" } });
+      setIcon(b.createSpan({ cls: "oc-welcome-card-icon" }), icon);
+      b.createSpan({ cls: "oc-welcome-card-title", text: title });
+      b.createSpan({ cls: "oc-welcome-card-hint", text: hint });
       b.addEventListener("click", onClick);
     };
-    action("file-text", "Ask about this note", () => {
+    card("file-text", "Ask about this note", active?.basename ?? "No note open", () => {
+      if (!this.app.workspace.getActiveFile()) {
+        new Notice("No active note");
+        return;
+      }
       void this.addActiveNote();
       this.composerEl.focus();
     });
-    action("history", "History", () => void this.showHistory());
-    action("plus", "New session", () => void this.newSession());
+    card("network", "Find connections", "Across recent notes", () => {
+      if (this.app.workspace.getActiveFile()) void this.addActiveNote();
+      this.fillComposer("Find connections between this note and my recent notes.");
+    });
+    card("calendar", "Catch up on the week", "Projects · Inbox · recent notes", () => {
+      this.fillComposer("Summarize what I worked on this week from my recent notes.");
+    });
+    card("plus", "Start from scratch", "No context attached", () => {
+      this.clearContextChips();
+      this.composerEl.focus();
+    });
     void this.renderRecentSessions(el);
     this.welcomeEl = el;
+  }
+
+  /** Puts a prepared question in the composer, ready to edit or send. */
+  private fillComposer(text: string): void {
+    this.composerEl.value = text;
+    this.applyComposerHeight();
+    this.syncSendEnabled();
+    this.composerEl.focus();
+    const end = text.length;
+    this.composerEl.setSelectionRange(end, end);
   }
 
   private hideWelcome(): void {
@@ -493,7 +590,7 @@ export class ChatView extends ItemView {
       const fm = this.plugin.app.metadataCache.getFileCache(f)?.frontmatter as { title?: string } | undefined;
       const b = wrap.createEl("button", { cls: "oc-recent-item", attr: { type: "button" } });
       b.createSpan({ cls: "oc-recent-name", text: fm?.title ?? f.basename });
-      b.createSpan({ cls: "oc-recent-date", text: new Date(f.stat.mtime).toLocaleDateString() });
+      b.createSpan({ cls: "oc-recent-date", text: relativeDate(f.stat.mtime) });
       b.addEventListener("click", () => void this.loadSession(f.path));
     }
   }
@@ -597,7 +694,10 @@ export class ChatView extends ItemView {
     }
   }
 
-  /** End-of-turn summary of vault writes with per-file Undo (W7.5). */
+  /** A turn's changed files, folded into the run that produced them (W7.5).
+   *  The run header already carries the diff totals, so this reports names and
+   *  offers undo — it never repeats the summary as a second card below the
+   *  answer. The standalone card is kept only for a turn with no visible run. */
   private renderChangesCard(items: ActivityItem[]): void {
     const writeNames = new Set(["write", "append", "patch", "delete", "move", "copy", "edit"]);
     const writes = items.filter(
@@ -613,16 +713,30 @@ export class ChatView extends ItemView {
       }
       byPath.set(w.target!, e);
     }
+    const host = this.lastFinishedBodyEl?.isConnected ? this.lastFinishedBodyEl : null;
+    if (host) {
+      const group = host.createDiv({ cls: "oc-changes-mini" });
+      const head = group.createDiv({ cls: "oc-changes-mini-head" });
+      head.createDiv({
+        cls: "oc-changes-mini-title",
+        text: `Changed ${byPath.size} ${byPath.size === 1 ? "note" : "notes"}`,
+      });
+      if (byPath.size > 1) {
+        const undoAll = head.createEl("button", { cls: "oc-changes-mini-undo-all", text: "Undo all" });
+        undoAll.addEventListener("click", () => void this.undoAll([...byPath.keys()]));
+      }
+      for (const [path, info] of byPath) this.renderChangeRow(group, path, info);
+      return;
+    }
+
+    // Fallback: no run was rendered this turn, so the card stands alone.
     const card = this.messagesEl.createDiv({ cls: "oc-changes" });
     const expanded = byPath.size <= 3;
     card.setAttribute("data-expanded", expanded ? "true" : "false");
     const header = card.createEl("button", { cls: "oc-changes-header", attr: { type: "button" } });
-    const add = [...byPath.values()].reduce((n, v) => n + v.add, 0);
-    const del = [...byPath.values()].reduce((n, v) => n + v.del, 0);
-    const stat = add || del ? ` · +${add} −${del}` : "";
     header.createSpan({
       cls: "oc-changes-title",
-      text: `Changed ${byPath.size} ${byPath.size === 1 ? "note" : "notes"}${stat}`,
+      text: `Changed ${byPath.size} ${byPath.size === 1 ? "note" : "notes"}`,
     });
     const chev = header.createSpan({ cls: "oc-changes-chevron" });
     setIcon(chev, expanded ? "chevron-down" : "chevron-right");
@@ -631,24 +745,26 @@ export class ChatView extends ItemView {
       setIcon(chev, isOpen ? "chevron-down" : "chevron-right");
     });
     const body = card.createDiv({ cls: "oc-changes-body" });
-    for (const [path, info] of byPath) {
-      const row = body.createDiv({ cls: "oc-changes-row" });
-      setIcon(row.createSpan({ cls: "oc-changes-icon" }), "file-text");
-      const pathEl = row.createSpan({ cls: "oc-changes-path", text: path });
-      pathEl.addClass("oc-tool-label-link");
-      pathEl.addEventListener("click", () => void this.openVaultTarget(path));
-      if (info.add || info.del) {
-        this.renderDiffStat(row.createSpan({ cls: "oc-tool-right" }), `+${info.add} -${info.del}`);
-      }
-      const undoBtn = row.createEl("button", { cls: "oc-changes-undo", text: "Undo" });
-      if (!this.writeSnapshots.has(path)) {
-        undoBtn.disabled = true;
-        undoBtn.setAttribute("title", "No snapshot was taken for this action");
-      }
-      undoBtn.addEventListener("click", () => void this.undoPath(path, undoBtn));
-    }
+    for (const [path, info] of byPath) this.renderChangeRow(body, path, info);
     const undoAll = card.createEl("button", { cls: "oc-changes-undo-all", text: "Undo all" });
     undoAll.addEventListener("click", () => void this.undoAll([...byPath.keys()]));
+  }
+
+  private renderChangeRow(parent: HTMLElement, path: string, info: { add: number; del: number }): void {
+    const row = parent.createDiv({ cls: "oc-changes-row" });
+    setIcon(row.createSpan({ cls: "oc-changes-icon" }), "file-text");
+    const pathEl = row.createSpan({ cls: "oc-changes-path", text: path });
+    pathEl.addClass("oc-tool-label-link");
+    pathEl.addEventListener("click", () => void this.openVaultTarget(path));
+    if (info.add || info.del) {
+      this.renderDiffStat(row.createSpan({ cls: "oc-tool-right" }), `+${info.add} -${info.del}`);
+    }
+    const undoBtn = row.createEl("button", { cls: "oc-changes-undo", text: "Undo" });
+    if (!this.writeSnapshots.has(path)) {
+      undoBtn.disabled = true;
+      undoBtn.setAttribute("title", "No snapshot was taken for this action");
+    }
+    undoBtn.addEventListener("click", () => void this.undoPath(path, undoBtn));
   }
 
   /** Restores one path from its pre-write snapshot (W7.5). */
@@ -695,8 +811,15 @@ export class ChatView extends ItemView {
   private updateConnection(): void {
     if (!this.connEl) return;
     const state = this.acp?.getConnectionState() ?? "idle";
+    if (this.liveDotEl) {
+      this.liveDotEl.setAttribute(
+        "data-state",
+        state === "connected" ? "live" : state === "connecting" ? "connecting" : state === "unreachable" ? "error" : "",
+      );
+    }
     if (state === "connected" || state === "idle") {
       this.connEl.hidden = true;
+      this.applyComposerHeight();
       return;
     }
     this.connEl.hidden = false;
@@ -711,6 +834,8 @@ export class ChatView extends ItemView {
       const details = this.connEl.createEl("button", { cls: "oc-queue-btn", text: "Details" });
       details.addEventListener("click", () => this.openConnectionInfo());
     }
+    // Banner just appeared or changed height: the transcript starts below it.
+    this.applyComposerHeight();
   }
 
   /** Opens the connection/debug panel (W7.10; also the `connection-info` command).
@@ -858,6 +983,10 @@ export class ChatView extends ItemView {
     const cap = Math.max(150, window.innerHeight * 0.55);
     ta.style.height = Math.min(ta.scrollHeight, cap) + "px";
     this.pinComposer();
+    // Publish the card's height so overlays anchored above it (jump pill,
+    // slash menu) follow a grown composer instead of a hard-coded 104px.
+    const cardH = Math.ceil(this.composerWrapEl?.getBoundingClientRect().height ?? 0);
+    if (cardH > 0) this.contentEl.style.setProperty("--oc-composer-h", `${cardH}px`);
   }
 
   /** Pins the transcript and the composer to the view's edges — inline styles,
@@ -889,15 +1018,15 @@ export class ChatView extends ItemView {
     wrap.style.bottom = "0";
     wrap.style.zIndex = "2";
     // Measured while the wrapper is already out of flow, so this is its own
-    // content height: the card plus the 8px gap the keyboard state leaves.
-    // The transcript ends this far above the composer card (explicit request:
-    // 4px). The empty chips row is deliberately excluded from the sum — its 10px
-    // of padding must not widen the visible gap. It is positioned inside the same
-    // band and has no background, so the two do not fight.
+    // content height: the card including the chips row, plus a 4px gap.
     const GAP_ABOVE_COMPOSER = 4;
     const wrapH = Math.ceil(wrap.clientHeight);
-    const transcriptBottom = wrapH + GAP_ABOVE_COMPOSER;
-    if (this.chipsEl) corners(this.chipsEl, "auto", `${transcriptBottom}px`);
+    const composerTop = wrapH + GAP_ABOVE_COMPOSER;
+    // A queued message is its own row and also sits out of flow on the phone;
+    // stack it directly above the card and lift the transcript above both.
+    const queueH = this.queueEl && !this.queueEl.hidden ? Math.ceil(this.queueEl.clientHeight) : 0;
+    if (this.queueEl && queueH > 0) corners(this.queueEl, "auto", `${composerTop}px`);
+    const transcriptBottom = composerTop + queueH;
     if (this.messagesEl) {
       // The banner is in flow at the very top when it is showing, so the
       // transcript starts below it rather than underneath it.
@@ -918,11 +1047,19 @@ export class ChatView extends ItemView {
     return el;
   }
 
-  private addUserMessage(text: string, images?: ImageAttachment[]) {
+  private addUserMessage(text: string, images?: ImageAttachment[], withTime = true) {
     this.hideWelcome();
-    // A hairline separates turns (W6.6) — quiet, not boxed.
-    if (this.messagesEl.childElementCount > 0) this.messagesEl.createEl("hr", { cls: "oc-turn" });
     const el = this.messagesEl.createDiv({ cls: "oc-block oc-user" });
+    const head = el.createDiv({ cls: "oc-turn-head" });
+    head.createSpan({ cls: "oc-turn-name", text: "You" });
+    // Restored turns carry no stored timestamp, so they are labelled without
+    // one rather than pretending the message was sent now.
+    if (withTime) {
+      head.createSpan({
+        cls: "oc-turn-time",
+        text: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+      });
+    }
     const md = el.createDiv({ cls: "oc-body-md" });
     renderMarkdown(this.plugin.app, md, text, this.sessionPath, this).catch(() => md.setText(text));
     this.attachMessageActions(el, false);
@@ -1113,6 +1250,10 @@ export class ChatView extends ItemView {
 
   /** The composer's outer wrapper — the element the keyboard handler pins. */
   private composerWrapEl: HTMLElement | null = null;
+  /** Re-pins the phone layout whenever the banner, queue or card changes size.
+   *  Without it, a connection banner that appears after the first pin leaves
+   *  `.oc-messages` at top 0 and the warning overlaps the transcript. */
+  private layoutObserver: ResizeObserver | null = null;
   /** The `.oc-composer` box inside that wrapper — what the keyboard height is
    *  reserved on (inline, from the measured value). */
   private composerBoxEl: HTMLElement | null = null;
@@ -1184,6 +1325,7 @@ export class ChatView extends ItemView {
     }
     const wrap = this.messagesEl.createDiv({ cls: "oc-activity" });
     wrap.setAttribute("data-expanded", "true");
+    wrap.setAttribute("data-live", "true");
     const header = wrap.createEl("button", { cls: "oc-activity-header", attr: { type: "button" } });
     const iconEl = header.createSpan({ cls: "oc-activity-icon" });
     const labelEl = header.createSpan({ cls: "oc-activity-label" });
@@ -1235,6 +1377,7 @@ export class ChatView extends ItemView {
       this.activityDiffEl = null;
       return;
     }
+    this.activityGroupEl.setAttribute("data-live", "false");
     const secs = Math.max(0, (Date.now() - this.activityStartedAt) / 1000);
     const failed = items.some((i) => i.status === "failed");
     if (this.activityIconEl) {
@@ -1258,6 +1401,8 @@ export class ChatView extends ItemView {
       }
     }
     this.turnActivity.push(...items);
+    // Kept for renderChangesCard: changed files belong inside this run.
+    this.lastFinishedBodyEl = this.activityBodyEl;
     this.activityGroupEl = null;
     this.activityHeaderEl = null;
     this.activityBodyEl = null;
@@ -1399,10 +1544,12 @@ export class ChatView extends ItemView {
     this.usage = u;
     if (!this.usageEl || !this.usageFillEl) return;
     const pct = u.size > 0 ? Math.min(100, (u.used / u.size) * 100) : 0;
-    this.usageEl.style.setProperty("--oc-usage-pct", `${Math.round(pct)}`);
     this.usageEl.toggleClass("oc-usage-warn", pct >= 70 && pct < 90);
     this.usageEl.toggleClass("oc-usage-critical", pct >= 90);
-    this.usageEl.removeClass("oc-toolbtn-hidden");
+    this.usageEl.setAttribute("data-label", `ctx ${Math.round(pct)}%`);
+    // Below 70% a context reading is trivia that costs a toolbar slot; the
+    // tooltip still carries the exact numbers, so only surface it as a warning.
+    this.usageEl.toggleClass("oc-toolbtn-hidden", pct < 70);
     const cost = u.cost
       ? ` · ${u.cost.currency === "USD" ? "$" : u.cost.currency + " "}${u.cost.amount.toFixed(2)}`
       : "";
@@ -1616,6 +1763,9 @@ export class ChatView extends ItemView {
         this.renderChips(this.citations);
       });
     }
+    // Chips live inside the composer card now, so adding one can grow the card.
+    this.applyComposerHeight();
+    this.syncSendEnabled();
   }
 
   // ---------- vision attachments ----------
@@ -1719,6 +1869,7 @@ export class ChatView extends ItemView {
     const el = this.attachmentsEl;
     el.empty();
     const hasAny = this.pendingImages.length > 0 || this.pendingTextAttachments.length > 0;
+    this.syncSendEnabled();
     if (!hasAny) {
       el.style.display = "none";
       return;
@@ -1820,6 +1971,7 @@ export class ChatView extends ItemView {
     this.composerEl.value = "";
     this.clearPendingAttachments();
     this.applyComposerHeight();
+    this.syncSendEnabled();
     this.renderQueue();
   }
 
@@ -1827,11 +1979,14 @@ export class ChatView extends ItemView {
     if (!this.queueEl) return;
     if (!this.queued) {
       this.queueEl.hidden = true;
+      this.applyComposerHeight();
       return;
     }
     const preview = this.queued.text.length > 60 ? this.queued.text.slice(0, 60) + "…" : this.queued.text;
     this.queueTextEl.setText(`Queued · ${preview}`);
     this.queueEl.hidden = false;
+    // The queue row is out of flow on the phone; re-stack before it paints.
+    this.applyComposerHeight();
   }
 
   /** Sends exactly one queued message, echoing it like a normal send (W2.4). */
@@ -1864,6 +2019,22 @@ export class ChatView extends ItemView {
     const label = mode === "stop" ? "Stop (Esc)" : "Send";
     this.sendBtnEl.setAttribute("aria-label", label);
     this.sendBtnEl.setAttribute("title", label);
+    this.syncSendEnabled();
+  }
+
+  /** An empty composer's send button is decoration; a disabled one says so.
+   *  While a turn is streaming the button is Stop and always active. */
+  private syncSendEnabled(): void {
+    if (!this.sendBtnEl) return;
+    if (this.streaming) {
+      this.sendBtnEl.disabled = false;
+      return;
+    }
+    const hasContent =
+      this.composerEl.value.trim().length > 0 ||
+      this.pendingImages.length > 0 ||
+      this.pendingTextAttachments.length > 0;
+    this.sendBtnEl.disabled = !hasContent;
   }
 
   /** session/cancel (FR-005 acceptance scenario 2: cancel stops streaming promptly). */
@@ -1905,6 +2076,7 @@ export class ChatView extends ItemView {
     const acp = this.ensureAcp();
     this.pendingReasoningBursts = [];
     this.toolRows.clear();
+    this.lastFinishedBodyEl = null;
     this.turnSettled = false;
     this.acpHistory.push({ role: "user", content: text, images: this.pendingImages.length ? this.pendingImages : undefined });
     try {
@@ -2132,7 +2304,12 @@ export class ChatView extends ItemView {
         this.updateUsage(e);
         break;
       case "session_info":
-        // Title is stored by the client and read at persist time (W7.11).
+        // W7.11: the harness titles the session after its first exchange. Adopt
+        // it only while the name is still ours to choose (not loaded/renamed).
+        if (e.title && !this.titleLocked) {
+          this.sessionTitle = e.title;
+          this.refreshTitleChrome();
+        }
         break;
       case "done":
         this.turnSettled = true;
@@ -2194,16 +2371,95 @@ export class ChatView extends ItemView {
     // (and across a reopen, where loadSession reads it back from the note).
     const now = Date.now();
     this.sessionCreated ??= now;
+    const title = this.ensureSessionTitle(messages);
     const meta = {
       created: this.sessionCreated,
       updated: now,
       tokens: approxTokens(messages),
+      title,
     };
-    const body = metaToFrontmatter(meta) + "\n" + renderBody("Chat session", messages);
+    const body = metaToFrontmatter(meta) + "\n" + renderBody(title, messages);
     const f = this.plugin.app.vault.getAbstractFileByPath(this.sessionPath);
     if (f instanceof TFile) await this.plugin.app.vault.modify(f, body);
     else await this.plugin.app.vault.create(this.sessionPath, body);
     this.plugin.currentSessionPath = this.sessionPath;
+  }
+
+  /** Chooses the name a not-yet-named session will be saved under. */
+  private ensureSessionTitle(messages: ChatMessage[]): string {
+    if (this.sessionTitle) return this.sessionTitle;
+    const firstQuestion = messages.find((m) => m.role === "user")?.content ?? "";
+    const derived = titleFromText(firstQuestion);
+    this.sessionTitle = derived;
+    this.refreshTitleChrome();
+    return derived;
+  }
+
+  /** Updates the header label, then asks the leaf to refresh the tab and the
+   *  phone's native bar. Frontmatter writes belong to the rename path. */
+  private refreshTitleChrome(): void {
+    const span = this.contentEl?.querySelector(".oc-session-title");
+    if (span instanceof HTMLElement) span.setText(this.sessionTitle ?? "New chat");
+    const leaf = this.leaf as unknown as { updateHeader?: () => void };
+    leaf.updateHeader?.();
+  }
+
+  /** Click-to-rename in the header. Frontmatter only: the filename stays the
+   *  stable timestamped id, so no link or store path can break. */
+  private beginTitleRename(): void {
+    const btn = this.titleBtnEl;
+    const parent = btn?.parentElement;
+    // The button is swapped for the field, never wrapped around it: an <input>
+    // inside a <button> is invalid and swallows focus on some platforms.
+    if (!btn || !parent || parent.querySelector(".oc-session-rename")) return;
+    const current = this.sessionTitle ?? "";
+    btn.hidden = true;
+    const input = parent.createEl("input", {
+      cls: "oc-session-rename",
+      attr: { type: "text", placeholder: "Session name", value: current, "aria-label": "Session name" },
+    });
+    input.focus();
+    input.select();
+    let done = false;
+    const finish = async (commit: boolean) => {
+      if (done) return;
+      done = true;
+      const next = input.value.trim();
+      input.remove();
+      btn.hidden = false;
+      btn.empty();
+      btn.createSpan({ cls: "oc-session-title", text: this.sessionTitle ?? "New chat" });
+      if (!commit || !next || next === current) return;
+      this.sessionTitle = next;
+      this.titleLocked = true;
+      this.refreshTitleChrome();
+      await this.writeTitleToNote(next);
+    };
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        void finish(true);
+      } else if (ev.key === "Escape") {
+        ev.preventDefault();
+        void finish(false);
+      }
+    });
+    input.addEventListener("blur", () => void finish(true));
+  }
+
+  /** Rename persistence goes through Obsidian's own frontmatter helper, so the
+   *  note body, its canonical transcript block, and any unrelated keys survive. */
+  private async writeTitleToNote(title: string): Promise<void> {
+    if (!this.sessionPath) return;
+    const f = this.app.vault.getAbstractFileByPath(this.sessionPath);
+    if (!(f instanceof TFile)) return;
+    try {
+      await this.app.fileManager.processFrontMatter(f, (fm) => {
+        fm.title = title;
+      });
+    } catch (err) {
+      new Notice(`Couldn't rename session: ${String((err as Error).message ?? err)}`);
+    }
   }
 
   private async newSession() {
@@ -2213,10 +2469,14 @@ export class ChatView extends ItemView {
     }
     this.pendingThought = null;
     this.pendingReasoningBursts = [];
+    this.hideWelcome();
     this.messagesEl.empty();
     this.renderChips([]);
     this.sessionPath = "";
     this.sessionCreated = null;
+    this.sessionTitle = null;
+    this.titleLocked = false;
+    this.refreshTitleChrome();
     this.acpHistory = [];
     this.detachAcp();
     await this.plugin.closeAcpSession();
@@ -2225,7 +2485,10 @@ export class ChatView extends ItemView {
       .connect()
       .then(() => this.refreshToolbar())
       .catch(() => {});
-    this.addSystemMessage("New session.");
+    // A fresh session opens on the welcome panel, not on a lone system line.
+    this.showWelcome();
+    this.applyComposerHeight();
+    this.syncSendEnabled();
   }
 
   // ---------- history ----------
@@ -2266,9 +2529,17 @@ export class ChatView extends ItemView {
       this.detachAcp();
       await this.plugin.closeAcpSession();
     }
+    this.hideWelcome();
     this.messagesEl.empty();
     this.sessionPath = path;
-    this.sessionCreated = parseSessionMeta(body)?.created ?? null;
+    const meta = parseSessionMeta(body);
+    this.sessionCreated = meta?.created ?? null;
+    // Named notes keep their name; legacy notes borrow their first question so
+    // an old conversation still identifies itself in the header and tab.
+    const firstQuestion = messages.find((m) => m.role === "user")?.content ?? "";
+    this.sessionTitle = meta?.title ?? (firstQuestion ? titleFromText(firstQuestion) : null);
+    this.titleLocked = Boolean(this.sessionTitle);
+    this.refreshTitleChrome();
     this.acpHistory = messages;
     for (const message of messages) this.renderStoredMessage(message);
     if (replacedLiveSession) this.addSystemMessage("Reopened. The agent doesn't have this conversation in context yet.");
@@ -2294,7 +2565,7 @@ export class ChatView extends ItemView {
     if (message.role === "user") {
       // Image bytes are deliberately not persisted (session/store.ts), so only
       // attachments that still carry data can be shown.
-      this.addUserMessage(message.content, message.images?.filter((img) => img.dataUrl));
+      this.addUserMessage(message.content, message.images?.filter((img) => img.dataUrl), false);
       return;
     }
     if (message.content) this.addSystemMessage(message.content);
@@ -2351,8 +2622,14 @@ export class ChatView extends ItemView {
     this.modelBtnEl.toggleClass("oc-toolbtn-hidden", !hasModel);
     if (hasModel && modelOpt?.type === "select") {
       const current = modelValues.find((o) => o.value === modelOpt.currentValue) ?? modelValues[0];
+      const pinned = this.plugin.settings.pinnedModels.includes(current.value);
+      const isDefault = this.plugin.settings.defaultModel === current.value;
       this.modelBtnEl.find(".oc-toolbtn-text").setText(current.name);
-      this.modelBtnEl.setAttribute("title", `Model: ${current.name}`);
+      this.modelPinEl.toggleClass("oc-toolbtn-hidden", !pinned);
+      const hint = [`Model: ${current.name}`];
+      if (pinned) hint.push("pinned");
+      if (isDefault) hint.push("default for new sessions");
+      this.modelBtnEl.setAttribute("title", hint.join(" · "));
     }
 
     // Agent mode — entirely harness-declared (FR-007), via either ACP's
@@ -2405,6 +2682,9 @@ export class ChatView extends ItemView {
     this.toolbarLayout?.refresh();
   }
 
+  /** Opens the model picker: a click applies to this session, a pin reorders
+   *  the list, and the target icon sets the new-session default — with the
+   *  top row returning to the harness's own default. */
   private openModelPicker() {
     const opt = this.findModelOption();
     if (!opt || opt.type !== "select") {
@@ -2413,10 +2693,41 @@ export class ChatView extends ItemView {
     }
     const items = flattenSelectOptions(opt.options);
     if (!items.length) return;
-    new AcpModelSuggestModal(this.plugin.app, items, (item) => {
-      void this.acp?.setConfigOption(opt.id, item.value);
-      this.rememberConfigOverride(opt.id, item.value);
+    const settings = this.plugin.settings;
+    new AcpModelSuggestModal(this.plugin.app, items, {
+      currentValue: opt.currentValue,
+      pinned: settings.pinnedModels,
+      defaultModel: settings.defaultModel,
+      // Session-scoped on purpose: persisting the pick is what used to keep
+      // every later session on a model that might no longer be usable.
+      onChoose: (value) => void this.acp?.setConfigOption(opt.id, value),
+      onTogglePin: (value) => this.togglePinnedModel(value),
+      onSetDefault: (value) => this.setDefaultModel(value),
     }).open();
+  }
+
+  /** Re-renders the toolbar (pin marker / default hint) after the picker or
+   *  the settings tab changed a model preference. */
+  refreshModelPrefs(): void {
+    void this.refreshToolbar();
+  }
+
+  /** Pin/unpin a model. Returns whether it is pinned now, so the open picker
+   *  can update its row without waiting for a settings round-trip. */
+  private async togglePinnedModel(value: string): Promise<boolean> {
+    const pins = this.plugin.settings.pinnedModels;
+    const pinned = !pins.includes(value);
+    this.plugin.settings.pinnedModels = pinned ? [...pins, value] : pins.filter((p) => p !== value);
+    await this.plugin.saveSettings();
+    this.refreshModelPrefs();
+    return pinned;
+  }
+
+  private async setDefaultModel(value: string | null): Promise<void> {
+    this.plugin.settings.defaultModel = value;
+    await this.plugin.saveSettings();
+    this.refreshModelPrefs();
+    new Notice(value ? `New sessions open on ${value}` : "New sessions use the harness default model");
   }
 
   /** Normalizes agent mode into one shape regardless of which of ACP's two
@@ -2466,10 +2777,12 @@ export class ChatView extends ItemView {
   }
 
   /** Persists the user's choice (specs/002-acp-only-chat-ux) so the next
-   *  session opens on the same model/mode/thinking level instead of
-   *  whatever the harness's own raw default is — reapplied in
-   *  applyConfigOverrides() right after connect(). Session-scoped only:
-   *  a harness with no matching option simply ignores an unknown id. */
+   *  session opens on the same mode/thinking level instead of whatever the
+   *  harness's own raw default is — reapplied in applyConfigOverrides() right
+   *  after connect(). Session-scoped only: a harness with no matching option
+   *  simply ignores an unknown id. The model is NOT remembered this way — a
+   *  one-off model pick must not become every session's model (that is what
+   *  `defaultModel` is for), see openModelPicker(). */
   private rememberConfigOverride(optionId: string, value: string | boolean) {
     this.plugin.settings.acpConfigOverrides = { ...this.plugin.settings.acpConfigOverrides, [optionId]: value };
     void this.plugin.saveSettings();
@@ -2478,18 +2791,45 @@ export class ChatView extends ItemView {
   /** Reapplies last-picked config options to a freshly connected session —
    *  called once per connect(), not on every turn, since setConfigOption is
    *  otherwise session-scoped only (data-model.md correction: the harness
-   *  doesn't remember a plugin's prior choice across sessions on its own). */
+   *  doesn't remember a plugin's prior choice across sessions on its own).
+   *
+   *  The model is resolved separately because it is the only option with a
+   *  fallback chain: an explicit default wins, otherwise nothing is sent and
+   *  the harness's own config decides. */
   private async applyConfigOverrides() {
+    await this.applyDefaultModel();
     const overrides = this.plugin.settings.acpConfigOverrides;
     if (!overrides) return;
     const options = this.acp?.getConfigOptions() ?? [];
     for (const [optionId, value] of Object.entries(overrides)) {
+      if (optionId === "model") continue; // owned by defaultModel (applyDefaultModel)
       if (optionId === "mode" && !options.some((o) => o.id === "mode")) {
         const modes = this.acp?.getModes();
         if (modes?.availableModes?.some((m) => m.id === value)) await this.acp?.setMode(String(value));
         continue;
       }
       if (options.some((o) => o.id === optionId)) await this.acp?.setConfigOption(optionId, value);
+    }
+  }
+
+  /** Opens a new session on the configured default model — or on nothing at
+   *  all, so the harness's own default wins. A default the harness no longer
+   *  offers is reported and skipped rather than replayed: sending an unknown
+   *  value leaves the session on an unusable model and the failure only
+   *  surfaces later, as a provider error on the first prompt. */
+  private async applyDefaultModel() {
+    const opt = this.findModelOption();
+    if (!opt || opt.type !== "select") return;
+    const values = flattenSelectOptions(opt.options);
+    const choice = resolveModelChoice(values, this.plugin.settings.defaultModel, opt.currentValue);
+    if (choice.action === "set") {
+      await this.acp?.setConfigOption(opt.id, choice.value);
+      return;
+    }
+    if (choice.action === "missing") {
+      new Notice(
+        `Obsidian Chat: the default model "${choice.value}" isn't offered by this harness — using the harness default.`,
+      );
     }
   }
 

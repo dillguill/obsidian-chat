@@ -70,6 +70,7 @@ remain — each is a client-side concern the harness cannot own.
 | **Undo snapshots** — read a note before an approved write, restore on Undo | `ChatView.handlePermissionRequest`, `undoPath`, `undoAll` | Corrections to a write the *harness* executed, driven by a user click. Snapshots are captured and replayed entirely client-side; the harness is not involved and no new content is authored. |
 | **Read-only `@mention` index** (BM25 over notes) | `retrieval/index.ts` | Powers the file picker; never mutates anything, and never reaches the model except as context the user explicitly attached. |
 | **Read rules files** (`AGENTS.md`, `vault-rules.md`, `.chat/rules.md`) | `ChatView.readAdvisoryRulesContext` | Read-only advisory text appended to the prompt. Not an access-control gate — the blacklist is enforced proxy-side. |
+| **Model pin / default preference** — a shortlist order and the model a new session opens on | `chat/model-prefs.ts`, `settings.pinnedModels` / `settings.defaultModel` | Two opaque harness option values, no provider knowledge, no keys, no calls. `resolveModelChoice` only decides whether to send a `session/set_config_option` the harness already declared — and refuses to send a value it no longer declares. |
 
 Everything else is out:
 

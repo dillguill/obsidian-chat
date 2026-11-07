@@ -124,6 +124,24 @@ test("reads back the metadata it wrote, so created survives a re-save", () => {
   assert.deepEqual(parseSessionMeta(body), meta);
 });
 
+test("round-trips the session title, including YAML-hostile characters", () => {
+  const meta = {
+    created: 1_700_000_000_000,
+    updated: 1_700_000_500_000,
+    tokens: 42,
+    title: "Black Hole: prompt #cleanup — v2",
+  };
+  const body = metaToFrontmatter(meta) + "\n" + renderBody(meta.title!, []);
+  assert.deepEqual(parseSessionMeta(body), meta);
+});
+
+test("an unnamed session has no title field, so old notes parse unchanged", () => {
+  const meta = { created: 1_700_000_000_000, updated: 1_700_000_500_000, tokens: 42 };
+  const body = metaToFrontmatter(meta) + "\n" + renderBody("Chat session", []);
+  assert.ok(!body.includes("\ntitle:"));
+  assert.deepEqual(parseSessionMeta(body), meta);
+});
+
 test("reports no metadata for a note without frontmatter", () => {
   assert.equal(parseSessionMeta(renderBody("Chat session", [])), null);
 });

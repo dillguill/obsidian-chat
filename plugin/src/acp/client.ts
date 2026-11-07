@@ -541,6 +541,14 @@ export class AcpBridgeClient {
     }
   }
 
+  /** Ask the host to reload its harness (fresh credentials/provider config).
+   *  Available from every paired device, not just the host machine. */
+  async restartHarness(): Promise<void> {
+    const resp = await this.call("/harness/restart", "POST", {});
+    if (resp.status === 401) throw new Error("device code rejected by the host");
+    if (resp.status >= 400) throw new Error(`the host refused the restart (HTTP ${resp.status})`);
+  }
+
   async close(): Promise<void> {
     this.closed = true;
     this.failTurn(new Error("session closed"));

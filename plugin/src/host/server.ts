@@ -116,6 +116,20 @@ export class AcpHost {
 
   // ---------- harness lifecycle ----------
 
+  /** Reloads the harness child so it re-reads credentials and provider
+   *  config. The supervisor respawns it; sessions die with it, exactly as on
+   *  a crash. Callable from the host's own UI or a paired device. */
+  restartHarness(): void {
+    if (this.stopped) return;
+    if (this.child) {
+      this.opts.log("restarting harness on request");
+      this.respawnDelay = 1_000; // an explicit restart should not wait out crash backoff
+      this.child.kill();
+    } else {
+      void this.spawnHarness();
+    }
+  }
+
   private async spawnHarness(): Promise<void> {
     if (this.stopped) return;
     const [cmd, ...args] = splitCommand(this.opts.command);
@@ -259,6 +273,15 @@ export class AcpHost {
         });
         this.sessions.set(response.sessionId, { deviceId, seq: 0, buffer: [], subscribers: new Map(), lastUpdateAt: 0 });
         return sendJson(res, 200, { sessionId: response.sessionId, modes: response.modes, configOptions: response.configOptions });
+      }
+
+      if (req.method === "POST" && parts.length === 2 && parts[0] === "harness" && parts[1] === "restart") {
+        this.opts.log(`harness restart requested by ${deviceId}`);
+        // Answer first, then reload: the restart kills the child, which ends
+        // every session and tears down this request's SSE stream.
+        sendJson(res, 200, { ok: true });
+        window.setTimeout(() => this.restartHarness(), 0);
+        return;
       }
 
       if (parts[0] === "approvals" && parts.length === 2 && req.method === "POST") {
