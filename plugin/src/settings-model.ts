@@ -39,6 +39,8 @@ export interface ObsidianChatSettings {
   pairedDevices: Record<string, string>;
   blacklistFolders: string[];
   injectVaultRules: boolean;
+  /** Vault folder holding skills ("" = off). Vault-level, so it syncs. */
+  skillsFolder: string;
   /** Fixed internal store location; not a user-facing folder setting. */
   sessionStoreFolder: string;
   activityDensity: ActivityDensity;
@@ -54,6 +56,7 @@ export const DEFAULT_SETTINGS: ObsidianChatSettings = {
   pairedDevices: {},
   blacklistFolders: ["Journals/", "_attachments/", ".trash/"],
   injectVaultRules: true,
+  skillsFolder: "",
   sessionStoreFolder: ".chat/sessions",
   activityDensity: DEFAULT_ACTIVITY_DENSITY,
   allowWiderBind: false,
@@ -148,6 +151,7 @@ export function migrateSettings(raw: unknown, context: MigrationContext): Settin
     pairedDevices,
     blacklistFolders: stringArray(data.blacklistFolders) ?? [...DEFAULT_SETTINGS.blacklistFolders],
     injectVaultRules: typeof data.injectVaultRules === "boolean" ? data.injectVaultRules : DEFAULT_SETTINGS.injectVaultRules,
+    skillsFolder: typeof data.skillsFolder === "string" ? data.skillsFolder.trim().replace(/^\/+|\/+$/g, "") : "",
     // Fixed internal default: never read a user folder setting.
     sessionStoreFolder: DEFAULT_SETTINGS.sessionStoreFolder,
     // v2 default is a readable chat; an install that has never recorded the

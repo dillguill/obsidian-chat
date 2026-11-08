@@ -79,13 +79,23 @@ auto-opening the newest shared one.
 
 ## 5. Skills
 
-- [ ] A setting picks one vault folder as the skills folder (user-selected,
+Done: Settings → Skills folder. A skill is `<folder>/<name>/SKILL.md` (other
+files there are its resources) or a single note `<folder>/<name>.md`, with
+optional `name`/`description` frontmatter. The agent gets a short catalog
+(name, path, description) once per conversation and reads a skill's file when
+a task matches; typing `/` in an empty composer opens a picker of skills and
+harness commands, and choosing a skill attaches its full text.
+
+- [ ] Verify with real skills on the phone (remote mode reads the phone's
+      synced copy; the harness reads the same paths on the host).
+
+- [x] A setting picks one vault folder as the skills folder (user-selected,
       vault level).
-- [ ] Each skill is a note (or folder with a main note) in that folder; the
+- [x] Each skill is a note (or folder with a main note) in that folder; the
       plugin lists them and offers them to the harness.
-- [ ] Skills can be picked from the composer (e.g. `/` menu) and are sent as
+- [x] Skills can be picked from the composer (e.g. `/` menu) and are sent as
       tagged context like other attachments.
-- [ ] Skills sync with the vault, so every device sees the same set.
+- [x] Skills sync with the vault, so every device sees the same set.
 
 ## 6. Web search and fetch (globe toggle)
 

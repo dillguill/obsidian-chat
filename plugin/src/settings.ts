@@ -135,6 +135,19 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
         }),
       );
     new Setting(containerEl)
+      .setName("Skills folder")
+      .setDesc("Vault folder with skills: <name>/SKILL.md folders or single notes, with optional name/description frontmatter. The agent gets a short list once per conversation; type / in the composer to attach one. Leave empty to turn skills off.")
+      .addText((text) => {
+        text.setPlaceholder("e.g. Skills").setValue(this.plugin.settings.skillsFolder);
+        const list = containerEl.createEl("datalist", { attr: { id: "oc-skills-folder-list" } });
+        for (const folder of this.listFolders()) list.createEl("option", { value: folder.replace(/\/$/, "") });
+        text.inputEl.setAttribute("list", "oc-skills-folder-list");
+        text.onChange((value) => {
+          this.plugin.settings.skillsFolder = value.trim().replace(/^\/+|\/+$/g, "");
+          this.save();
+        });
+      });
+    new Setting(containerEl)
       .setName("Blacklist folders")
       .setDesc("Folders the agent can't read, search, or edit. Type to autocomplete, press Enter or + to add.")
       .addText((text) => {

@@ -25,6 +25,8 @@ import { fillPlan, renderRawUpdate, renderToolCard, type ToolCardHandle } from "
 import type { RawRecordEntry } from "./raw-view.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { openVaultFilePicker } from "./vault-picker.ts";
+import { SlashPickerModal, type SlashItem } from "./slash-picker.ts";
+import { catalogText, normalizeFolder, skillBody, skillsIn, type Skill } from "../skills/catalog.ts";
 import { isBlacklisted } from "../vault/path-policy.ts";
 import { IMAGE_EXT, vaultFileDataUrl } from "./image-picker.ts";
 import type { ContinuityChoice, ContinuityInfo } from "../shell/runtime.ts";
@@ -37,6 +39,7 @@ interface ContextChip {
   label: string;
   text: string;
   path?: string;
+  kind?: "note" | "selection" | "skill";
 }
 
 interface PendingImage {
@@ -117,6 +120,8 @@ export class ShellChatView extends ItemView {
    *  Connection info (the status dot) on mobile where the header is narrow. */
   private usageText: string | null = null;
   private rulesSentFor: string | null = null;
+  /** Session the skills catalog was last sent to (once per conversation). */
+  private skillsSentFor: string | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianChatPlugin) {
     super(leaf);
@@ -166,7 +171,7 @@ export class ShellChatView extends ItemView {
     this.emptyEl.createDiv({ cls: "oc-empty-title", text: "What can I help with?" });
     this.emptyEl.createDiv({
       cls: "oc-empty-hint",
-      text: Platform.isMobileApp ? "Ask about your vault." : "Ask about your vault. Type @ to attach a note, / for commands.",
+      text: Platform.isMobileApp ? "Ask about your vault." : "Ask about your vault. Type @ to attach a note, / for skills and commands.",
     });
 
     // ----- composer -----
@@ -213,6 +218,7 @@ export class ShellChatView extends ItemView {
       this.autosize();
       this.updateSendState();
       this.maybeOpenMention();
+      this.maybeOpenSlash();
     });
 
     const runtime = this.plugin.shellRuntime();
@@ -423,7 +429,7 @@ export class ShellChatView extends ItemView {
       remove.addEventListener("click", onRemove);
     };
     for (const item of this.contextChips) {
-      chip(item.id.startsWith("selection:") ? "text-select" : "file-text", item.label, () => {
+      chip(item.kind === "skill" ? "wand-2" : item.id.startsWith("selection:") ? "text-select" : "file-text", item.label, () => {
         this.contextChips = this.contextChips.filter((existing) => existing.id !== item.id);
         this.renderChips();
       });
@@ -484,6 +490,54 @@ export class ShellChatView extends ItemView {
     this.openMentionPicker();
   }
 
+  /** Skills in the configured vault folder (this device's synced copy). */
+  private skills(): Skill[] {
+    const folder = normalizeFolder(this.plugin.settings.skillsFolder);
+    if (!folder) return [];
+    const { vault, metadataCache } = this.plugin.app;
+    const files = vault
+      .getMarkdownFiles()
+      .filter((file) => file.path.startsWith(`${folder}/`))
+      .map((file) => ({ path: file.path, frontmatter: metadataCache.getFileCache(file)?.frontmatter ?? null }));
+    return skillsIn(folder, files);
+  }
+
+  /** `/` typed into an empty composer opens the skills/commands picker. */
+  private maybeOpenSlash(): void {
+    if (this.inputEl.value !== "/") return;
+    const runtime = this.plugin.shellRuntime();
+    const items: SlashItem[] = [
+      ...this.skills().map((skill) => ({ kind: "skill" as const, name: skill.name, description: skill.description, path: skill.path })),
+      ...(runtime.commands ?? []).map((command) => ({ kind: "command" as const, name: command.name, description: command.description })),
+    ];
+    if (!items.length) return; // nothing to pick: keep the literal "/"
+    this.inputEl.value = "";
+    this.updateSendState();
+    new SlashPickerModal(
+      this.plugin.app,
+      items,
+      (item) => void this.chooseSlash(item),
+      () => {
+        if (!this.inputEl.value) this.inputEl.value = "/";
+        this.inputEl.focus();
+        this.updateSendState();
+      },
+    ).open();
+  }
+
+  private async chooseSlash(item: SlashItem): Promise<void> {
+    if (item.kind === "command") {
+      this.inputEl.value = `/${item.name} `;
+      this.inputEl.focus();
+      this.updateSendState();
+      return;
+    }
+    const file = item.path ? this.plugin.app.vault.getFileByPath(item.path) : null;
+    if (!file) return;
+    const text = skillBody(await this.plugin.app.vault.read(file));
+    this.addContextChip({ id: `skill:${file.path}`, label: item.name, path: file.path, text, kind: "skill" });
+  }
+
   /** Lists this device's own vault copy (synced on mobile too), minus the
    *  blacklisted folders the agent is not allowed to read. */
   private openMentionPicker(): void {
@@ -535,13 +589,17 @@ export class ShellChatView extends ItemView {
    *  session on a local host. A remote shell never reads the host vault
    *  itself (FR-012). */
   private async buildContext(chips: ContextChip[]): Promise<Array<{ label: string; text: string; path?: string }>> {
-    const context = chips.map((chip) => ({
-      label: chip.path ? `Context: ${chip.path}` : `Context: ${chip.label}`,
-      text: chip.text,
-      path: chip.path ?? chip.label,
-    }));
+    const context = chips.map((chip) =>
+      chip.kind === "skill"
+        ? { label: `Skill: ${chip.label}`, text: chip.text, path: `Skill: ${chip.label}` }
+        : { label: chip.path ? `Context: ${chip.path}` : `Context: ${chip.label}`, text: chip.text, path: chip.path ?? chip.label },
+    );
     const runtime = this.plugin.shellRuntime();
     const sessionId = runtime.clientDebugInfo?.sessionId ?? null;
+    const skills = this.skills();
+    if (skills.length && (sessionId === null || sessionId !== this.skillsSentFor)) {
+      context.push({ label: "Skills", text: catalogText(skills), path: "Skills" });
+    }
     if (this.plugin.settings.injectVaultRules && runtime.mode === "local" && (sessionId === null || sessionId !== this.rulesSentFor)) {
       for (const candidate of ["AGENTS.md", "vault-rules.md", ".chat/rules.md"]) {
         try {
@@ -581,6 +639,7 @@ export class ShellChatView extends ItemView {
       this.clearContinuityBar();
       await runtime.send(typed, { images: images.map(({ mimeType, data }) => ({ mimeType, data })), context });
       this.rulesSentFor = runtime.clientDebugInfo?.sessionId ?? this.rulesSentFor;
+      if (this.skills().length) this.skillsSentFor = runtime.clientDebugInfo?.sessionId ?? this.skillsSentFor;
     } catch (err) {
       this.contextChips = chips;
       this.pendingImages = images;
