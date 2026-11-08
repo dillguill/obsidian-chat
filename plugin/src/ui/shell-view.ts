@@ -134,7 +134,7 @@ export class ShellChatView extends ItemView {
     this.titleEl = header.createDiv({ cls: "oc-chat-title", text: "New chat" });
     const right = header.createDiv({ cls: "oc-chat-header-right" });
     this.usageEl = right.createSpan({ cls: "oc-chat-usage oc-hidden" });
-    this.statusEl = right.createDiv({ cls: "oc-chat-status", attr: { role: "button" } });
+    this.statusEl = right.createDiv({ cls: "oc-chat-status", attr: { role: "button", "aria-label": "Connection info" } });
     this.statusDot = this.statusEl.createSpan({ cls: "oc-status-dot" });
     this.statusText = this.statusEl.createSpan({ cls: "oc-status-text", text: "Connecting…" });
     this.statusEl.addEventListener("click", () => void this.reconnectIfNeeded());
@@ -142,7 +142,6 @@ export class ShellChatView extends ItemView {
     this.undoBtn.addClass("oc-hidden");
     this.iconButton(right, "square-pen", "New chat", () => void this.newSession());
     this.iconButton(right, "history", "Conversations", () => void this.openHistory());
-    this.iconButton(right, "info", "Connection info", () => this.openConnectionInfo());
 
     // ----- transcript -----
     this.messagesEl = root.createDiv({ cls: "oc-chat-scroll" });
@@ -169,11 +168,15 @@ export class ShellChatView extends ItemView {
     const bar = composer.createDiv({ cls: "oc-composer-bar" });
     const left = bar.createDiv({ cls: "oc-composer-left" });
     this.iconButton(left, "paperclip", "Attach an image", () => this.pickImage());
-    this.iconButton(left, "file-plus", "Attach the current note", () => void this.addActiveNoteContext());
     this.iconButton(left, "at-sign", "Attach a note", () => this.openMentionPicker());
-    this.iconButton(left, "text-select", "Attach the editor selection", () => this.addSelectionContext());
-    this.controlsEl = left.createDiv({ cls: "oc-controls" });
+    // "Current note" and "selection" need an editor beside the chat; on mobile
+    // the chat fills the screen, so they have nothing to act on.
+    if (!Platform.isMobile) {
+      this.iconButton(left, "file-plus", "Attach the current note", () => void this.addActiveNoteContext());
+      this.iconButton(left, "text-select", "Attach the editor selection", () => this.addSelectionContext());
+    }
     const actions = bar.createDiv({ cls: "oc-composer-right" });
+    this.controlsEl = actions.createDiv({ cls: "oc-controls" });
     this.stopBtn = actions.createEl("button", { cls: "oc-send oc-stop oc-hidden", attr: { "aria-label": "Stop", title: "Stop (Esc)" } });
     setIcon(this.stopBtn, "square");
     this.sendBtn = actions.createEl("button", { cls: "oc-send", attr: { "aria-label": "Send", title: "Send" } });
@@ -194,6 +197,12 @@ export class ShellChatView extends ItemView {
         void this.cancel();
       }
     });
+    if (Platform.isMobile) {
+      // The bottom navbar spacing is dead space while the keyboard is up
+      // (iOS may resize the webview without reporting --keyboard-height).
+      this.inputEl.addEventListener("focus", () => root.addClass("oc-keyboard"));
+      this.inputEl.addEventListener("blur", () => root.removeClass("oc-keyboard"));
+    }
     this.inputEl.addEventListener("input", () => {
       this.autosize();
       this.updateSendState();
@@ -320,6 +329,7 @@ export class ShellChatView extends ItemView {
       onSetConfig: (configId, value) => {
         void runtime.setConfigOption(configId, value).then(() => this.renderControls()).catch((err) => this.showError(`Could not change that setting: ${String((err as Error).message ?? err)}`));
       },
+      icon: Platform.isMobile ? (el) => setIcon(el, "sliders-horizontal") : undefined,
       openPicker: (_heading, choices, current, onChoose) => {
         new AcpSelectSuggestModal(this.plugin.app, choices, current, onChoose).open();
       },
@@ -919,9 +929,18 @@ export class ShellChatView extends ItemView {
     if (runtime.mode !== "remote") return;
     try {
       const sessions = await runtime.listSessions();
-      if (sessions.length) await runtime.loadSession(sessions[0].sessionId);
-      else await runtime.newSession();
+      const continuity = sessions.length ? await runtime.loadSession(sessions[0].sessionId) : null;
       if (this.turn) this.endTurn(undefined);
+      // An empty conversation that the host cannot reattach has nothing worth
+      // keeping: start a fresh harness session (which also brings the
+      // harness's model/mode controls) instead of a detached, control-less one.
+      const empty = !this.threadEl.querySelector(".oc-user, .oc-agent");
+      if (!sessions.length || (continuity && !continuity.attached && empty)) {
+        await runtime.newSession();
+      } else {
+        this.renderContinuity(continuity);
+      }
+      this.renderControls();
     } catch (err) {
       this.showError(`Could not open host history: ${String((err as Error).message ?? err)}`);
     }

@@ -63,7 +63,8 @@ export function isAuthRejection(error: unknown): boolean {
   return /\b(401|403)\b|unauthori[sz]ed|forbidden/i.test(text);
 }
 
-/** Adds the bearer token to a ws:// or wss:// URL (http/https normalized). */
+/** Adds the bearer token to a ws:// or wss:// URL (http/https normalized,
+ *  bare host:port defaults to /acp). */
 export function remoteUrlWithToken(rawUrl: string, token: string): string {
   const trimmed = rawUrl.trim();
   if (!trimmed) throw new Error("no host address is configured");
@@ -77,6 +78,8 @@ export function remoteUrlWithToken(rawUrl: string, token: string): string {
   if (url.protocol !== "ws:" && url.protocol !== "wss:") {
     throw new Error(`host address must be ws:// or wss://, got ${url.protocol}`);
   }
+  // The host serves ACP only at /acp; a bare "ws://host:port" means that.
+  if (url.pathname === "/" || url.pathname === "") url.pathname = "/acp";
   if (token) url.searchParams.set("token", token);
   return url.toString();
 }

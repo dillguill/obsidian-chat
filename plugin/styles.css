@@ -377,11 +377,13 @@
   color: var(--text-normal);
 }
 .oc-composer-bar { display: flex; align-items: center; gap: 6px; cursor: default; }
-.oc-composer-left { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 2px; position: relative; }
-.oc-composer-right { flex: 0 0 auto; display: flex; align-items: center; }
+.oc-composer-left { flex: 0 0 auto; display: flex; align-items: center; flex-wrap: wrap; gap: 2px; position: relative; }
+.oc-composer-right { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; justify-content: flex-end; }
 .oc-send {
+  flex: 0 0 auto;
   width: 30px;
   height: 30px;
+  min-width: 0;
   padding: 0 !important;
   border-radius: 50% !important;
   display: inline-flex;
@@ -396,56 +398,92 @@
 .oc-send.is-ready, .oc-stop { background: var(--interactive-accent) !important; color: var(--text-on-accent) !important; }
 .oc-stop svg { width: 12px; height: 12px; fill: currentColor; }
 
-/* declared controls (modes / config / commands) */
-.oc-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-left: 4px; position: relative; }
+/* declared controls: one compact trigger + popover (modes / config / commands) */
+.oc-composer-right { gap: 4px; }
+.oc-controls { position: relative; display: flex; align-items: center; min-width: 0; }
 .oc-controls.oc-controls-empty { display: none; }
-.oc-control {
+.oc-control-trigger {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  height: 26px;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  height: 30px;
   padding: 0 8px !important;
-  border-radius: 999px !important;
+  border: none !important;
+  border-radius: 8px !important;
   background: transparent !important;
   box-shadow: none !important;
-  border: 1px solid transparent !important;
   color: var(--text-muted) !important;
-  font-size: var(--font-ui-smaller) !important;
+  font-size: var(--font-ui-small) !important;
   cursor: pointer;
 }
-.oc-control:hover { background: var(--background-modifier-hover) !important; color: var(--text-normal) !important; }
-.oc-control-current.oc-control-boolean { border-color: var(--interactive-accent) !important; color: var(--text-normal) !important; }
-.oc-control-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-control-chevron { color: var(--text-faint); font-size: 0.85em; }
-.oc-control-menu {
-  position: absolute;
-  bottom: calc(100% + 6px);
-  left: 0;
-  z-index: 30;
-  min-width: 200px;
-  max-height: 320px;
-  overflow-y: auto;
-  padding: 4px;
-  border: 1px solid var(--oc-hair);
-  border-radius: 10px;
-  background: var(--background-primary);
-  box-shadow: var(--shadow-s);
+.oc-control-trigger:hover, .oc-control-trigger.is-open { background: var(--background-modifier-hover) !important; color: var(--text-normal) !important; }
+.oc-control-summary { display: flex; gap: 6px; min-width: 0; overflow: hidden; white-space: nowrap; }
+.oc-control-primary { flex: 0 1 auto; min-width: 3em; overflow: hidden; text-overflow: ellipsis; color: var(--text-normal); }
+.oc-control-secondary { flex: 0 4 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-faint); }
+.oc-control-chevron,
+.oc-control-row-chevron,
+.oc-control-back-chevron {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid var(--text-faint);
+  border-bottom: 1.5px solid var(--text-faint);
 }
-.oc-control-menu-title { padding: 4px 8px; font-size: var(--font-ui-smaller); color: var(--text-faint); }
-.oc-control-menu-item {
-  display: block;
+.oc-control-chevron { transform: translateY(1px) rotate(-135deg); }
+.oc-control-trigger.is-open .oc-control-chevron { transform: translateY(-2px) rotate(45deg); }
+.oc-control-row-chevron { transform: rotate(-45deg); margin-left: 2px; }
+.oc-control-back-chevron { transform: rotate(135deg); margin-left: 3px; }
+.oc-control-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 30;
+  width: max-content;
+  min-width: 240px;
+  max-width: min(360px, calc(100vw - 24px));
+  max-height: min(380px, 60vh);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--oc-hair);
+  border-radius: 14px;
+  background: var(--background-primary);
+  box-shadow: var(--shadow-l);
+}
+.oc-control-row, .oc-control-choice, .oc-control-back {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 12px;
   width: 100%;
-  text-align: left;
-  padding: 5px 8px !important;
+  min-height: 36px;
+  height: auto !important;
+  padding: 6px 10px !important;
+  border: none !important;
+  border-radius: 8px !important;
   background: transparent !important;
   box-shadow: none !important;
-  border-radius: 6px !important;
   font-size: var(--font-ui-small) !important;
   color: var(--text-normal) !important;
-  height: auto !important;
+  text-align: left;
+  cursor: pointer;
 }
-.oc-control-menu-item:hover { background: var(--background-modifier-hover) !important; }
-.oc-control-menu-item.oc-control-current { color: var(--interactive-accent) !important; font-weight: 600; }
+.oc-control-row:hover, .oc-control-choice:hover, .oc-control-back:hover { background: var(--background-modifier-hover) !important; }
+.oc-control-row-label { flex: 0 0 auto; }
+.oc-control-row-value { flex: 1; min-width: 0; text-align: right; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-control-back { gap: 8px; color: var(--text-muted) !important; font-size: var(--font-ui-smaller) !important; min-height: 30px; }
+.oc-control-choice-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-control-choice.is-current { font-weight: 600; }
+.oc-control-check {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 10px;
+  margin-right: 3px;
+  border-right: 2px solid var(--interactive-accent);
+  border-bottom: 2px solid var(--interactive-accent);
+  transform: translateY(-1px) rotate(45deg);
+}
 
 /* chips */
 .oc-chips { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
@@ -470,10 +508,58 @@
 .oc-chip-x:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 
 /* ---------- mobile ---------- */
+/* Header: 44px touch targets with room between them. */
+.oc-chat-mobile .oc-chat-header { padding: 6px 8px 6px 14px; gap: 4px; }
+.oc-chat-mobile .oc-chat-title { font-size: var(--font-ui-medium); }
+.oc-chat-mobile .oc-chat-header-right { gap: 6px; }
+.oc-chat-mobile .oc-chat-header .oc-icon-btn {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+}
+.oc-chat-mobile .oc-chat-header .oc-icon-btn svg { width: 22px; height: 22px; }
+.oc-chat-mobile .oc-chat-status { min-height: 44px; min-width: 44px; justify-content: center; margin-right: 0; padding: 0 10px; }
+.oc-chat-mobile .oc-status-dot { width: 9px; height: 9px; }
+.oc-chat-mobile .oc-chat-usage { margin-right: 2px; }
+
 .oc-chat-mobile .oc-chat-scroll { padding: 12px 12px 6px; }
-.oc-chat-mobile .oc-dock { padding: 6px 10px calc(10px + env(safe-area-inset-bottom)); }
 .oc-chat-mobile .oc-user-bubble { max-width: 92%; }
-.oc-chat-mobile .oc-icon-btn svg { width: 18px; height: 18px; }
+
+/* Composer sits above Obsidian's bottom navbar (--view-bottom-spacing is
+   safe area + navbar, minus the keyboard when it is open). */
+.oc-chat-mobile .oc-dock {
+  padding: 6px 10px max(12px, calc(var(--view-bottom-spacing, env(safe-area-inset-bottom)) + 12px));
+}
+.oc-chat-mobile.oc-keyboard .oc-dock { padding-bottom: 8px; }
+.oc-chat-mobile .oc-composer { padding: 8px 8px 6px 12px; border-radius: 22px; }
+.oc-chat-mobile .oc-input { font-size: max(16px, var(--oc-size)); }
+.oc-chat-mobile .oc-composer-bar .oc-icon-btn {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.oc-chat-mobile .oc-composer-bar .oc-icon-btn svg { width: 20px; height: 20px; }
+.oc-chat-mobile .oc-send { width: 36px; height: 36px; }
+.oc-chat-mobile .oc-send svg { width: 18px; height: 18px; }
+.oc-control-trigger.is-icon { width: 40px; height: 40px; padding: 0 !important; justify-content: center; border-radius: 50% !important; }
+.oc-control-icon { display: inline-flex; color: var(--text-muted); }
+.oc-control-icon svg { width: 20px; height: 20px; }
+.oc-chat-mobile .oc-input { min-height: 28px; line-height: 1.45; }
+.oc-chat-mobile .oc-control-row, .oc-chat-mobile .oc-control-choice { min-height: 44px; font-size: var(--font-ui-medium) !important; }
+.oc-chat-mobile .oc-control-pop { border-radius: 16px; }
+
+/* Wide content scrolls inside its own box, never the page. */
+.oc-chat-mobile .oc-agent-text pre,
+.oc-chat-mobile .oc-agent-text table,
+.oc-chat-mobile .oc-tool-output { max-width: 100%; overflow-x: auto; }
+.oc-chat-mobile .oc-agent-text table { display: block; }
 
 /* ---------- animation ---------- */
 @keyframes oc-spin { to { transform: rotate(360deg); } }

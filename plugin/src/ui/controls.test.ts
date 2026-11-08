@@ -66,3 +66,15 @@ test("switching harness declarations replaces the whole control set", () => {
   assert.equal(hasRenderableControls(before), true);
   assert.equal(hasRenderableControls(after), false);
 });
+
+test("the trigger summary lists current mode and select values in declaration order", async () => {
+  const { controlSummary } = await import("./controls.ts");
+  const options = [
+    { id: "model", name: "Model", type: "select", currentValue: "b", options: [{ group: "g", name: "G", options: [{ value: "a", name: "A" }, { value: "b", name: "Bee" }] }] },
+    { id: "flag", name: "Flag", type: "boolean", currentValue: true },
+    { id: "effort", name: "Reasoning effort", type: "select", currentValue: "", options: [{ value: "", name: "Provider default" }, { value: "high", name: "High" }] },
+  ] as unknown as SessionConfigOption[];
+  const modes = { currentModeId: "plan", availableModes: [{ id: "build", name: "Build" }, { id: "plan", name: "Plan" }] } as SessionModeState;
+  assert.deepEqual(controlSummary(composerControlModel({ modes, configOptions: options, commands: null })), ["Plan", "Bee", "Provider default"]);
+  assert.deepEqual(controlSummary(composerControlModel({ modes: null, configOptions: null, commands: null })), []);
+});
