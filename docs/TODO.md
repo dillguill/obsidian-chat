@@ -116,16 +116,31 @@ shell, no web tools."). The toggle needs a dsh-side switch first.
 
 ## 7. Voice input (stt.example)
 
-- [ ] Settings: a speech-to-text server URL (your whisper.cpp instance,
+Done: Settings → Voice input → Speech-to-text server (set to
+https://stt.example, `/v1/audio/transcriptions`), with a Test button. The
+mic sits left of send; recordings are converted to 16 kHz mono WAV in memory
+and the transcript is inserted at the cursor.
+
+Engine dropdown (per device, not synced): Automatic / System speech
+recognition / Whisper server / Off. System uses the platform's live Web
+Speech recognizer (mobile only; Electron's is non-functional) and streams the
+transcript into the input; Automatic picks it where available, else Whisper.
+Obsidian 1.15's iOS voice capture is a Quick Capture feature with no plugin
+API, so it can't be called from the chat.
+
+- [ ] Verify on the phone: is the system recognizer exposed in the iOS app
+      (the dropdown says "unavailable" if not)? Mic permission prompt.
+
+- [x] Settings: a speech-to-text server URL (your whisper.cpp instance,
       e.g. `https://stt.example`), with a connection test. Off when
       empty.
-- [ ] Composer: a microphone button to the left of send (desktop and
+- [x] Composer: a microphone button to the left of send (desktop and
       mobile), shown only when a server is set. Tap to record, tap again to
       stop; the transcript is inserted into the input for editing, not sent
       automatically.
-- [ ] Recording state is obvious (pulsing mic, elapsed time); cancel with Esc
+- [x] Recording state is obvious (pulsing mic, elapsed time); cancel with Esc
       or a second tap target.
-- [ ] Audio goes only to the configured server; nothing is stored in the
+- [x] Audio goes only to the configured server; nothing is stored in the
       vault or the session record.
 - [ ] Check mic permission and the `.internal` certificate on iOS (Caddy's
       internal CA must be trusted on the phone).

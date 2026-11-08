@@ -25,6 +25,8 @@ import { fillPlan, renderRawUpdate, renderToolCard, type ToolCardHandle } from "
 import type { RawRecordEntry } from "./raw-view.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { openVaultFilePicker } from "./vault-picker.ts";
+import { SystemDictation, VoiceRecorder, systemDictationAvailable, transcribe } from "./voice.ts";
+import { insertTranscript, resolveVoiceProvider } from "../voice/stt.ts";
 import { SlashPickerModal, type SlashItem } from "./slash-picker.ts";
 import { catalogText, normalizeFolder, skillBody, skillsIn, type Skill } from "../skills/catalog.ts";
 import { isBlacklisted } from "../vault/path-policy.ts";
@@ -94,6 +96,14 @@ export class ShellChatView extends ItemView {
   private emptyEl!: HTMLElement;
   private chipsEl!: HTMLElement;
   private controlsEl!: HTMLElement;
+  private micBtn!: HTMLButtonElement;
+  private micTime!: HTMLElement;
+  private voice: VoiceRecorder | null = null;
+  private dictation: SystemDictation | null = null;
+  /** Input text and caret before live dictation started (Esc restores it). */
+  private dictationBase: { value: string; caret: number } | null = null;
+  private voiceTimer = 0;
+  private voiceState: "idle" | "recording" | "transcribing" = "idle";
   private titleEl!: HTMLElement;
   /** Set after a user rename: later harness titles do not replace it. */
   private titleLocked = false;
@@ -193,6 +203,10 @@ export class ShellChatView extends ItemView {
     }
     const actions = bar.createDiv({ cls: "oc-composer-right" });
     this.controlsEl = actions.createDiv({ cls: "oc-controls" });
+    this.micBtn = actions.createEl("button", { cls: "oc-mic oc-hidden", attr: { type: "button", "aria-label": "Dictate" } });
+    setIcon(this.micBtn.createSpan({ cls: "oc-mic-icon" }), "mic");
+    this.micTime = this.micBtn.createSpan({ cls: "oc-mic-time" });
+    this.micBtn.addEventListener("click", () => void this.toggleVoice());
     this.stopBtn = actions.createEl("button", { cls: "oc-send oc-stop oc-hidden", attr: { "aria-label": "Stop", title: "Stop (Esc)" } });
     setIcon(this.stopBtn, "square");
     this.sendBtn = actions.createEl("button", { cls: "oc-send", attr: { "aria-label": "Send", title: "Send" } });
@@ -207,6 +221,11 @@ export class ShellChatView extends ItemView {
       if (event.key === "Enter" && !event.shiftKey && !event.isComposing && !Platform.isMobileApp) {
         event.preventDefault();
         void this.send();
+      }
+      if (event.key === "Escape" && this.voiceState === "recording") {
+        event.preventDefault();
+        this.cancelVoice();
+        return;
       }
       if (event.key === "Escape" && this.busy) {
         event.preventDefault();
@@ -247,6 +266,7 @@ export class ShellChatView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.cancelVoice();
     for (const off of this.unsubscribers) off();
     this.unsubscribers = [];
   }
@@ -309,6 +329,155 @@ export class ShellChatView extends ItemView {
       window.removeEventListener("orientationchange", onRotate);
     });
     check();
+  }
+
+  // ---------- voice input ----------
+
+  private static readonly VOICE_MAX_MS = 5 * 60_000;
+
+  private setVoiceState(state: "idle" | "recording" | "transcribing"): void {
+    this.voiceState = state;
+    this.micBtn.toggleClass("is-recording", state === "recording");
+    this.micBtn.toggleClass("is-transcribing", state === "transcribing");
+    this.micBtn.disabled = state === "transcribing";
+    this.micBtn.setAttr("aria-label", state === "recording" ? "Stop and transcribe" : state === "transcribing" ? "Transcribing…" : "Dictate");
+    if (state !== "recording") {
+      window.clearInterval(this.voiceTimer);
+      this.voiceTimer = 0;
+      this.micTime.setText("");
+    }
+    this.renderControls();
+  }
+
+  /** The engine the mic uses on this device, or null (mic hidden). */
+  private voiceEngine(): "system" | "whisper" | null {
+    return resolveVoiceProvider(this.plugin.voiceProvider(), {
+      systemAvailable: systemDictationAvailable(Platform.isDesktopApp),
+      whisperUrl: this.plugin.settings.sttUrl,
+    });
+  }
+
+  /** Re-applies settings that affect the composer (called after settings change). */
+  refreshComposer(): void {
+    this.renderControls();
+  }
+
+  private async toggleVoice(): Promise<void> {
+    if (this.voiceState === "transcribing") return;
+    if (this.voiceState === "recording") {
+      if (this.dictation) this.dictation.stop();
+      else await this.finishVoice();
+      return;
+    }
+    const engine = this.voiceEngine();
+    if (!engine) {
+      new Notice("Choose a voice input engine in settings first.");
+      return;
+    }
+    if (engine === "system") {
+      this.startDictation();
+      return;
+    }
+    const recorder = new VoiceRecorder();
+    try {
+      await recorder.start();
+    } catch (err) {
+      this.showError(`Microphone unavailable: ${String((err as Error).message ?? err)}`);
+      return;
+    }
+    this.voice = recorder;
+    this.setVoiceState("recording");
+    const started = Date.now();
+    this.voiceTimer = window.setInterval(() => {
+      const elapsed = Date.now() - started;
+      const seconds = Math.floor(elapsed / 1000);
+      this.micTime.setText(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
+      if (elapsed >= ShellChatView.VOICE_MAX_MS) void this.finishVoice();
+    }, 250);
+  }
+
+  private async finishVoice(): Promise<void> {
+    const recorder = this.voice;
+    if (!recorder) return;
+    this.voice = null;
+    this.setVoiceState("transcribing");
+    try {
+      const wav = await recorder.stop();
+      const text = await transcribe(this.plugin.settings.sttUrl, wav);
+      if (!text) {
+        new Notice("No speech recognized.");
+      } else {
+        const caret = this.inputEl.selectionStart ?? this.inputEl.value.length;
+        const next = insertTranscript(this.inputEl.value, caret, text);
+        this.inputEl.value = next.value;
+        this.inputEl.setSelectionRange(next.caret, next.caret);
+        this.autosize();
+        this.updateSendState();
+        this.inputEl.focus();
+      }
+    } catch (err) {
+      this.showError(`Transcription failed: ${String((err as Error).message ?? err)}`);
+    } finally {
+      this.setVoiceState("idle");
+    }
+  }
+
+  /** Live system dictation: the transcript streams into the input. */
+  private startDictation(): void {
+    const dictation = new SystemDictation();
+    const caret = this.inputEl.selectionStart ?? this.inputEl.value.length;
+    this.dictationBase = { value: this.inputEl.value, caret };
+    try {
+      dictation.start(
+        (text) => {
+          const base = this.dictationBase;
+          if (!base) return;
+          const next = insertTranscript(base.value, base.caret, text);
+          this.inputEl.value = text ? next.value : base.value;
+          this.autosize();
+          this.updateSendState();
+        },
+        (error) => {
+          this.dictation = null;
+          this.dictationBase = null;
+          this.setVoiceState("idle");
+          if (error) this.showError(`Speech recognition stopped: ${error}`);
+          else this.inputEl.focus();
+        },
+      );
+    } catch (err) {
+      this.dictationBase = null;
+      this.showError(String((err as Error).message ?? err));
+      return;
+    }
+    this.dictation = dictation;
+    this.setVoiceState("recording");
+    const started = Date.now();
+    this.voiceTimer = window.setInterval(() => {
+      const seconds = Math.floor((Date.now() - started) / 1000);
+      this.micTime.setText(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
+      if (Date.now() - started >= ShellChatView.VOICE_MAX_MS) dictation.stop();
+    }, 250);
+  }
+
+  private cancelVoice(): void {
+    if (this.dictation) {
+      const base = this.dictationBase;
+      this.dictation.cancel();
+      this.dictation = null;
+      this.dictationBase = null;
+      if (base) {
+        this.inputEl.value = base.value;
+        this.autosize();
+        this.updateSendState();
+      }
+      this.setVoiceState("idle");
+      return;
+    }
+    if (!this.voice) return;
+    this.voice.cancel();
+    this.voice = null;
+    this.setVoiceState("idle");
   }
 
   private iconButton(parent: HTMLElement, icon: string, label: string, onClick: () => void): HTMLElement {
@@ -390,6 +559,7 @@ export class ShellChatView extends ItemView {
 
   /** Composer controls generated from the harness's declarations. */
   private renderControls(): void {
+    this.micBtn?.toggleClass("oc-hidden", !this.voiceEngine() && this.voiceState === "idle");
     const runtime = this.plugin.shellRuntime();
     const model = composerControlModel({
       modes: runtime.modes,

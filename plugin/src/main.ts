@@ -5,6 +5,7 @@
  *  folder-free recovery of old Markdown conversations. The legacy chat view is
  *  gone; conversations live in JSONL and are viewed in the shell.
  */
+import { parseVoiceProvider, type VoiceProvider } from "./voice/stt.ts";
 import { Notice, Platform, Plugin, WorkspaceLeaf } from "obsidian";
 import { ObsidianChatSettingTab } from "./settings";
 import {
@@ -293,6 +294,22 @@ export default class ObsidianChatPlugin extends Plugin {
     }
   }
 
+  /** Re-applies composer-affecting settings in open chat views. */
+  refreshViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(SHELL_VIEW_TYPE)) {
+      (leaf.view as { refreshComposer?: () => void }).refreshComposer?.();
+    }
+  }
+
+  /** Voice input engine for this device (not synced: devices differ). */
+  voiceProvider(): VoiceProvider {
+    return parseVoiceProvider(this.app.loadLocalStorage(VOICE_PROVIDER_KEY));
+  }
+
+  setVoiceProvider(choice: VoiceProvider): void {
+    this.app.saveLocalStorage(VOICE_PROVIDER_KEY, choice);
+  }
+
   async saveSettings() {
     this.app.saveLocalStorage(DEVICE_SHELL_KEY, JSON.stringify(deviceShellOf(this.settings.shell)));
     await this.saveData(syncedSettings(this.settings, this.fileDeviceShell));
@@ -308,6 +325,7 @@ export default class ObsidianChatPlugin extends Plugin {
 
 /** Per-device (not synced) storage key for this device's shell role. */
 const DEVICE_SHELL_KEY = "obsidian-chat:device-shell";
+const VOICE_PROVIDER_KEY = "obsidian-chat:voice-provider";
 
 /** This machine's own IP addresses (desktop only). */
 function ownAddresses(): string[] {

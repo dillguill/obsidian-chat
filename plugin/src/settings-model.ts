@@ -41,6 +41,8 @@ export interface ObsidianChatSettings {
   injectVaultRules: boolean;
   /** Vault folder holding skills ("" = off). Vault-level, so it syncs. */
   skillsFolder: string;
+  /** Speech-to-text server (whisper.cpp-style); "" = no mic. */
+  sttUrl: string;
   /** Fixed internal store location; not a user-facing folder setting. */
   sessionStoreFolder: string;
   activityDensity: ActivityDensity;
@@ -57,6 +59,7 @@ export const DEFAULT_SETTINGS: ObsidianChatSettings = {
   blacklistFolders: ["Journals/", "_attachments/", ".trash/"],
   injectVaultRules: true,
   skillsFolder: "",
+  sttUrl: "",
   sessionStoreFolder: ".chat/sessions",
   activityDensity: DEFAULT_ACTIVITY_DENSITY,
   allowWiderBind: false,
@@ -152,6 +155,7 @@ export function migrateSettings(raw: unknown, context: MigrationContext): Settin
     blacklistFolders: stringArray(data.blacklistFolders) ?? [...DEFAULT_SETTINGS.blacklistFolders],
     injectVaultRules: typeof data.injectVaultRules === "boolean" ? data.injectVaultRules : DEFAULT_SETTINGS.injectVaultRules,
     skillsFolder: typeof data.skillsFolder === "string" ? data.skillsFolder.trim().replace(/^\/+|\/+$/g, "") : "",
+    sttUrl: typeof data.sttUrl === "string" ? data.sttUrl.trim() : "",
     // Fixed internal default: never read a user folder setting.
     sessionStoreFolder: DEFAULT_SETTINGS.sessionStoreFolder,
     // v2 default is a readable chat; an install that has never recorded the

@@ -685,3 +685,32 @@
 .setting-item:has(.oc-rename-input) .setting-item-info { display: none; }
 .setting-item:has(.oc-rename-input) .setting-item-control { flex: 1 1 auto; }
 .oc-rename-input { width: 100%; }
+
+/* voice input */
+.oc-mic {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 6px !important;
+  border: none !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  color: var(--text-muted) !important;
+  cursor: pointer;
+}
+.oc-mic:hover { background: var(--background-modifier-hover) !important; color: var(--text-normal) !important; }
+.oc-mic-icon { display: inline-flex; }
+.oc-mic-icon svg { width: 18px; height: 18px; }
+.oc-mic-time { font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums; }
+.oc-mic-time:empty { display: none; }
+.oc-mic.is-recording { color: var(--color-red) !important; background: rgba(var(--color-red-rgb), 0.12) !important; }
+.oc-mic.is-recording .oc-mic-icon { animation: oc-pulse 1.2s ease-in-out infinite; }
+.oc-mic.is-transcribing { cursor: progress; }
+.oc-mic.is-transcribing .oc-mic-icon { animation: oc-pulse 0.8s ease-in-out infinite; opacity: 0.6; }
+.oc-chat-mobile .oc-mic { min-width: 40px; height: 40px; }
+.oc-chat-mobile .oc-mic-icon svg { width: 20px; height: 20px; }

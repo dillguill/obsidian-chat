@@ -3,6 +3,8 @@
  *  (Constitution Principle II). There is deliberately no note-folder,
  *  session-folder, gateway, or fixed model/thinking control here.
  */
+import { silentWav, systemDictationAvailable, transcribe } from "./ui/voice.ts";
+import { parseVoiceProvider } from "./voice/stt.ts";
 import { App, Platform, PluginSettingTab, Setting, setIcon, TextComponent } from "obsidian";
 import type ObsidianChatPlugin from "./main";
 import { mintToken } from "./shell/device-auth.ts";
@@ -178,6 +180,52 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
         this.display();
       });
     }
+
+    containerEl.createEl("h4", { text: "Voice input" });
+    const systemOk = systemDictationAvailable(Platform.isDesktopApp);
+    new Setting(containerEl)
+      .setName("Voice input")
+      .setDesc(
+        `Engine for the microphone button on this device (not synced). System uses the device's own live speech recognition${systemOk ? "" : " (not available on this device)"}; Whisper sends the recording to the server below. Automatic picks System where it works, otherwise Whisper. The keyboard's own dictation key always works too.`,
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("auto", "Automatic")
+          .addOption("system", systemOk ? "System speech recognition" : "System speech recognition (unavailable)")
+          .addOption("whisper", "Whisper server")
+          .addOption("off", "Off")
+          .setValue(this.plugin.voiceProvider())
+          .onChange((value) => {
+            this.plugin.setVoiceProvider(parseVoiceProvider(value));
+            this.plugin.refreshViews();
+          }),
+      );
+    const stt = new Setting(containerEl)
+      .setName("Speech-to-text server")
+      .setDesc("Your whisper.cpp server (or any /v1/audio/transcriptions endpoint), e.g. https://stt.example. Adds a microphone button next to send. Audio goes only to this server and is never stored.")
+      .addText((text) =>
+        text
+          .setPlaceholder("https://stt.example")
+          .setValue(this.plugin.settings.sttUrl)
+          .onChange((value) => {
+            this.plugin.settings.sttUrl = value.trim();
+            this.save();
+            this.plugin.refreshViews();
+          }),
+      )
+      .addButton((button) =>
+        button.setButtonText("Test").onClick(async () => {
+          button.setDisabled(true).setButtonText("Testing…");
+          try {
+            await transcribe(this.plugin.settings.sttUrl, silentWav());
+            stt.setDesc("Connected: the server accepted a test clip.");
+          } catch (err) {
+            stt.setDesc(`Not reachable: ${String((err as Error).message ?? err)}`);
+          } finally {
+            button.setDisabled(false).setButtonText("Test");
+          }
+        }),
+      );
 
     containerEl.createEl("h4", { text: "Transcript" });
     new Setting(containerEl)
