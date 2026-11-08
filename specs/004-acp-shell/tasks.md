@@ -129,21 +129,21 @@ with zero unsafe I/O.
 
 ### Tests for User Story 2
 
-- [ ] T041 [P] [US2] ACP fs read/write/parents/editor-refresh/snapshot tests in `plugin/src/vault/acp-fs.test.ts` (FR-018…FR-021)
-- [ ] T042 [P] [US2] MCP six-tool + read-only + loopback/token + `mcpCapabilities.http`-off tests in `plugin/src/vault/mcp-server.test.ts` (FR-026…FR-033)
-- [ ] T043 [P] [US2] Shared-policy equivalence test: same path verdicts from ACP fs and MCP tools in `plugin/src/vault/path-policy.test.ts` (FR-023/FR-029)
+- [X] T041 [P] [US2] ACP fs read/write/parents/editor-refresh/snapshot tests in `plugin/src/vault/acp-fs.test.ts` (FR-018…FR-021)
+- [X] T042 [P] [US2] MCP six-tool + read-only + loopback/token + `mcpCapabilities.http`-off tests in `plugin/src/vault/mcp-server.test.ts` (FR-026…FR-033)
+- [X] T043 [P] [US2] Shared-policy equivalence test: same path verdicts from ACP fs and MCP tools in `plugin/src/vault/path-policy.test.ts` (FR-023/FR-029)
 
 ### Implementation for User Story 2
 
-- [ ] T044 [US2] Implement `fs/read_text_file` and `fs/write_text_file` handlers in `plugin/src/vault/acp-fs.ts` over `VaultService` (FR-018/FR-019)
-- [ ] T045 [US2] Implement the best-effort pre-write snapshot and host-side undo surface in `plugin/src/vault/service.ts` and `plugin/src/ui/approval.ts` (FR-021/FR-022)
-- [ ] T046 [US2] Finish editor refresh and metadata invalidation in `plugin/src/vault/service.ts` (`Editor.refresh()`, `MarkdownPreviewView.rerender(true)`; never `setValue`) (FR-019)
-- [ ] T047 [US2] Implement the six read-only MCP tools in `plugin/src/vault/mcp-server.ts` (search/backlinks/links/tags/outline/metadata; annotations; bounds; error codes) (FR-026…FR-033)
-- [ ] T048 [US2] Mount the MCP endpoint on the host listener and pass the per-session token/entry in `plugin/src/shell/host-server.ts` and `plugin/src/shell/acp-client.ts` (FR-026/FR-031)
-- [ ] T049 [US2] Gate the MCP entry on `agentCapabilities.mcpCapabilities.http`; when false send `mcpServers: []` and surface tools-unavailable (FR-026/FR-031)
-- [ ] T050 [US2] Implement the generic permission card (one action per offered option; no approve/reject invention) in `plugin/src/ui/approval.ts` and wire parking in `plugin/src/shell/acp-client.ts` (FR-034…FR-038)
-- [ ] T051 [US2] Remove the persistent tool allowlist and any shell-side permission policy from `plugin/src/settings.ts` and `plugin/src/ui/chat-view.ts`; rely only on harness-offered always-allow options (FR-037)
-- [ ] T052 [US2] Run the plan P2 gate over `plugin/src/vault/` and `plugin/src/shell/`: fs/policy/MCP suites, zero unsafe I/O, shared-service proof
+- [X] T044 [US2] Implement `fs/read_text_file` and `fs/write_text_file` handlers in `plugin/src/vault/acp-fs.ts` over `VaultService` (FR-018/FR-019)
+- [X] T045 [US2] Implement the best-effort pre-write snapshot and host-side undo surface in `plugin/src/vault/service.ts` and `plugin/src/ui/approval.ts` (FR-021/FR-022)
+- [X] T046 [US2] Finish editor refresh and metadata invalidation in `plugin/src/vault/service.ts` (`Editor.refresh()`, `MarkdownPreviewView.rerender(true)`; never `setValue`) (FR-019)
+- [X] T047 [US2] Implement the six read-only MCP tools in `plugin/src/vault/mcp-server.ts` (search/backlinks/links/tags/outline/metadata; annotations; bounds; error codes) (FR-026…FR-033)
+- [X] T048 [US2] Mount the MCP endpoint on the host listener and pass the per-session token/entry in `plugin/src/shell/host-server.ts` and `plugin/src/shell/acp-client.ts` (FR-026/FR-031)
+- [X] T049 [US2] Gate the MCP entry on `agentCapabilities.mcpCapabilities.http`; when false send `mcpServers: []` and surface tools-unavailable (FR-026/FR-031)
+- [X] T050 [US2] Implement the generic permission card (one action per offered option; no approve/reject invention) in `plugin/src/ui/approval.ts` and wire parking in `plugin/src/shell/acp-client.ts` (FR-034…FR-038)
+- [X] T051 [US2] Remove the persistent tool allowlist and any shell-side permission policy from `plugin/src/settings.ts` and `plugin/src/ui/chat-view.ts`; rely only on harness-offered always-allow options (FR-037)
+- [X] T052 [US2] Run the plan P2 gate over `plugin/src/vault/` and `plugin/src/shell/`: fs/policy/MCP suites, zero unsafe I/O, shared-service proof
 
 **Checkpoint**: US1 + US2 deliver the desktop shell with native vault read/write and read-only search/backlinks.
 

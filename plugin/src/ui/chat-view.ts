@@ -2212,7 +2212,6 @@ export class ChatView extends ItemView {
    *  simply never called for it. */
   private async handlePermissionRequest(p: PendingPermissionRequest) {
     if (!this.acp) return;
-    const s = this.plugin.settings;
     const toolCall = p.request.toolCall as any;
     const action = toolCall.title ?? toolCall.kind ?? "tool";
     const rawPath = toolCall.locations?.[0]?.path ?? "";
@@ -2229,18 +2228,7 @@ export class ChatView extends ItemView {
       if (option && this.acp) await this.acp.respondPermission(p.requestId, option.optionId);
     };
 
-    // Persistent per-tool decision (Copilot semantics) — bypasses the card
-    // entirely for an action the user already decided on.
-    if (s.toolAllowlist[action] !== undefined) {
-      await respond(s.toolAllowlist[action], false);
-      return;
-    }
-
     const handle = renderApprovalCard(this.messagesEl, preview, async (d) => {
-      if (d.remember) {
-        s.toolAllowlist[action] = d.allowed;
-        await this.plugin.saveSettings();
-      }
       // Snapshot BEFORE sending the approval response, so it reflects
       // pre-write state (data-model.md Undo Snapshot).
       let snapshot: { existed: boolean; content: string } | null = null;

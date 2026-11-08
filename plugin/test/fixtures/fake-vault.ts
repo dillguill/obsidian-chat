@@ -37,10 +37,13 @@ export class FakeVault implements VaultQuerySurface {
     this.notes.set(relPath, { ...(this.notes.get(relPath) ?? {}), content });
   }
 
-  async searchNotes(query: string, limit = 10): Promise<SearchHit[]> {
+  async searchNotes(query: string, limit = 10, folder?: string, tags?: string[]): Promise<SearchHit[]> {
     const q = query.toLowerCase();
+    const want = (tags ?? []).map((t) => (t.startsWith("#") ? t : `#${t}`).toLowerCase());
     return [...this.notes.entries()]
       .filter(([path, note]) => this.allowed(path) && (note.content.toLowerCase().includes(q) || path.toLowerCase().includes(q)))
+      .filter(([path]) => !folder || path === folder || path.startsWith(`${folder}/`))
+      .filter(([, note]) => !want.length || want.every((tag) => (note.tags ?? []).some((t) => t.toLowerCase() === tag)))
       .slice(0, limit)
       .map(([path, note]) => ({ path, title: path.replace(/\.md$/, ""), score: 1, snippet: note.content.slice(0, 200) }));
   }

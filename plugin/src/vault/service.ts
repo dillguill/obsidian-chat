@@ -141,6 +141,16 @@ export class VaultService {
     this.docsDirty = true;
   }
 
+  /** Removes a note (used only by the host-side Undo of a harness-created file). */
+  async deleteText(relPath: string): Promise<void> {
+    const verdict = evaluateRelativePath(relPath, this.policy());
+    if (!verdict.allowed) throw new Error(`path refused (${verdict.reason}): ${verdict.detail}`);
+    const file = this.fileFor(verdict.relPath);
+    if (!file) return;
+    await this.app.vault.delete(file);
+    this.docsDirty = true;
+  }
+
   private async ensureParents(relPath: string): Promise<void> {
     const parts = relPath.split("/").slice(0, -1);
     let built = "";

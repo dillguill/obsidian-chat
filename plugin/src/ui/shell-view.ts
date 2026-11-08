@@ -4,10 +4,11 @@
  *  generic ACP renderer (tool content variants, raw views, declared controls).
  *  Persistence lives in ShellRuntime, not here.
  */
-import { ItemView, type WorkspaceLeaf, setIcon } from "obsidian";
+import { ItemView, type WorkspaceLeaf } from "obsidian";
 import type ObsidianChatPlugin from "../main";
 import type { ChatEvent, PendingPermission, RenderUpdate } from "../acp/types.ts";
 import type { RecordEntry } from "../session/record.ts";
+import { renderPermissionCard } from "./approval.ts";
 
 export const SHELL_VIEW_TYPE = "obsidian-chat-acp-shell";
 
@@ -18,6 +19,7 @@ export class ShellChatView extends ItemView {
   private inputEl!: HTMLTextAreaElement;
   private sendBtn!: HTMLButtonElement;
   private stopBtn!: HTMLButtonElement;
+  private undoBtn!: HTMLButtonElement;
   private unsubscribers: Array<() => void> = [];
   private busy = false;
   private currentAssistant: HTMLElement | null = null;
@@ -46,6 +48,9 @@ export class ShellChatView extends ItemView {
     header.createEl("span", { cls: "oc-shell-title", text: "ACP Shell" });
     this.statusEl = header.createSpan({ cls: "oc-shell-status", text: "connecting…" });
     const actions = header.createDiv({ cls: "oc-shell-actions" });
+    this.undoBtn = actions.createEl("button", { cls: "oc-shell-btn oc-shell-undo", text: "Undo write" });
+    this.undoBtn.toggleClass("oc-shell-hidden", true);
+    this.undoBtn.addEventListener("click", () => void this.undoLastWrite());
     const newBtn = actions.createEl("button", { cls: "oc-shell-btn", text: "New" });
     newBtn.addEventListener("click", () => void this.newSession());
 
@@ -94,12 +99,32 @@ export class ShellChatView extends ItemView {
   }
 
   private updateStatus(): void {
-    const info = this.plugin.shellRuntime().clientDebugInfo;
+    const runtime = this.plugin.shellRuntime();
+    const info = runtime.clientDebugInfo;
     if (!info) {
       this.statusEl.setText("disconnected");
+      this.undoBtn.toggleClass("oc-shell-hidden", true);
       return;
     }
-    this.statusEl.setText(`${info.mode} · ${info.state}${info.lastError ? " · " + info.lastError : ""}`);
+    let text = `${info.mode} · ${info.state}${info.lastError ? " · " + info.lastError : ""}`;
+    if (info.state === "connected" && !runtime.vaultToolsAvailable) {
+      text += runtime.vaultToolsError ? ` · ${runtime.vaultToolsError}` : " · vault tools unavailable";
+    }
+    this.statusEl.setText(text);
+    this.undoBtn.toggleClass("oc-shell-hidden", !runtime.pendingUndo());
+  }
+
+  private async undoLastWrite(): Promise<void> {
+    try {
+      const restored = await this.plugin.shellRuntime().undoLastWrite();
+      if (restored) {
+        this.messagesEl.createDiv({ cls: "oc-shell-notice", text: `Restored ${restored.relPath}` });
+        this.scroll();
+      }
+    } catch (err) {
+      this.showError(`Undo failed: ${String((err as Error).message ?? err)}`);
+    }
+    this.updateStatus();
   }
 
   private scroll(): void {
@@ -233,18 +258,9 @@ export class ShellChatView extends ItemView {
   }
 
   private renderPermission(request: PendingPermission): void {
-    const card = this.messagesEl.createDiv({ cls: "oc-shell-permission" });
-    const title = request.toolCall.title ?? request.toolCall.name ?? "Permission requested";
-    card.createDiv({ cls: "oc-shell-permission-title", text: title });
-    const actions = card.createDiv({ cls: "oc-shell-permission-actions" });
-    for (const option of request.options) {
-      const btn = actions.createEl("button", { cls: "oc-shell-btn", text: option.name });
-      btn.addEventListener("click", () => {
-        void this.plugin.shellRuntime().respondPermission(request.requestId, option.optionId);
-        card.empty();
-        card.setText(`Answered: ${option.name}`);
-      });
-    }
+    renderPermissionCard(this.messagesEl, request, (optionId) => {
+      void this.plugin.shellRuntime().respondPermission(request.requestId, optionId);
+    });
     this.scroll();
   }
 

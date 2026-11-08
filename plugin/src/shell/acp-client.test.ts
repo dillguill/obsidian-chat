@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { AcpShellClient } from "./acp-client.ts";
+import { AcpShellClient, type McpServerEntry } from "./acp-client.ts";
 import type { ShellEnvironment } from "./types.ts";
 import type { TransportConnector } from "./transport.ts";
 import { createMockAgent, linkedStreams, type MockAgentOptions } from "../../test/fixtures/mock-agent.ts";
@@ -12,7 +12,10 @@ const env: ShellEnvironment = {
   writeTextFile: async () => undefined,
 };
 
-function makeClient(options: MockAgentOptions = {}): { client: AcpShellClient; events: ChatEvent[] } {
+function makeClient(
+  options: MockAgentOptions = {},
+  extra: { mcpServer?: () => McpServerEntry | null } = {},
+): { client: AcpShellClient; events: ChatEvent[] } {
   const agentApp = createMockAgent(options);
   const streams = linkedStreams();
   agentApp.connect(streams.agentStream as never);
@@ -30,6 +33,7 @@ function makeClient(options: MockAgentOptions = {}): { client: AcpShellClient; e
     label: "mock",
     environment: env,
     connector,
+    ...(extra.mcpServer ? { mcpServer: extra.mcpServer } : {}),
   });
   const events: ChatEvent[] = [];
   client.onEvent((event) => events.push(event));
@@ -92,4 +96,32 @@ test("permission requests are surfaced with the harness's own options and answer
   const stop = await prompted;
   assert.equal(stop, "end_turn");
   await client.close();
+});
+
+test("the MCP vault entry is advertised only when the harness supports HTTP MCP", async () => {
+  const entry: McpServerEntry = {
+    name: "vault",
+    type: "http",
+    url: "http://127.0.0.1:4321/mcp",
+    headers: [{ name: "Authorization", value: "Bearer session-token" }],
+  };
+  const loads: unknown[] = [];
+
+  const supported = makeClient(
+    { capabilities: { mcpHttp: true }, onSessionRequest: (_m, params) => loads.push(params) },
+    { mcpServer: () => entry },
+  );
+  await supported.client.connect();
+  assert.deepEqual((loads[0] as { mcpServers: unknown[] }).mcpServers, [entry]);
+  await supported.client.close();
+
+  loads.length = 0;
+  const unsupported = makeClient(
+    { capabilities: { mcpHttp: false }, onSessionRequest: (_m, params) => loads.push(params) },
+    { mcpServer: () => entry },
+  );
+  await unsupported.client.connect();
+  assert.deepEqual((loads[0] as { mcpServers: unknown[] }).mcpServers, []);
+  assert.equal(unsupported.client.getCapabilitiesSnapshot().mcpHttp, false);
+  await unsupported.client.close();
 });

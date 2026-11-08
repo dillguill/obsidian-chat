@@ -44,12 +44,6 @@ export interface ObsidianChatSettings {
   uiDensity: "comfortable" | "compact";
   /** Which key sends a message (W2.5): plain Enter, or Cmd/Ctrl+Enter. */
   sendShortcut: "enter" | "mod-enter";
-  /** persistent per-tool decisions: toolName -> allowed (true) or denied (false).
-   *  Set via the "Always allow this action" checkbox on an approval card, not a
-   *  setting UI here — this is the only write-safety state the plugin owns.
-   *  Agent mode and thinking level are entirely harness-declared
-   *  (specs/002-acp-only-chat-ux FR-007) — no plugin-owned equivalent. */
-  toolAllowlist: Record<string, boolean>;
   /** Last value picked for each harness-declared config option id (mode,
    *  thought_level, ...), reapplied to every new session right after
    *  connect() so it opens on the same choice instead of the harness's own
@@ -97,7 +91,6 @@ export const DEFAULT_SETTINGS: ObsidianChatSettings = {
   injectVaultRules: true,
   uiDensity: "comfortable",
   sendShortcut: "enter",
-  toolAllowlist: {},
   acpConfigOverrides: {},
   pinnedModels: [],
   defaultModel: null,

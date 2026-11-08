@@ -10,11 +10,15 @@ import type { AcpDebugInfo, ChatEvent, PendingPermission } from "../acp/types.ts
 import type { NewEntry, SessionStore } from "../session/store.ts";
 import type { RecordEntry, SessionHeader } from "../session/record.ts";
 import { SessionRecorder } from "../session/recorder.ts";
-import { AcpShellClient } from "./acp-client.ts";
+import { AcpShellClient, type McpServerEntry } from "./acp-client.ts";
 import { LocalTransportConnector } from "./local-transport.ts";
 import { ObsidianShellEnvironment } from "./environment.ts";
 import { VaultService } from "../vault/service.ts";
-import type { ShellAttachConfig, ShellEnvironment } from "./types.ts";
+import { VaultMcpServer } from "../vault/mcp-server.ts";
+import { HostServer, createVaultMcpHandler } from "./host-server.ts";
+import { mintToken } from "./device-auth.ts";
+import type { WriteSnapshot } from "../vault/acp-fs.ts";
+import type { ShellAttachConfig } from "./types.ts";
 
 export interface ShellRuntimeSettings {
   shell: ShellAttachConfig;
@@ -47,6 +51,11 @@ export class ShellRuntime {
   private storeSessionId: string | null = null;
   private environment: ObsidianShellEnvironment | null = null;
   private vaultService: VaultService | null = null;
+  /** Loopback MCP listener serving the read-only vault tools (US2). */
+  private mcpHost: HostServer | null = null;
+  private mcpPort: number | null = null;
+  private mcpToken: string | null = null;
+  private mcpError: string | null = null;
   private eventListeners = new Set<(event: ChatEvent) => void>();
   private permissionListeners = new Set<(request: PendingPermission) => void>();
   private stateListeners = new Set<() => void>();
@@ -90,6 +99,33 @@ export class ShellRuntime {
     return false;
   }
 
+  /** Whether the harness advertises HTTP MCP support for this attach. */
+  get harnessSupportsVaultTools(): boolean {
+    return this.client?.getCapabilitiesSnapshot().mcpHttp ?? false;
+  }
+
+  /** Native vault tools are unavailable when the listener failed or the
+   *  harness did not advertise `mcpCapabilities.http` (contract §6). */
+  get vaultToolsAvailable(): boolean {
+    return this.harnessSupportsVaultTools && this.mcpPort !== null;
+  }
+
+  get vaultToolsError(): string | null {
+    return this.mcpError;
+  }
+
+  /** The next host-side Undo the UI may offer, if any. */
+  pendingUndo(): WriteSnapshot | null {
+    return this.environment?.lastSnapshot() ?? null;
+  }
+
+  /** Restores the pre-write content of the last harness write. */
+  async undoLastWrite(): Promise<WriteSnapshot | null> {
+    const restored = (await this.environment?.undoLast()) ?? null;
+    this.emitState();
+    return restored;
+  }
+
   private emit(event: ChatEvent): void {
     for (const cb of [...this.eventListeners]) {
       try {
@@ -112,15 +148,64 @@ export class ShellRuntime {
 
   private vault(): VaultService {
     if (!this.vaultService) {
-      const settings = this.getSettings();
       this.vaultService = new VaultService({
         app: this.app,
         blacklist: () => this.getSettings().blacklistFolders,
         storeFolder: () => this.getSettings().sessionStoreFolder,
       });
-      this.environment = new ObsidianShellEnvironment(this.vaultService);
     }
     return this.vaultService;
+  }
+
+  private shellEnvironment(): ObsidianShellEnvironment {
+    if (!this.environment) {
+      this.environment = new ObsidianShellEnvironment(this.vault(), () => this.emitState());
+    }
+    return this.environment;
+  }
+
+  /** Starts the single loopback listener that serves `/mcp` (US2). The `/acp`
+   *  route stays closed until the host relay arrives in US3. */
+  private async startVaultTools(): Promise<void> {
+    if (!Platform.isDesktopApp) {
+      this.mcpError = "native vault tools need the desktop app";
+      return;
+    }
+    if (this.mcpHost) return;
+    const vault = this.vault();
+    const mcp = new VaultMcpServer({
+      vault,
+      policy: () => vault.policy(),
+      token: () => this.mcpToken,
+    });
+    const host = new HostServer({
+      port: 0,
+      devices: () => ({}),
+      // The UI's own ACP attach is local in US2, so no device tokens yet.
+      localToken: mintToken(),
+      mcpHandler: createVaultMcpHandler({ server: mcp, token: () => this.mcpToken }),
+      log: (message) => this.log(message),
+    });
+    try {
+      await host.start();
+      this.mcpHost = host;
+      this.mcpPort = host.boundPort;
+      this.mcpError = null;
+    } catch (err) {
+      this.mcpError = `vault tools unavailable: ${String((err as Error).message ?? err)}`;
+      this.log(this.mcpError);
+    }
+  }
+
+  /** The `mcpServers` entry for this session, or null when unavailable. */
+  private mcpEndpoint(): McpServerEntry | null {
+    if (!this.mcpPort || !this.mcpToken) return null;
+    return {
+      name: "vault",
+      type: "http",
+      url: `http://127.0.0.1:${this.mcpPort}/mcp`,
+      headers: [{ name: "Authorization", value: `Bearer ${this.mcpToken}` }],
+    };
   }
 
   private attachCwd(): string {
@@ -143,12 +228,16 @@ export class ShellRuntime {
       await this.stopLegacy().catch((err) => this.log(`legacy host stop failed: ${String(err)}`));
     }
     const cwd = this.attachCwd();
-    const environment: ShellEnvironment = this.vault() && this.environment!;
+    const environment = this.shellEnvironment();
+    // Vault tools need the listener before session/new advertises the entry.
+    await this.startVaultTools();
+    this.mcpToken = this.mcpPort ? mintToken() : null;
     const client = new AcpShellClient({
       mode: "local",
       label: redactLabel(shell.command),
       cwd,
       environment,
+      mcpServer: () => this.mcpEndpoint(),
       connector: new LocalTransportConnector({
         command: shell.command,
         cwd,
@@ -223,7 +312,13 @@ export class ShellRuntime {
     this.client = null;
     this.recorder = null;
     this.storeSessionId = null;
+    this.mcpToken = null;
     if (client) await client.close().catch(() => undefined);
+    if (this.mcpHost) {
+      await this.mcpHost.close().catch(() => undefined);
+      this.mcpHost = null;
+      this.mcpPort = null;
+    }
     this.emitState();
   }
 

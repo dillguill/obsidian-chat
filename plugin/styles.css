@@ -1229,6 +1229,12 @@
 .oc-shell-permission { border: 1px solid var(--interactive-accent); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
 .oc-shell-permission-title { font-weight: 600; }
 .oc-shell-permission-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.oc-permission-card { gap: 6px; }
+.oc-permission-meta { color: var(--text-muted); font-size: 12px; }
+.oc-approval-raw summary { cursor: pointer; color: var(--text-muted); font-size: 12px; }
+.oc-approval-raw pre { max-height: 30vh; overflow: auto; white-space: pre-wrap; font-size: 12px; }
+.oc-shell-notice { color: var(--text-muted); font-size: 12px; }
+.oc-shell-undo { border: 1px solid var(--background-modifier-border); }
 .oc-shell-error { color: var(--color-red); white-space: pre-wrap; }
 .oc-shell-error-hint { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
 .oc-shell-composer { display: flex; flex-direction: column; gap: 6px; }

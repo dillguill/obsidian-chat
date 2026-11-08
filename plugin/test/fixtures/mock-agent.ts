@@ -33,6 +33,8 @@ export interface MockAgentOptions {
   blockUntilCancel?: boolean;
   /** Delay before resolving a prompt (ms), to test in-flight crashes. */
   promptDelayMs?: number;
+  /** Observes the session/new (and resume/load) request params verbatim. */
+  onSessionRequest?: (method: "new" | "load" | "resume", params: unknown) => void;
 }
 
 const TOOL_CALL: SessionUpdate = {
@@ -76,18 +78,20 @@ export function createMockAgent(options: MockAgentOptions = {}): AgentApp {
       },
       agentInfo: { name: "mock-agent", version: "0.0.1" },
     }))
-    .onRequest(methods.agent.session.new, () => {
+    .onRequest(methods.agent.session.new, (ctx) => {
+      options.onSessionRequest?.("new", ctx.params);
       lastUpdates = options.updates ?? defaultUpdates();
       return { sessionId, modes: currentModes as never, configOptions: currentConfig as never };
     })
-    .onRequest(methods.agent.session.load, () => {
+    .onRequest(methods.agent.session.load, (ctx) => {
+      options.onSessionRequest?.("load", ctx.params);
       lastUpdates = options.updates ?? defaultUpdates("replayed");
       return { modes: currentModes as never, configOptions: currentConfig as never };
     })
-    .onRequest(methods.agent.session.resume, () => ({
-      modes: currentModes as never,
-      configOptions: currentConfig as never,
-    }))
+    .onRequest(methods.agent.session.resume, (ctx) => {
+      options.onSessionRequest?.("resume", ctx.params);
+      return { modes: currentModes as never, configOptions: currentConfig as never };
+    })
     .onRequest(methods.agent.session.list, () => ({ sessions: [] }))
     .onRequest(methods.agent.session.close, () => ({}))
     .onRequest(methods.agent.session.setMode, (ctx) => {

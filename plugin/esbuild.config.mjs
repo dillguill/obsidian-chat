@@ -1,6 +1,9 @@
 import esbuild from "esbuild";
 import process from "node:process";
+import { createRequire } from "node:module";
 import builtins from "builtin-modules";
+
+const require = createRequire(import.meta.url);
 
 const banner = `/* obsidian-chat plugin bundle */`;
 const prod = process.argv[2] === "production";
@@ -30,6 +33,19 @@ const context = await esbuild.context({
   ],
   format: "cjs",
   target: "es2020",
+  // `ws` declares a browser entry that throws; the host needs the Node build.
+  // It is only pulled in by a desktop-gated dynamic import, so mobile never
+  // evaluates it.
+  plugins: [
+    {
+      name: "ws-node-entry",
+      setup(build) {
+        build.onResolve({ filter: /^ws$/ }, () => ({
+          path: require.resolve("ws").replace(/wrapper\.mjs$|index\.js$/, "index.js"),
+        }));
+      },
+    },
+  ],
   logLevel: "info",
   sourcemap: prod ? false : "inline",
   treeShaking: true,
