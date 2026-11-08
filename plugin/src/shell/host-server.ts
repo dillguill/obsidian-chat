@@ -29,17 +29,7 @@ export interface HostServerOptions {
 
 const MAX_MCP_BODY = 1024 * 1024;
 
-/** Node built-ins and `ws` load lazily so the mobile bundle never evaluates
- *  them and `node --test` (ESM) can still supply them. */
-async function loadNodeModule<T>(id: string): Promise<T> {
-  try {
-    return (await import(/* @vite-ignore */ id)) as T;
-  } catch {
-    const req = (globalThis as { require?: (moduleId: string) => unknown }).require;
-    if (typeof req === "function") return req(id) as T;
-    throw new Error(`host mode requires the desktop app (could not load ${id})`);
-  }
-}
+import { loadNodeModule } from "./node.ts";
 
 /** Loopback check for `/mcp` (contract `vault-mcp.md` §2). */
 export function isLoopbackAddress(address: string | undefined): boolean {

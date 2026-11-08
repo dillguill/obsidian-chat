@@ -6,13 +6,13 @@ import { DEFAULT_ACTIVITY_DENSITY } from "./transcript-prefs.ts";
 import { activityPresentation } from "./renderer.ts";
 import { conversationMeta, conversationStatusLabel, recordStatusLabel } from "./labels.ts";
 
-test("the default activity presentation is chronological and expanded", () => {
-  assert.equal(DEFAULT_ACTIVITY_DENSITY, "chronological");
-  assert.equal(activityPresentation(DEFAULT_ACTIVITY_DENSITY), "chronological");
+test("the default presentation is a readable chat with activity collapsed", () => {
+  assert.equal(DEFAULT_ACTIVITY_DENSITY, "grouped");
+  assert.equal(activityPresentation(DEFAULT_ACTIVITY_DENSITY), "grouped");
 });
 
-test("grouping is opt-in only", () => {
-  assert.equal(activityPresentation("grouped"), "grouped");
+test("the expanded protocol stream is an explicit opt-in", () => {
+  assert.equal(activityPresentation("chronological"), "chronological");
 });
 
 test("a healthy resumable conversation has no status tag", () => {

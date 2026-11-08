@@ -7,7 +7,18 @@
  */
 import { Notice, Platform, Plugin, WorkspaceLeaf } from "obsidian";
 import { ObsidianChatSettingTab } from "./settings";
-import { DEFAULT_SETTINGS, migrateSettings, type ObsidianChatSettings } from "./settings-model.ts";
+import {
+  DEFAULT_SETTINGS,
+  deviceShellOf,
+  migrateSettings,
+  parseDeviceShell,
+  pointsAtSelf,
+  syncedSettings,
+  withDeviceShell,
+  type DeviceShell,
+  type ObsidianChatSettings,
+} from "./settings-model.ts";
+import { requireNodeModule } from "./shell/node.ts";
 import { SessionStore, type StoreAdapter } from "./session/store";
 import { importLegacySessions, looksLikeLegacyConversation, type LegacyNote, type MigrationReport } from "./session/migrate";
 import { ShellChatView, SHELL_VIEW_TYPE } from "./ui/shell-view";
@@ -62,6 +73,7 @@ export default class ObsidianChatPlugin extends Plugin {
           sessionStoreFolder: this.settings.sessionStoreFolder || ".chat/sessions",
           blacklistFolders: this.settings.blacklistFolders,
           pairedDevices: this.settings.pairedDevices,
+          allowWiderBind: this.settings.allowWiderBind,
         }),
         store: () => this.store(),
         log: (message) => console.log(`[obsidian-chat shell] ${message}`),
@@ -89,15 +101,15 @@ export default class ObsidianChatPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => void this.importLegacyHistory());
 
     this.registerView(SHELL_VIEW_TYPE, (leaf) => new ShellChatView(leaf, this));
-    this.addRibbonIcon("terminal-square", "Open ACP Shell", () => void this.activateShellView());
+    this.addRibbonIcon("message-square", "Open chat", () => void this.activateShellView());
     this.addCommand({
       id: "open-acp-shell",
-      name: "Open ACP Shell",
+      name: "Open chat",
       callback: () => void this.activateShellView(),
     });
     this.addCommand({
       id: "acp-shell-connection-info",
-      name: "ACP Shell connection info",
+      name: "Chat connection info",
       callback: async () => {
         await this.activateShellView();
         const view = this.app.workspace.getLeavesOfType(SHELL_VIEW_TYPE)[0]?.view;
@@ -253,10 +265,27 @@ export default class ObsidianChatPlugin extends Plugin {
 
   // ---------- settings ----------
 
+  /** The role fields (mode/remote URL/device code) as the synced data.json
+   *  holds them; written back unchanged so devices never overwrite each other. */
+  private fileDeviceShell: DeviceShell = {};
+
   async loadSettings() {
     const data = (await this.loadData()) ?? {};
     const migration = migrateSettings(data, { isMobile: Platform.isMobile });
-    this.settings = migration.settings;
+    this.fileDeviceShell = deviceShellOf(migration.settings.shell);
+    // This device's role lives in per-device local storage; the first run
+    // seeds it from data.json.
+    let device = parseDeviceShell(this.app.loadLocalStorage(DEVICE_SHELL_KEY));
+    if (!device) {
+      device = deviceShellOf(migration.settings.shell);
+      console.log(`[obsidian-chat] device role seeded from data.json: ${device.mode}`);
+    }
+    if (device.mode === "remote" && Platform.isDesktopApp && pointsAtSelf(device.remoteUrl, ownAddresses())) {
+      console.log("[obsidian-chat] remote URL points at this machine; this device is the host (Local mode)");
+      device = { ...device, mode: "local" };
+    }
+    this.app.saveLocalStorage(DEVICE_SHELL_KEY, JSON.stringify(device));
+    this.settings = withDeviceShell(migration.settings, device);
     this.devicesSnapshot = { ...this.settings.pairedDevices };
     if (migration.changed) {
       console.log(`[obsidian-chat] settings upgraded: ${migration.notes.join("; ") || "legacy keys dropped"}`);
@@ -265,7 +294,8 @@ export default class ObsidianChatPlugin extends Plugin {
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    this.app.saveLocalStorage(DEVICE_SHELL_KEY, JSON.stringify(deviceShellOf(this.settings.shell)));
+    await this.saveData(syncedSettings(this.settings, this.fileDeviceShell));
     // Revoking a paired device takes effect immediately: close its live
     // sockets (the relay cancels its parked approvals) without a restart.
     const current = this.settings.pairedDevices;
@@ -273,5 +303,19 @@ export default class ObsidianChatPlugin extends Plugin {
       if (!(name in current)) this.runtime?.revokeDevice(name);
     }
     this.devicesSnapshot = { ...current };
+  }
+}
+
+/** Per-device (not synced) storage key for this device's shell role. */
+const DEVICE_SHELL_KEY = "obsidian-chat:device-shell";
+
+/** This machine's own IP addresses (desktop only). */
+function ownAddresses(): string[] {
+  const os = requireNodeModule<{ networkInterfaces(): Record<string, Array<{ address: string }> | undefined> }>("os");
+  if (!os) return [];
+  try {
+    return Object.values(os.networkInterfaces()).flatMap((list) => (list ?? []).map((entry) => entry.address));
+  } catch {
+    return [];
   }
 }

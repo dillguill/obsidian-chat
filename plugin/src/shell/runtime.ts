@@ -9,7 +9,7 @@
  *  the VPN, spawns nothing, opens no listener, and keeps no conversation store.
  */
 import { App, FileSystemAdapter, Platform } from "obsidian";
-import type { AcpDebugInfo, ChatEvent, PendingPermission, RenderUpdate } from "../acp/types.ts";
+import { CONTEXT_META_KEY, type AcpDebugInfo, type ChatEvent, type PendingPermission, type RenderUpdate } from "../acp/types.ts";
 import type { AvailableCommand, SessionConfigOption, SessionModeState } from "@agentclientprotocol/sdk";
 import type { SessionStore } from "../session/store.ts";
 import type { RecordEntry, SessionHeader } from "../session/record.ts";
@@ -17,6 +17,7 @@ import { AcpShellClient } from "./acp-client.ts";
 import { HostCore } from "./host-core.ts";
 import { RemoteTransportConnector, SeqDedupe } from "./remote-transport.ts";
 import { backoffDelay } from "./transport.ts";
+import { RECONNECT_ATTEMPTS } from "../session/limits.ts";
 import { fingerprint, redactLabel } from "./identity.ts";
 import type { WriteSnapshot } from "../vault/acp-fs.ts";
 import type { ShellAttachConfig } from "./types.ts";
@@ -26,6 +27,7 @@ export interface ShellRuntimeSettings {
   sessionStoreFolder: string;
   blacklistFolders: string[];
   pairedDevices: Record<string, string>;
+  allowWiderBind: boolean;
 }
 
 export interface ShellRuntimeOptions {
@@ -59,6 +61,8 @@ export interface SessionListEntry {
   updatedAt: string;
   resume: string;
   degraded: boolean;
+  bytes: number;
+  large: boolean;
 }
 
 export class ShellRuntime {
@@ -216,7 +220,20 @@ export class ShellRuntime {
   }
 
   /** Attaches the UI client: loopback WebSocket on the host, remote otherwise. */
+  /** One attach at a time: views opening together share the same attempt. */
+  private connecting: Promise<void> | null = null;
+
   async connect(): Promise<void> {
+    if (this.client && this.client.getState() === "connected") return;
+    if (!this.connecting) {
+      this.connecting = this.connectOnce().finally(() => {
+        this.connecting = null;
+      });
+    }
+    return this.connecting;
+  }
+
+  private async connectOnce(): Promise<void> {
     if (this.client && this.client.getState() === "connected") return;
     const shell = this.getSettings().shell;
     let connector: RemoteTransportConnector;
@@ -225,7 +242,13 @@ export class ShellRuntime {
     if (shell.mode === "local") {
       if (!Platform.isDesktopApp) throw new Error("local attach requires the desktop app");
       if (!shell.command.trim()) throw new Error("no harness command is configured");
-      await this.startHost();
+      try {
+        await this.startHost();
+      } catch (err) {
+        const message = String((err as Error).message ?? err);
+        this.log(`local host start failed: ${message}`);
+        throw new Error(`local host start failed: ${message}`);
+      }
       const host = this.host;
       if (!host) throw new Error("the host listener did not start");
       connector = new RemoteTransportConnector({ url: host.wsUrl(), token: host.localToken, attempts: 3, baseMs: 100 });
@@ -275,16 +298,39 @@ export class ShellRuntime {
     } catch (err) {
       this.client = null;
       this.emitState();
-      throw err;
+      const message = String((err as Error).message ?? err);
+      const stage = shell.mode === "local" ? "loopback host attach" : "remote host attach";
+      this.log(`${stage} failed: ${message}`);
+      if (err instanceof Error && err.stack) console.error(`[obsidian-chat shell] ${stage} failed`, err);
+      throw new Error(`${stage} failed: ${message}`);
     }
     this.emitState();
   }
 
-  async send(text: string, options: { images?: Array<{ mimeType: string; data: string }> } = {}): Promise<void> {
+  /** Sends one prompt. Context (notes, selections, vault rules) travels as
+   *  separate text blocks tagged `_meta["obsidian-chat/context"]` so the
+   *  transcript can show only what the user typed. */
+  async send(
+    text: string,
+    options: {
+      images?: Array<{ mimeType: string; data: string }>;
+      context?: Array<{ label: string; text: string; path?: string }>;
+    } = {},
+  ): Promise<void> {
     if (!this.client) await this.connect();
     const client = this.client;
     if (!client) throw new Error("not connected");
-    const blocks: Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string }> = [];
+    const blocks: Array<
+      | { type: "text"; text: string; _meta?: Record<string, unknown> }
+      | { type: "image"; mimeType: string; data: string }
+    > = [];
+    for (const item of options.context ?? []) {
+      blocks.push({
+        type: "text",
+        text: `### ${item.label}\n\n${item.text}`,
+        _meta: { [CONTEXT_META_KEY]: item.path ?? item.label },
+      });
+    }
     if (text.trim()) blocks.push({ type: "text", text });
     for (const image of options.images ?? []) {
       blocks.push({ type: "image", mimeType: image.mimeType, data: image.data });
@@ -334,6 +380,8 @@ export class ShellRuntime {
         updatedAt: session.updatedAt ?? "",
         resume: String(meta["obsidian-chat/resume"] ?? "unknown"),
         degraded: meta["obsidian-chat/degraded"] === true,
+        bytes: typeof meta["obsidian-chat/size"] === "number" ? (meta["obsidian-chat/size"] as number) : 0,
+        large: meta["obsidian-chat/large"] === true,
       };
     });
   }
@@ -368,11 +416,11 @@ export class ShellRuntime {
    *  no already-rendered notification is duplicated and no prompt is resent. */
   private scheduleReconnect(reason: string): void {
     if (this.closed || !this.client) return;
-    if (this.reconnectAttempts >= 8) {
+    if (this.reconnectAttempts >= RECONNECT_ATTEMPTS) {
       this.emit({
         sessionId: this.client.getSessionId() ?? "unknown",
         error: {
-          message: `Could not reconnect to the host after 8 attempts (${reason}). The turn is interrupted; history is preserved.`,
+          message: `Could not reconnect to the host after ${RECONNECT_ATTEMPTS} attempts (${reason}). The turn is interrupted; history is preserved.`,
           scope: "transport",
         },
       });
@@ -401,7 +449,7 @@ export class ShellRuntime {
       this.emit({
         sessionId: sessionId ?? "unknown",
         error: {
-          message: `Reconnect attempt ${this.reconnectAttempts}/8 failed: ${String((err as Error).message ?? err)}`,
+          message: `Reconnect attempt ${this.reconnectAttempts}/${RECONNECT_ATTEMPTS} failed: ${String((err as Error).message ?? err)}`,
           scope: "transport",
         },
       });

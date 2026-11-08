@@ -1,698 +1,504 @@
-/* Obsidian Chat — workspace themes.
- * Flowing transcript (no bubbles/avatars), inline tool rows, thought blocks,
- * composer toolbar, context chips. Driven by Obsidian CSS variables. */
+/* Obsidian Chat — chat view.
+ * A conversation: user bubbles, Markdown replies, collapsible activity groups
+ * with compact tool rows, and a rounded composer. Driven by Obsidian theme
+ * variables so it follows light/dark and the user's fonts. */
 
-:root {
-  --oc-bg: var(--background-primary);
-  --oc-fg: var(--text-normal);
-  --oc-muted: var(--text-muted);
-  --oc-accent: var(--interactive-accent);
-  --oc-radius: 10px;
-  --oc-gap: 10px;
-  /* Type + rhythm scale. Every new rule reads from these, so density and a
-   * future "compact" pass stay one edit. */
-  --oc-fs-body: 14.5px;
-  --oc-fs-meta: 12.5px;
-  --oc-fs-label: 10.5px;
-  --oc-lh-body: 1.65;
-  --oc-content-max: 70ch;
-  --oc-surface: var(--background-primary-alt);
+.oc-chat {
+  --oc-text: var(--font-text, var(--font-interface));
+  --oc-size: var(--font-ui-medium, 15px);
+  --oc-col: 760px;
+  --oc-radius: 14px;
   --oc-hair: var(--background-modifier-border);
-  --oc-rail: var(--background-modifier-border);
-}
-
-.oc-view {
   display: flex;
   flex-direction: column;
   height: 100%;
-  padding: 0;
-  position: relative;
+  padding: 0 !important;
+  overflow: hidden;
   background: var(--background-primary);
   color: var(--text-normal);
-  overflow: hidden;
-  font-size: var(--oc-fs-body);
 }
 
-/* ---------- Header (session strip) ---------- */
-/* The brand block used to repeat the leaf title. The strip names the session
- * instead: connection state, title, actions. */
-.oc-header {
+.oc-hidden { display: none !important; }
+
+/* ---------- header ---------- */
+.oc-chat-header {
   flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px 10px 14px;
-}
-.oc-header-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
+  padding: 8px 12px 8px 16px;
+  border-bottom: 1px solid var(--oc-hair);
 }
-.oc-session-title {
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text-normal);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.oc-view .oc-session-title-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  background: none;
-  border: 0;
-  padding: 2px 4px;
-  margin: -2px -4px;
-  border-radius: 6px;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: text;
-}
-.oc-view .oc-session-title-btn:hover { background: var(--background-modifier-hover); }
-.oc-view .oc-session-title-btn[hidden] { display: none; }
-.oc-session-rename {
-  min-width: 0;
-  width: 100%;
-  background: var(--background-primary);
-  border: 1px solid var(--interactive-accent);
-  border-radius: 6px;
-  color: var(--text-normal);
-  font: inherit;
-  font-size: 13.5px;
-  font-weight: 600;
-  padding: 2px 6px;
-  outline: none;
-}
-.oc-live {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  flex: 0 0 auto;
-  background: var(--text-faint);
-}
-.oc-live[data-state="live"] { background: var(--color-green); }
-.oc-live[data-state="connecting"] { background: var(--color-orange); }
-.oc-live[data-state="error"] { background: var(--color-red); }
-.oc-header-actions { display: flex; align-items: center; gap: 0; flex: 0 0 auto; }
-/* .oc-view prefix on interactive elements below beats the active theme's own
-   generic button reset (e.g. Minimal's ".workspace-leaf-content button"), which
-   otherwise overrides our background with a flat translucent gray. */
-.oc-view .oc-icon-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: 0;
-  color: var(--text-muted);
-  padding: 5px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.oc-view .oc-icon-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
-.oc-icon-btn svg { width: 15px; height: 15px; }
-
-/* ---------- Transcript ---------- */
-.oc-messages {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow-y: auto;
-  padding: 2px 16px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-/* Each turn is capped at a comfortable measure and centred when the leaf is
- * wide (a full-tab chat otherwise runs to 120+ characters per line). */
-.oc-messages > * {
-  width: 100%;
-  max-width: var(--oc-content-max);
-  margin-inline: auto;
-}
-.oc-messages > * + * { margin-top: var(--oc-gap, 14px); }
-.oc-body-md {
-  line-height: var(--oc-lh-body);
-  font-size: var(--oc-fs-body);
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-.oc-body-md p { margin: 0 0 0.8em; }
-.oc-body-md p:last-child { margin-bottom: 0; }
-.oc-body-md ul,
-.oc-body-md ol { padding-inline-start: 20px; margin: 0.35em 0 0.85em; }
-.oc-body-md li { margin: 0.15em 0; }
-.oc-body-md li::marker { color: var(--text-faint); }
-.oc-body-md h1,
-.oc-body-md h2,
-.oc-body-md h3,
-.oc-body-md h4 {
-  font-weight: 600;
-  line-height: 1.35;
-  margin: 1.1em 0 0.4em;
-  letter-spacing: -0.01em;
-}
-.oc-body-md h1 { font-size: 1.15em; }
-.oc-body-md h2 { font-size: 1.08em; }
-.oc-body-md h3,
-.oc-body-md h4 { font-size: 1em; }
-.oc-body-md > :first-child { margin-top: 0; }
-.oc-body-md a.internal-link { color: var(--link-color); }
-.oc-user .oc-body-md { color: var(--text-normal); }
-
-.oc-system {
-  align-self: center;
-  font-size: 12px;
-  color: var(--text-muted);
-  text-align: center;
-  max-width: 90%;
-}
-
-/* Streaming caret */
-.oc-caret { display: none; width: 2px; height: 1em; margin-left: 2px; vertical-align: text-bottom; background: var(--interactive-accent); border-radius: 1px; }
-.oc-body-md.streaming ~ .oc-caret { display: inline-block; animation: oc-blink 1s steps(2, start) infinite; }
-@keyframes oc-blink { 50% { opacity: 0; } }
-
-/* ---------- Activity groups (specs/003-workspace-parity W1.3-W1.5) ----------
-   One collapsible block per consecutive run of tool calls. Settled work is
-   deliberately quiet — only a live run uses the accent. */
-.oc-activity { margin: 0 0 12px; }
-.oc-view .oc-activity-header {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  padding: 3px 0;
-  background: none;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.oc-activity-header:hover .oc-activity-label { color: var(--text-normal); }
-.oc-activity-icon { display: flex; align-items: center; flex: 0 0 auto; color: var(--text-faint); }
-.oc-activity-icon svg { width: 13px; height: 13px; }
-.oc-activity-icon.oc-activity-failed { color: var(--color-red); }
-.oc-activity-label {
-  font-size: var(--oc-fs-meta);
-  font-weight: 500;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.oc-activity-diff {
-  font-size: 11.5px;
-  font-weight: 600;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-  flex: 0 0 auto;
-}
-.oc-activity-diff .oc-diff-add { color: var(--color-green); }
-.oc-activity-diff .oc-diff-del { color: var(--color-red); }
-.oc-activity-chevron { display: flex; align-items: center; margin-left: 2px; color: var(--text-faint); flex: 0 0 auto; opacity: 0.8; }
-.oc-activity-chevron svg { width: 12px; height: 12px; }
-.oc-activity[data-expanded="false"] .oc-activity-body { display: none; }
-/* A long live run scrolls inside its group instead of pushing the answer away. */
-.oc-activity-body { max-height: 40vh; overflow-y: auto; overscroll-behavior: contain; }
-
-/* A live run is the one place the accent appears in the transcript. */
-.oc-activity[data-live="true"] .oc-activity-icon { color: var(--interactive-accent); }
-.oc-activity[data-live="true"] .oc-activity-label { color: var(--text-normal); }
-
-/* ---------- Tool rows (W1.4) ---------- */
-.oc-tool {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--oc-fs-meta);
-  color: var(--text-muted);
-  padding: 3px 0;
-}
-.oc-tool-icon { display: flex; align-items: center; flex: 0 0 auto; color: var(--text-faint); }
-.oc-tool-icon svg { width: 13px; height: 13px; }
-.oc-tool-verb {
-  font-family: var(--font-monospace);
-  font-size: 11.5px;
-  color: var(--text-muted);
-  flex: 0 0 auto;
-}
-/* Status-title rows carry their whole text in the label. */
-.oc-tool-verb:empty { display: none; }
-.oc-tool-icon:has(+ .oc-tool-verb:empty) { color: var(--text-muted); }
-.oc-tool-label {
+.oc-chat-title {
   flex: 1;
   min-width: 0;
+  font-weight: 600;
+  font-size: var(--font-ui-small);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--text-normal);
 }
-.oc-tool-label-link { cursor: pointer; }
-.oc-tool-label-link:hover { color: var(--text-normal); text-decoration: underline; }
-.oc-tool-right {
-  display: flex;
-  align-items: center;
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  font-size: 11.5px;
-  margin-left: auto;
-  flex: 0 0 auto;
-  color: var(--text-muted);
-}
-.oc-tool-right svg { width: 12px; height: 12px; }
-/* Status rows: a turn's error, or why it stopped. Not tool rows. */
-.oc-status { display: flex; align-items: flex-start; gap: 6px; margin: 8px 0; font-size: 13px; color: var(--text-muted); }
-.oc-status-icon { display: flex; align-items: center; flex: 0 0 auto; padding-top: 2px; }
-.oc-status-icon svg { width: 13px; height: 13px; }
-.oc-status-error { color: var(--color-red); }
-.oc-tool-error .oc-tool-label,
-.oc-tool-error .oc-tool-verb { color: var(--color-red); }
-.oc-tool-pending .oc-tool-verb { opacity: 0.6; }
-.oc-diff-add { color: var(--color-green); }
-.oc-diff-del { color: var(--color-red); }
-
-/* Shared activity rail (W6.3): every part of the agent's work hangs off the
-   same hairline, so a turn reads as one subtree. */
-.oc-activity-body,
-.oc-plan-body,
-.oc-thought-content {
-  border-inline-start: 2px solid var(--background-modifier-border);
-  margin-inline-start: 6px;
-  padding-inline-start: 13px;
-}
-.oc-activity-body { padding-block: 2px; }
-
-/* Changed-files group, folded into the run that produced it (no separate card,
-   no repeated diff totals). */
-.oc-changes-mini { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--background-modifier-border); }
-.oc-changes-mini-head { display: flex; align-items: center; gap: 8px; }
-.oc-changes-mini-title {
-  font-size: var(--oc-fs-label);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
+.oc-chat-header-right { display: flex; align-items: center; gap: 2px; }
+.oc-chat-usage {
+  font-size: var(--font-ui-smaller);
   color: var(--text-faint);
-  font-weight: 600;
+  margin-right: 6px;
+  font-variant-numeric: tabular-nums;
 }
-.oc-view .oc-changes-mini-undo-all {
-  margin-left: auto;
-  background: transparent;
-  border: 1px solid var(--background-modifier-border);
+.oc-chat-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  margin-right: 4px;
+  border-radius: 999px;
+  font-size: var(--font-ui-smaller);
   color: var(--text-muted);
-  font: inherit;
-  font-size: 11px;
-  padding: 1px 7px;
-  border-radius: 5px;
   cursor: pointer;
 }
-.oc-view .oc-changes-mini-undo-all:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.oc-chat-status:hover { background: var(--background-modifier-hover); }
+.oc-status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); }
+.oc-chat-status[data-tone="ok"] .oc-status-dot { background: var(--color-green); }
+.oc-chat-status[data-tone="warn"] .oc-status-dot { background: var(--color-yellow); }
+.oc-chat-status[data-tone="wait"] .oc-status-dot { background: var(--color-yellow); animation: oc-pulse 1.2s ease-in-out infinite; }
+.oc-chat-status[data-tone="bad"] .oc-status-dot { background: var(--color-red); }
+.oc-chat-status[data-tone="bad"] { color: var(--text-error); }
+.oc-chat-status[data-tone="ok"] .oc-status-text { display: none; }
 
-/* Motion (W6.7) */
-.oc-spin svg { animation: oc-spin 900ms linear infinite; }
-@keyframes oc-spin { to { transform: rotate(360deg); } }
-@keyframes oc-fade { from { opacity: 0; } to { opacity: 1; } }
+.oc-icon-btn { padding: 4px; }
+.oc-icon-btn svg { width: 16px; height: 16px; }
 
-/* ---------- Thought blocks (threaded, collapsible — specs/002-acp-only-chat-ux
-   US4). Adapted directly from the reference plugin's thinking.css: a clickable header with
-   a live-ticking label while streaming, auto-collapses to a frozen label when
-   the burst ends, click to re-expand. Multiple bursts in one turn render as
-   multiple sequential blocks — that's the "threaded" part, no protocol-level
-   segment id needed (research.md R8). */
-.oc-thought-block { margin: 6px 0; }
-.oc-thought-header {
+/* ---------- transcript ---------- */
+.oc-chat-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 20px 16px 8px;
+}
+.oc-thread {
+  max-width: var(--oc-col);
+  min-height: 100%;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-family: var(--oc-text);
+  font-size: var(--oc-size);
+  line-height: 1.6;
+}
+
+.oc-empty {
+  margin: auto;
+  padding: 16px 0;
+  text-align: center;
+  color: var(--text-muted);
+}
+.oc-empty-icon svg { width: 28px; height: 28px; color: var(--text-faint); }
+.oc-empty-title { margin-top: 10px; font-size: 1.25em; font-weight: 600; color: var(--text-normal); }
+.oc-empty-hint { margin-top: 4px; font-size: var(--font-ui-small); }
+
+/* user turn */
+.oc-user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  margin-top: 6px;
+}
+.oc-user-bubble {
+  max-width: 85%;
+  padding: 9px 14px;
+  border-radius: 18px 18px 4px 18px;
+  background: var(--background-secondary-alt, var(--background-modifier-hover));
+  border: 1px solid var(--oc-hair);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.oc-user-bubble:empty { display: none; }
+.oc-user-context { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+
+/* agent turn */
+.oc-agent { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.oc-agent-text { user-select: text; overflow-wrap: anywhere; }
+.oc-agent-text > :first-child { margin-top: 0; }
+.oc-agent-text > :last-child { margin-bottom: 0; }
+.oc-agent-text p { margin: 0.5em 0; }
+.oc-agent-text pre { position: relative; }
+.oc-agent-text table { display: block; max-width: 100%; overflow-x: auto; }
+.oc-agent-text td code, .oc-agent-text th code { white-space: nowrap; }
+
+.oc-turn-note {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-family: var(--font-interface);
+}
+
+/* typing indicator */
+.oc-typing { display: inline-flex; gap: 4px; padding: 6px 0; }
+.oc-typing span {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--text-faint);
+  animation: oc-bounce 1.2s infinite ease-in-out;
+}
+.oc-typing span:nth-child(2) { animation-delay: 0.15s; }
+.oc-typing span:nth-child(3) { animation-delay: 0.3s; }
+
+/* ---------- activity groups & tool rows ---------- */
+.oc-activity {
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+.oc-activity-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 4px 10px 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+.oc-activity-summary::-webkit-details-marker { display: none; }
+.oc-activity-summary:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.oc-activity-icon { display: inline-flex; width: 14px; justify-content: center; }
+.oc-activity-icon svg { width: 14px; height: 14px; }
+.oc-activity-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.oc-activity-count { color: var(--text-faint); }
+.oc-activity-failed { color: var(--text-error); }
+.oc-activity-chevron { display: inline-flex; transition: transform 120ms ease; color: var(--text-faint); }
+.oc-activity-chevron svg { width: 14px; height: 14px; }
+.oc-activity[open] > .oc-activity-summary .oc-activity-chevron { transform: rotate(90deg); }
+.oc-activity-body {
+  margin: 4px 0 2px 14px;
+  padding-left: 12px;
+  border-left: 2px solid var(--oc-hair);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.oc-tool { border-radius: 6px; }
+.oc-tool-head {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 2px 0;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 6px;
   cursor: pointer;
 }
-.oc-thought-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
+.oc-tool-head:hover { background: var(--background-modifier-hover); }
+.oc-tool-icon, .oc-tool-status { display: inline-flex; flex: 0 0 auto; color: var(--text-faint); }
+.oc-tool-icon svg, .oc-tool-status svg { width: 13px; height: 13px; }
+.oc-tool-title { flex: 0 0 auto; max-width: 45%; color: var(--text-normal); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-tool-detail { flex: 1 1 auto; min-width: 0; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-monospace); font-size: 0.92em; }
+.oc-tool[data-status="completed"] .oc-tool-status { color: var(--color-green); }
+.oc-tool[data-status="failed"] .oc-tool-status { color: var(--text-error); }
+.oc-tool[data-status="failed"] .oc-tool-title { color: var(--text-error); }
+.oc-tool-body { display: none; margin: 2px 0 6px 27px; }
+.oc-tool.is-open .oc-tool-body { display: flex; flex-direction: column; gap: 6px; }
+.oc-tool.is-open > .oc-tool-head { background: var(--background-modifier-hover); }
+.oc-tool-output {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  border: 1px solid var(--oc-hair);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-normal);
+  user-select: text;
 }
-.oc-thought-block[data-streaming="true"] .oc-thought-label { animation: oc-thought-pulse 1.5s ease-in-out infinite; }
-@keyframes oc-thought-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
-.oc-thought-content {
-  padding-block: 4px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--text-muted);
+.oc-tool-locations { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.oc-tool-location { font-family: var(--font-monospace); font-size: var(--font-ui-smaller); cursor: pointer; }
+.oc-tool-note, .oc-tool-empty { color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.oc-tool-image { max-width: 100%; border-radius: 6px; }
+.oc-tool-raw > summary, .oc-raw-update > summary, .oc-thought > summary {
+  cursor: pointer;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  padding: 2px 6px;
 }
-/* Plain text while streaming keeps its line breaks; rendered Markdown must
-   not, or the renderer's inter-element newlines become blank lines. */
-.oc-thought-block[data-streaming="true"] .oc-thought-content { white-space: pre-wrap; }
-.oc-thought-content > :first-child { margin-top: 0; }
-.oc-thought-content > :last-child { margin-bottom: 0; }
-/* Inside a work group the group's rail already marks the subtree; a thought
-   there reads as one more row, not a nested block. */
-.oc-activity-body .oc-thought-block { margin: 0; }
-.oc-activity-body .oc-thought-header { padding: 2px 0; }
-.oc-activity-body .oc-thought-label { font-size: 13px; font-weight: 400; color: var(--text-muted); }
-.oc-activity-body .oc-thought-content { border-inline-start: 0; margin-inline-start: 0; padding-inline-start: 0; max-height: 30vh; overflow-y: auto; }
-.oc-thought-block[data-expanded="false"] .oc-thought-content { display: none; }
+.oc-tool-raw > summary:hover, .oc-raw-update > summary:hover, .oc-thought > summary:hover { color: var(--text-normal); }
+.oc-tool-raw > .oc-tool-output, .oc-raw-update > .oc-tool-output { margin-top: 4px; }
+.oc-tool-diff-stat { font-family: var(--font-monospace); font-size: var(--font-ui-smaller); }
+.oc-diff-line { white-space: pre-wrap; }
+.oc-diff-add, .oc-diff-line-add { color: var(--color-green); }
+.oc-diff-del, .oc-diff-line-del { color: var(--color-red); }
 
-/* ---------- Context chips (inside the composer card) ---------- */
-.oc-chips {
-  flex: 0 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  padding: 9px 11px 0;
+.oc-thought-body {
+  margin: 2px 0 6px 6px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--oc-hair);
+  color: var(--text-muted);
+  font-family: var(--oc-text);
+  font-style: italic;
+  white-space: pre-wrap;
+  max-height: 260px;
+  overflow: auto;
+  user-select: text;
 }
-.oc-chips:empty { display: none; }
+
+.oc-spinner {
+  display: inline-block;
+  width: 11px; height: 11px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-faint);
+  border-top-color: transparent;
+  animation: oc-spin 0.8s linear infinite;
+}
+
+/* ---------- plan ---------- */
+.oc-plan {
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  padding: 8px 12px;
+  border: 1px solid var(--oc-hair);
+  border-radius: 10px;
+  background: var(--background-primary-alt);
+}
+.oc-plan-title { font-weight: 600; color: var(--text-muted); margin-bottom: 4px; }
+.oc-plan-row { display: flex; align-items: flex-start; gap: 8px; padding: 2px 0; }
+.oc-plan-icon { display: inline-flex; margin-top: 3px; color: var(--text-faint); }
+.oc-plan-icon svg { width: 13px; height: 13px; }
+.oc-plan-in_progress .oc-plan-icon { color: var(--interactive-accent); }
+.oc-plan-in_progress .oc-plan-text { font-weight: 500; }
+.oc-plan-completed .oc-plan-icon { color: var(--color-green); }
+.oc-plan-completed .oc-plan-text { color: var(--text-faint); text-decoration: line-through; }
+
+/* ---------- callouts (errors, continuity) ---------- */
+.oc-callout {
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--oc-hair);
+  background: var(--background-primary-alt);
+}
+.oc-callout-error { border-color: rgba(var(--color-red-rgb), 0.4); background: rgba(var(--color-red-rgb), 0.08); }
+.oc-callout-head { display: flex; align-items: flex-start; gap: 8px; color: var(--text-normal); overflow-wrap: anywhere; }
+.oc-callout-error .oc-callout-head { color: var(--text-error); }
+.oc-callout-icon { display: inline-flex; margin-top: 2px; }
+.oc-callout-icon svg { width: 14px; height: 14px; }
+.oc-callout-hint { margin-top: 6px; color: var(--text-muted); }
+.oc-continuity-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+/* ---------- approvals ---------- */
+.oc-approval-card {
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-small);
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid var(--interactive-accent);
+  background: var(--background-primary-alt);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.oc-approval-head { font-weight: 600; color: var(--text-normal); }
+.oc-permission-meta, .oc-permission-location, .oc-approval-summary { color: var(--text-muted); overflow-wrap: anywhere; }
+.oc-permission-location { font-family: var(--font-monospace); font-size: var(--font-ui-smaller); }
+.oc-approval-diff, .oc-approval-raw pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--background-secondary);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  white-space: pre-wrap;
+}
+.oc-approval-raw > summary { cursor: pointer; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.oc-approval-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.oc-approval-allow { background: var(--interactive-accent) !important; color: var(--text-on-accent) !important; }
+.oc-approval-applied { color: var(--text-muted); }
+
+/* ---------- code blocks in replies ---------- */
+.oc-code-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 3px;
+  opacity: 0;
+  background: var(--background-primary) !important;
+  box-shadow: none !important;
+  transition: opacity 120ms ease;
+}
+.oc-code-copy svg { width: 14px; height: 14px; }
+.oc-agent-text pre:hover .oc-code-copy { opacity: 1; }
+.oc-lang {
+  position: absolute;
+  top: 6px;
+  right: 36px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  font-family: var(--font-interface);
+}
+
+/* ---------- composer ---------- */
+.oc-dock { flex: 0 0 auto; padding: 6px 16px 14px; }
+.oc-composer {
+  max-width: var(--oc-col);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 8px 6px 12px;
+  border: 1px solid var(--oc-hair);
+  border-radius: var(--oc-radius);
+  background: var(--background-primary-alt);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.08);
+  cursor: text;
+  transition: border-color 120ms ease;
+}
+.oc-composer:focus-within { border-color: var(--background-modifier-border-focus); }
+.oc-input {
+  width: 100%;
+  min-height: 24px;
+  max-height: 280px;
+  padding: 4px 2px !important;
+  border: none !important;
+  outline: none !important;
+  box-shadow: none !important;
+  background: transparent !important;
+  resize: none;
+  font-family: var(--oc-text);
+  font-size: var(--oc-size);
+  line-height: 1.5;
+  color: var(--text-normal);
+}
+.oc-composer-bar { display: flex; align-items: center; gap: 6px; cursor: default; }
+.oc-composer-left { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 2px; position: relative; }
+.oc-composer-right { flex: 0 0 auto; display: flex; align-items: center; }
+.oc-send {
+  width: 30px;
+  height: 30px;
+  padding: 0 !important;
+  border-radius: 50% !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--background-modifier-border) !important;
+  color: var(--text-faint) !important;
+  box-shadow: none !important;
+  cursor: pointer;
+}
+.oc-send svg { width: 16px; height: 16px; }
+.oc-send.is-ready, .oc-stop { background: var(--interactive-accent) !important; color: var(--text-on-accent) !important; }
+.oc-stop svg { width: 12px; height: 12px; fill: currentColor; }
+
+/* declared controls (modes / config / commands) */
+.oc-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; margin-left: 4px; position: relative; }
+.oc-controls.oc-controls-empty { display: none; }
+.oc-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 8px !important;
+  border-radius: 999px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 1px solid transparent !important;
+  color: var(--text-muted) !important;
+  font-size: var(--font-ui-smaller) !important;
+  cursor: pointer;
+}
+.oc-control:hover { background: var(--background-modifier-hover) !important; color: var(--text-normal) !important; }
+.oc-control-current.oc-control-boolean { border-color: var(--interactive-accent) !important; color: var(--text-normal) !important; }
+.oc-control-label { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-control-chevron { color: var(--text-faint); font-size: 0.85em; }
+.oc-control-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  min-width: 200px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--oc-hair);
+  border-radius: 10px;
+  background: var(--background-primary);
+  box-shadow: var(--shadow-s);
+}
+.oc-control-menu-title { padding: 4px 8px; font-size: var(--font-ui-smaller); color: var(--text-faint); }
+.oc-control-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 5px 8px !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  border-radius: 6px !important;
+  font-size: var(--font-ui-small) !important;
+  color: var(--text-normal) !important;
+  height: auto !important;
+}
+.oc-control-menu-item:hover { background: var(--background-modifier-hover) !important; }
+.oc-control-menu-item.oc-control-current { color: var(--interactive-accent) !important; font-weight: 600; }
+
+/* chips */
+.oc-chips { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
 .oc-chip {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11.5px;
-  background: color-mix(in srgb, var(--background-secondary) 70%, transparent);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  padding: 3px 5px 3px 7px;
+  max-width: 240px;
+  padding: 2px 6px 2px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--oc-hair);
+  background: var(--background-secondary);
+  font-family: var(--font-interface);
+  font-size: var(--font-ui-smaller);
   color: var(--text-muted);
-  max-width: 100%;
 }
-.oc-chip-icon { display: flex; align-items: center; color: var(--text-muted); flex: 0 0 auto; }
-.oc-chip-icon svg { width: 12px; height: 12px; }
-.oc-chip-label { max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-view .oc-chip-x {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: 0;
-  cursor: pointer;
-  color: var(--text-muted);
-  padding: 1px;
-  border-radius: 4px;
-  flex: 0 0 auto;
-}
-.oc-chip-x svg { width: 11px; height: 11px; }
-.oc-view .oc-chip-x:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+.oc-chip-static { padding-right: 8px; }
+.oc-chip-icon, .oc-chip-x { display: inline-flex; flex: 0 0 auto; }
+.oc-chip-icon svg, .oc-chip-x svg { width: 12px; height: 12px; }
+.oc-chip-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oc-chip-x { cursor: pointer; color: var(--text-faint); border-radius: 4px; }
+.oc-chip-x:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
 
-/* ---------- Composer ---------- */
-.oc-composer {
-  flex: 0 0 auto;
-  width: 100%;
-  /* Aligns the card with the transcript's measure on a wide leaf; no effect
-   * in a sidebar or on a phone. */
-  max-width: calc(var(--oc-content-max) + 28px);
-  margin-inline: auto;
-  padding: 4px 14px 12px;
-}
-.oc-inputbox {
-  display: flex;
-  flex-direction: column;
-  border-radius: 14px;
-  border: 1px solid var(--background-modifier-border);
-  background: var(--background-primary-alt);
-  transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-.oc-inputbox:focus-within {
-  border-color: color-mix(in srgb, var(--interactive-accent) 55%, var(--background-modifier-border));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 12%, transparent);
-}
-.oc-input:focus, .oc-input:focus-visible { outline: none; }
-.oc-input-row {
-  position: relative;
-  padding: 12px 12px 8px;
-}
-.oc-input {
-  display: block;
-  width: 100%;
-  resize: none;
-  border: 0;
-  background: transparent;
-  color: var(--text-normal);
-  font: inherit;
-  font-size: var(--oc-fs-body);
-  line-height: 1.5;
-  min-height: 26px;
-  max-height: 240px;
-  padding: 0;
-  /* clears the send button, which floats over the input row's bottom-right corner */
-  padding-right: 34px;
-  outline: none;
-}
-.oc-input::placeholder { color: var(--text-faint); }
-.oc-view .oc-send {
-  position: absolute;
-  right: 9px;
-  bottom: 9px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 auto;
-  border: 0;
-  border-radius: 9px;
-  background: var(--interactive-accent);
-  color: var(--text-on-accent);
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-.oc-view .oc-send svg {
-  display: block;
-  width: 16px !important;
-  height: 16px !important;
-  flex: none;
-}
-.oc-view .oc-send:hover { filter: brightness(1.08); }
-/* Nothing to send: the button stays in place but stops being the loudest
- * element in the composer. */
-.oc-view .oc-send:disabled {
-  background: var(--background-modifier-border);
-  color: var(--text-faint);
-  cursor: default;
-  filter: none;
-}
-.oc-view .oc-send:disabled:hover { filter: none; }
+/* ---------- mobile ---------- */
+.oc-chat-mobile .oc-chat-scroll { padding: 12px 12px 6px; }
+.oc-chat-mobile .oc-dock { padding: 6px 10px calc(10px + env(safe-area-inset-bottom)); }
+.oc-chat-mobile .oc-user-bubble { max-width: 92%; }
+.oc-chat-mobile .oc-icon-btn svg { width: 18px; height: 18px; }
 
-/* ---------- Composer toolbar: one row of mode chips (model / thinking / agent) ----------
-   Lives inside .oc-inputbox, below the input row; the top border is the divider
-   between the two, matching the input row's rounded card. */
-.oc-toolbar {
-  display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
-  gap: 1px;
-  padding: 5px 6px;
-  border-top: 1px solid color-mix(in srgb, var(--background-modifier-border) 70%, transparent);
+/* ---------- animation ---------- */
+@keyframes oc-spin { to { transform: rotate(360deg); } }
+@keyframes oc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes oc-bounce { 0%, 80%, 100% { transform: translateY(0); opacity: 0.4; } 40% { transform: translateY(-4px); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .oc-spinner, .oc-typing span, .oc-status-dot { animation: none !important; }
 }
-.oc-view .oc-toolbtn {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  background: transparent;
-  border: 0;
-  color: var(--text-muted);
-  font-size: var(--oc-fs-meta);
-  font-weight: 500;
-  padding: 5px 7px;
-  cursor: pointer;
-  border-radius: 6px;
-  white-space: nowrap;
-  min-width: 0; /* lets .oc-toolbtn-text actually shrink/ellipsize below */
-}
-.oc-view .oc-toolbtn:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-.oc-toolbtn-icon { display: flex; align-items: center; flex: 0 0 auto; }
-.oc-toolbtn-icon svg { width: 13px; height: 13px; }
-.oc-toolbtn-chevron { display: flex; align-items: center; color: var(--text-faint); flex: 0 0 auto; }
-.oc-toolbtn-chevron svg { width: 11px; height: 11px; }
-.oc-toolbtn-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-/* The model is the one label allowed to take the remaining width; every other
- * chip keeps its natural size so the row stays on one line at sidebar width. */
-.oc-toolbtn-model { flex: 0 1 auto; }
-.oc-toolbtn-model .oc-toolbtn-icon,
-.oc-toolbtn-model .oc-toolbtn-chevron,
-.oc-toolbtn-pin { flex: 0 0 auto; }
-/* Only the model may shrink. Every other chip keeps its natural width, so a
- * label is never squeezed into an ellipsis — when the row runs out of room the
- * measured `.oc-toolbar-compact` state below drops those labels to icons. */
-.oc-toolbar > .oc-toolbtn:not(.oc-toolbtn-model) { flex: 0 0 auto; }
-.oc-toolbar.oc-toolbar-compact .oc-toolbtn-think,
-.oc-toolbar.oc-toolbar-compact .oc-toolbtn-agent { padding: 5px 6px; }
-.oc-toolbar.oc-toolbar-compact .oc-toolbtn-think .oc-toolbtn-text,
-.oc-toolbar.oc-toolbar-compact .oc-toolbtn-agent .oc-toolbtn-text { display: none; }
-/* Agent mode / thinking-level toolbar buttons: hidden entirely (not disabled/
-   placeholder) when the connected harness declares none (FR-008). The picker
-   itself is a plain Obsidian Menu (ui/acp-picker-menu.ts) — no custom popover
-   markup needed here anymore. */
-.oc-toolbtn-hidden { display: none; }
-/* The base `.oc-view .oc-toolbtn` / `.oc-view .oc-usage` rules are more
-   specific than a bare `.oc-toolbtn-hidden`, so the hidden state has to be
-   re-stated at the same specificity or it silently loses. */
-.oc-view .oc-toolbtn-hidden,
-.oc-view .oc-usage.oc-toolbtn-hidden { display: none; }
-/* Thinking button when the harness declared thought_level earlier this
-   session but the currently-selected model doesn't support it — stays
-   visible (unlike oc-toolbtn-hidden) so switching models doesn't make the
-   control disappear/reappear. */
-.oc-toolbtn-disabled { opacity: 0.45; cursor: not-allowed; }
 
-/* ---------- Model suggestions (chat picker) ---------- */
-.oc-model-sugg { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.oc-model-sugg-info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.oc-model-sugg-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-model-sugg-provider { color: var(--text-muted); font-size: 12px; }
-/* Pin / default actions sit at the row's trailing edge; a click on either must
-   not choose the model, so both are `stopPropagation` buttons. */
-.oc-model-sugg-btn { display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 22px; height: 22px; border-radius: 4px; color: var(--text-faint); }
-.oc-model-sugg-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
-.oc-model-sugg-btn.is-on { color: var(--interactive-accent); }
-.suggestion-item.is-current .oc-model-sugg-name { font-weight: 600; }
-.oc-toolbtn-pin { align-items: center; margin-left: 2px; color: var(--interactive-accent); }
-.oc-toolbtn-pin svg { width: 12px; height: 12px; }
-.oc-model-sugg-btn svg { width: 14px; height: 14px; }
+/* ---------- settings & modals (carried over) ---------- */
 .oc-blacklist { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 
-/* ---------- Slash menu ---------- */
-.oc-slash {
-  position: absolute;
-  left: 14px;
-  right: 14px;
-  /* Derived from the composer's measured height (applyComposerHeight), so a
-   * grown composer or an attachment row can't swallow the menu. */
-  bottom: calc(var(--oc-composer-h, 116px) + 10px);
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  overflow: hidden;
-  z-index: 10;
-}
-.oc-slash-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 9px 13px;
-  cursor: pointer;
-  font-size: 13px;
-}
-.oc-slash-item.sel, .oc-slash-item:hover { background: color-mix(in srgb, var(--interactive-accent) 12%, transparent); }
-.oc-slash-name { font-weight: 600; }
-.oc-slash-hint { font-size: 12px; color: var(--text-muted); }
-
-/* ---------- @-mention (native file-search suggestions) ---------- */
 .oc-mention-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .oc-mention-type { flex: 0 0 auto; display: inline-flex; align-items: center; margin-left: 8px; color: var(--text-muted); }
+
 .oc-mention-type svg { width: 14px; height: 14px; }
 
-/* ---------- Code blocks ---------- */
-.oc-body-md pre {
-  position: relative;
-  background: var(--code-background, var(--background-primary-alt));
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 9px;
-  padding: 10px 12px;
-  overflow-x: auto;
-  font-size: 12.5px;
-  line-height: 1.55;
-}
-.oc-body-md pre:has(> .oc-lang) { padding-top: 26px; }
-.oc-body-md pre code { font-size: 12.5px; }
-.oc-body-md code { font-family: var(--font-monospace); font-size: 0.92em; }
-.oc-body-md :not(pre) > code { background: var(--background-modifier-border); padding: 1px 5px; border-radius: 5px; }
-/* Language cue in the corner of a fenced block. Purely informational; the copy
- * button keeps the opposite corner. */
-.oc-lang {
-  position: absolute;
-  top: 0;
-  left: 0;
-  padding: 3px 8px;
-  border-radius: 9px 0 0 0;
-  font-family: var(--font-monospace);
-  font-size: 9.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-  background: color-mix(in srgb, var(--background-modifier-border) 45%, transparent);
-  pointer-events: none;
-}
-
-/* ---------- Scrollbar ---------- */
-.oc-messages::-webkit-scrollbar { width: 8px; }
-.oc-messages::-webkit-scrollbar-thumb { background: var(--background-modifier-border); border-radius: 8px; }
-
-/* ---------- Phone (app state, not viewport width) ----------
- * Keyed to a view class set from `Platform.isPhone`, not `max-width: 600px`: a
- * narrow floating desktop window is still a desktop window and must not inherit
- * the phone's tab-bar clearance or 44px touch targets. Container width still
- * governs layout through the flex rules above. */
-.oc-view.oc-phone { padding-top: env(safe-area-inset-top); }
-/* Obsidian's own bottom tab bar overlays view content on mobile rather than
-   reserving space for it, so the composer needs real clearance above the home
-   indicator's safe area, not just the safe area itself. */
-.oc-view.oc-phone .oc-composer {
-  padding-bottom: calc(56px + env(safe-area-inset-bottom));
-  padding-left: 12px;
-  padding-right: 12px;
-}
-
-/* Keyboard up: the keyboard is a pure overlay on this device — neither
-   `innerHeight` nor `visualViewport.height` changes — and Obsidian has already
-   clamped `.app-container` to end at the keyboard's top edge (measured: 524px
-   = 852 - 328). All that is then needed below the card is a plain gap instead
-   of the tab-bar clearance, applied inline from JS.
-
-   The composer is pinned to the view's bottom outright rather than by flex:
-   measured on the device it sat ~180px above the view's end with free space
-   pooled *below* it (`msgs=28`, `comp=133`, `view=413`), which is what a
-   container that is not distributing as a flex column looks like — so no
-   `flex-grow`/`margin: auto` arrangement can be trusted here. The transcript
-   reserves the composer's height instead (see `applyComposerHeight`). */
-.oc-view.oc-phone .oc-composer-wrap {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 2;
-  /* Opaque backing: the transcript scrolls underneath the pinned card. */
-  background: var(--background-primary);
-  box-shadow: 0 -12px 24px -18px rgba(0, 0, 0, 0.8);
-}
-.oc-view.oc-phone .oc-messages { flex: 1 1 auto; min-height: 0; padding: 6px 14px 12px; }
-.oc-view.oc-phone .oc-messages > * { max-width: none; }
-
-/* iOS auto-zooms the whole page when a focused input's font-size is under 16px. */
-.oc-view.oc-phone .oc-input { font-size: 16px; }
-
-/* Touch targets: mouse-sized buttons are too small to tap reliably. */
-.oc-view.oc-phone .oc-toolbtn { padding: 8px 8px; min-height: 40px; }
-.oc-view.oc-phone .oc-chip-x { padding: 6px; }
-.oc-view.oc-phone .oc-toolbar { gap: 2px; }
-
-/* Model keeps its (ellipsized) label — it's the one worth reading at a
-   glance. Mode/thinking/attach go icon-only so the row cannot wrap. Title
-   attributes (set in refreshToolbar) carry the full text as a tooltip, and
-   tapping still opens the full picker. */
-.oc-view.oc-phone .oc-toolbtn-model .oc-toolbtn-text { max-width: 40vw; }
-.oc-view.oc-phone .oc-toolbtn-agent .oc-toolbtn-text,
-.oc-view.oc-phone .oc-toolbtn-think .oc-toolbtn-text,
-.oc-view.oc-phone .oc-toolbtn-attach .oc-toolbtn-text,
-.oc-view.oc-phone .oc-toolbtn-model .oc-toolbtn-chevron { display: none; }
-
-.oc-view.oc-phone .oc-welcome { padding-bottom: 32px; }
-.oc-view.oc-phone .oc-messages > .oc-block.oc-user { margin-top: 12px; }
-
-/* ---------- Vision attachments (composer pills) ---------- */
 .oc-attachments {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   padding: 10px 12px 0;
 }
+
 .oc-attach {
   display: inline-flex;
   align-items: center;
@@ -703,6 +509,7 @@
   padding: 5px 6px;
   max-width: 220px;
 }
+
 .oc-attach-thumb {
   width: 40px;
   height: 40px;
@@ -710,7 +517,9 @@
   border-radius: 6px;
   flex: 0 0 auto;
 }
+
 .oc-attach-meta { min-width: 0; flex: 1; }
+
 .oc-attach-name {
   font-size: 12px;
   color: var(--text-muted);
@@ -719,6 +528,7 @@
   white-space: nowrap;
   max-width: 130px;
 }
+
 .oc-view .oc-attach-x {
   display: flex;
   align-items: center;
@@ -730,96 +540,13 @@
   padding: 3px;
   border-radius: 50%;
 }
+
 .oc-view .oc-attach-x:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
+
 .oc-attach-x svg { width: 12px; height: 12px; }
 
-/* User-message attached image thumbnails */
-.oc-user-images {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 6px;
-}
-.oc-user-img {
-  max-width: 220px;
-  max-height: 160px;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid var(--background-modifier-border);
-}
-
-/* ---------- Inline approval card (specs/002-acp-only-chat-ux US2) ---------- */
-.oc-approval-card {
-  border: 1px solid var(--background-modifier-border);
-  border-inline-start: 2px solid var(--color-green);
-  border-radius: 10px;
-  background: var(--background-primary-alt);
-  padding: 11px 13px;
-  margin: 6px 0 0;
-}
-.oc-approval-head { font-weight: 600; font-size: 13.5px; }
-.oc-approval-summary { color: var(--text-muted); font-size: 12.5px; margin-top: 3px; }
-.oc-approval-diff {
-  font-family: var(--font-monospace);
-  font-size: 11.5px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  padding: 6px 0;
-  margin-top: 9px;
-  max-height: 320px;
-  overflow-y: auto;
-}
-.oc-approval-diff .oc-diff-line { display: block; padding: 0 10px; }
-.oc-approval-diff .oc-diff-line-add {
-  background: color-mix(in srgb, var(--color-green) 12%, transparent);
-  color: var(--text-normal);
-}
-.oc-approval-diff .oc-diff-line-del {
-  background: color-mix(in srgb, var(--color-red) 12%, transparent);
-  color: var(--text-muted);
-}
-.oc-approval-actions { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
-.oc-approval-remember { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-muted); margin-left: auto; }
-.oc-approval-remember input { margin: 0; }
-.oc-approval-remember-disabled { opacity: 0.5; }
-.oc-view .oc-approval-deny,
-.oc-view .oc-approval-allow,
-.oc-view .oc-approval-undo {
-  font: inherit;
-  font-size: 12px;
-  padding: 5px 12px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.oc-view .oc-approval-allow {
-  background: var(--interactive-accent);
-  border: 1px solid var(--interactive-accent);
-  color: var(--text-on-accent);
-  font-weight: 600;
-  box-shadow: none;
-}
-.oc-view .oc-approval-allow:hover { filter: brightness(1.08); }
-.oc-view .oc-approval-deny {
-  background: transparent;
-  border: 1px solid var(--background-modifier-border);
-  color: var(--text-muted);
-}
-.oc-view .oc-approval-deny:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-.oc-view .oc-approval-undo {
-  background: transparent;
-  border: 1px solid var(--background-modifier-border);
-  color: var(--text-muted);
-}
-.oc-approval-applied { color: var(--color-green); font-size: 12px; }
-.oc-approval-denied { color: var(--text-muted); font-size: 12px; }
-.oc-approval-undone { color: var(--text-muted); font-size: 12px; font-style: italic; }
-
-/* ---------- Vault image picker ---------- */
 .oc-image-list { display: flex; flex-direction: column; gap: 2px; max-height: 320px; overflow-y: auto; }
+
 .oc-view .oc-image-row {
   display: flex;
   align-items: center;
@@ -834,56 +561,11 @@
   border-radius: 8px;
   cursor: pointer;
 }
+
 .oc-view .oc-image-row:hover { background: var(--background-modifier-hover); }
+
 .oc-image-row-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-/* ---------- Changes card (W7.5) ---------- */
-.oc-changes {
-  margin: 8px 0;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 10px;
-  padding: 6px 10px;
-}
-.oc-view .oc-changes-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 2px 0;
-  background: none;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.oc-changes-title { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.oc-changes-chevron { display: flex; align-items: center; margin-left: auto; color: var(--text-faint); }
-.oc-changes-chevron svg { width: 12px; height: 12px; }
-.oc-changes[data-expanded="false"] .oc-changes-body { display: none; }
-.oc-changes-body { padding-top: 4px; }
-.oc-changes-row { display: flex; align-items: center; gap: 8px; padding: 2px 0; font-size: 13px; }
-.oc-changes-icon { display: flex; align-items: center; color: var(--text-faint); }
-.oc-changes-icon svg { width: 13px; height: 13px; }
-.oc-changes-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-view .oc-changes-undo,
-.oc-view .oc-changes-undo-all {
-  background: transparent;
-  border: 1px solid var(--background-modifier-border);
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-.oc-view .oc-changes-undo:hover:not(:disabled),
-.oc-view .oc-changes-undo-all:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-.oc-changes-undo:disabled { opacity: 0.5; cursor: default; }
-.oc-changes-undo-all { margin-top: 6px; }
-
-/* ---------- Connection info modal (W7.10) ---------- */
 .oc-conn-info {
   font-family: var(--font-monospace);
   font-size: 12px;
@@ -894,351 +576,3 @@
   border-radius: 8px;
   padding: 10px 12px;
 }
-
-/* =========================================================================
-   specs/003-workspace-parity — aesthetic + functional additions
-   ========================================================================= */
-
-/* ---------- Turn anatomy (2026-10-24) ----------
- * Label the interruptions, not the page: your message gets a label and a quiet
- * surface; the agent's answer flows unlabelled. This replaces the full-width
- * `<hr>` that used to separate turns. */
-.oc-turn-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  margin-bottom: 7px;
-  font-size: var(--oc-fs-label);
-  font-weight: 600;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--text-faint);
-}
-.oc-turn-head .oc-turn-name { color: var(--text-muted); }
-.oc-turn-head .oc-turn-time {
-  margin-left: auto;
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: 0.02em;
-  text-transform: none;
-  color: var(--text-faint);
-  font-variant-numeric: tabular-nums;
-}
-.oc-block.oc-user {
-  border: 1px solid var(--background-modifier-border);
-  background: color-mix(in srgb, var(--background-secondary) 70%, transparent);
-  border-radius: 12px;
-  padding: 10px 12px;
-  margin-top: 14px;
-}
-.oc-messages > .oc-block.oc-user:first-child { margin-top: 8px; }
-.oc-block.oc-assistant { padding-top: 1px; }
-
-/* ---------- Welcome / empty state (W6.1) ---------- */
-.oc-welcome {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 6px 2px 56px;
-  /* Auto margins centre the panel in a tall pane and collapse to zero when it
-   * is taller than the viewport — unlike justify-content, which clips the top. */
-  margin-block: auto;
-}
-.oc-welcome-title {
-  font-size: 17px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--text-normal);
-}
-.oc-welcome-sub { font-size: 12.5px; color: var(--text-muted); }
-.oc-welcome-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-  margin-top: 6px;
-}
-.oc-view .oc-welcome-card {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  min-width: 0;
-  min-height: 70px;
-  background: var(--background-primary-alt);
-  border: 1px solid var(--background-modifier-border);
-  color: var(--text-normal);
-  font: inherit;
-  text-align: left;
-  padding: 9px 10px;
-  border-radius: 10px;
-  cursor: pointer;
-}
-.oc-view .oc-welcome-card:hover {
-  background: var(--background-modifier-hover);
-  border-color: color-mix(in srgb, var(--interactive-accent) 40%, var(--background-modifier-border));
-}
-.oc-welcome-card-icon { color: var(--text-accent, var(--interactive-accent)); margin-bottom: 3px; }
-.oc-welcome-card-icon svg { width: 14px; height: 14px; }
-.oc-welcome-card-title { font-size: 12.5px; font-weight: 600; line-height: 1.3; }
-.oc-welcome-card-hint {
-  font-size: 10.5px;
-  color: var(--text-faint);
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.oc-welcome-recent { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
-.oc-welcome-recent-title {
-  font-size: var(--oc-fs-label);
-  color: var(--text-faint);
-  text-transform: uppercase;
-  letter-spacing: 0.07em;
-  font-weight: 600;
-  margin-bottom: 2px;
-}
-.oc-view .oc-recent-item {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  background: transparent;
-  border: 0;
-  color: var(--text-normal);
-  font: inherit;
-  font-size: 12.5px;
-  text-align: left;
-  padding: 5px 6px;
-  border-radius: 7px;
-  cursor: pointer;
-}
-.oc-view .oc-recent-item:hover { background: var(--background-modifier-hover); }
-.oc-recent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-recent-date { flex: 0 0 auto; font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-
-/* ---------- Plan checklist (W4.1) ---------- */
-.oc-plan { margin: 8px 0; }
-.oc-view .oc-plan-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 4px 0;
-  background: none;
-  border: 0;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.oc-plan-title { font-size: var(--oc-fs-meta); font-weight: 500; color: var(--text-muted); }
-.oc-plan-count { font-size: 11.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.oc-plan-chevron { display: flex; align-items: center; margin-left: auto; color: var(--text-faint); }
-.oc-plan-chevron svg { width: 12px; height: 12px; }
-.oc-plan[data-expanded="false"] .oc-plan-body { display: none; }
-.oc-plan-row { display: flex; align-items: baseline; gap: 8px; padding: 2px 0; font-size: 13px; color: var(--text-muted); }
-.oc-plan-icon { display: flex; align-items: center; flex: 0 0 auto; color: var(--text-faint); }
-.oc-plan-icon svg { width: 13px; height: 13px; }
-.oc-plan-icon.oc-plan-done { color: var(--color-green); }
-.oc-plan-row[data-status="in_progress"] .oc-plan-text { color: var(--text-normal); }
-.oc-plan-text { flex: 1; min-width: 0; }
-.oc-plan-prio { flex: 0 0 auto; width: 5px; height: 5px; border-radius: 50%; background: var(--interactive-accent); }
-
-/* ---------- Usage / context meter (W4.2) ---------- */
-/* A small text chip, not a ring: a circle next to the send button reads as an
- * indeterminate loader. Hidden until the harness reports a reading, and now
- * also hidden below 70% usage — it earns its place when it is a warning. The
- * full token/cost detail stays in the tooltip. */
-.oc-view .oc-usage {
-  display: inline-block;
-  align-self: center;
-  flex: 0 0 auto;
-  margin-left: auto;
-  padding: 3px 5px;
-  border-radius: 5px;
-  font-size: 10.5px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-faint);
-  background: none;
-  white-space: nowrap;
-}
-.oc-usage::after { content: attr(data-label); }
-.oc-view .oc-usage.oc-usage-warn { color: var(--color-orange); }
-.oc-view .oc-usage.oc-usage-critical { color: var(--color-red); }
-
-/* ---------- Queue row (W2.4) ---------- */
-.oc-queue {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 16px 8px;
-  font-size: 12.5px;
-  color: var(--text-muted);
-}
-.oc-queue[hidden] { display: none; }
-.oc-queue-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.oc-view .oc-queue-btn {
-  background: transparent;
-  border: 1px solid var(--background-modifier-border);
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 12.5px;
-  padding: 4px 9px;
-  border-radius: 7px;
-  cursor: pointer;
-  flex: 0 0 auto;
-}
-.oc-view .oc-queue-btn:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-
-/* ---------- Jump to latest (W2.3) ---------- */
-.oc-view .oc-jump {
-  position: absolute;
-  right: 16px;
-  bottom: calc(var(--oc-composer-h, 116px) + 10px);
-  z-index: 6;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  color: var(--text-normal);
-  font: inherit;
-  font-size: 12.5px;
-  padding: 6px 11px;
-  border-radius: 999px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.12);
-  cursor: pointer;
-}
-.oc-jump svg { width: 13px; height: 13px; }
-.oc-jump[hidden] { display: none; }
-
-/* ---------- Connection status (W7.10) ---------- */
-.oc-conn {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 16px;
-  font-size: 12.5px;
-  border-bottom: 1px solid var(--background-modifier-border);
-}
-.oc-conn[hidden] { display: none; }
-.oc-conn-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
-.oc-conn[data-state="connecting"] .oc-conn-dot { background: var(--color-orange); }
-.oc-conn[data-state="unreachable"] .oc-conn-dot { background: var(--color-red); }
-.oc-conn-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
-
-/* ---------- Message actions + code copy (W3.7/W7.7) ---------- */
-.oc-msg-actions { display: flex; gap: 2px; margin-top: 6px; }
-.oc-view .oc-msg-action {
-  display: inline-flex;
-  align-items: center;
-  background: transparent;
-  border: 0;
-  color: var(--text-faint);
-  padding: 3px;
-  border-radius: 6px;
-  cursor: pointer;
-}
-.oc-view .oc-msg-action:hover { color: var(--text-normal); background: var(--background-modifier-hover); }
-.oc-msg-action svg { width: 13px; height: 13px; }
-@media (hover: hover) {
-  .oc-msg-actions { opacity: 0; transition: opacity 120ms ease; }
-  .oc-block:hover .oc-msg-actions,
-  .oc-block:focus-within .oc-msg-actions { opacity: 1; }
-}
-.oc-body-md pre { position: relative; }
-.oc-view .oc-code-copy {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  background: var(--background-primary);
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  color: var(--text-muted);
-  cursor: pointer;
-}
-.oc-view .oc-code-copy:hover { color: var(--text-normal); }
-.oc-code-copy svg { width: 13px; height: 13px; }
-@media (hover: hover) {
-  .oc-code-copy { opacity: 0; transition: opacity 120ms ease; }
-  .oc-body-md pre:hover .oc-code-copy { opacity: 1; }
-}
-
-/* ---------- Composer drag & drop (W3.4) ---------- */
-.oc-inputbox.oc-drop-active { border-color: var(--interactive-accent); }
-
-/* ---------- Density (W6.9) ---------- */
-.oc-view { --oc-gap: 14px; --oc-activity-pad: 3px; --oc-activity-font: 12.5px; }
-.oc-view.oc-density-compact {
-  --oc-gap: 10px;
-  --oc-activity-pad: 1px;
-  --oc-activity-font: 12px;
-  --oc-fs-body: 14px;
-}
-.oc-messages { gap: 0; }
-.oc-activity .oc-tool { padding: var(--oc-activity-pad) 0; font-size: var(--oc-activity-font); }
-
-/* ---------- Keyboard focus (W6.8) ---------- */
-.oc-view :focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 1px; }
-.oc-view .oc-input:focus-visible { outline: none; }
-
-/* ---------- Reduced motion (W6.7) ---------- */
-@media (prefers-reduced-motion: reduce) {
-  .oc-view *, .oc-view *::before, .oc-view *::after {
-    animation: none !important;
-    transition: none !important;
-  }
-}
-
-/* ---------- Accordion fade-in (W6.7) ---------- */
-.oc-activity[data-expanded="true"] .oc-activity-body,
-.oc-plan[data-expanded="true"] .oc-plan-body,
-.oc-thought-block[data-expanded="true"] .oc-thought-content { animation: oc-fade 150ms ease; }
-
-/* ---------- Phone touch targets ---------- */
-.oc-view.oc-phone .oc-send { width: 36px; height: 36px; }
-.oc-view.oc-phone .oc-toolbtn { min-height: 44px; }
-.oc-view.oc-phone .oc-chip-x { padding: 8px; }
-.oc-view.oc-phone .oc-slash-item { padding: 12px 13px; }
-.oc-view.oc-phone .oc-queue-btn { min-height: 36px; }
-
-/* ---------- ACP shell view (specs/004-acp-shell US1) ---------- */
-.oc-shell-view { display: flex; flex-direction: column; height: 100%; padding: 12px; gap: 8px; }
-.oc-shell-header { display: flex; align-items: center; gap: 8px; }
-.oc-shell-title { font-weight: 600; }
-.oc-shell-status { color: var(--text-muted); font-size: 12px; margin-left: auto; font-variant-numeric: tabular-nums; }
-.oc-shell-actions { display: flex; gap: 6px; }
-.oc-shell-messages { flex: 1 1 auto; min-height: 0; overflow-y: auto; border: 1px solid var(--background-modifier-border); border-radius: 8px; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
-.oc-shell-msg { white-space: pre-wrap; line-height: 1.45; }
-.oc-shell-user { align-self: flex-end; max-width: 85%; background: var(--background-modifier-hover); border-radius: 8px; padding: 6px 10px; }
-.oc-shell-assistant { color: var(--text-normal); }
-.oc-shell-thought { color: var(--text-muted); font-style: italic; font-size: 13px; border-inline-start: 2px solid var(--background-modifier-border); padding-inline-start: 8px; }
-.oc-shell-tool { color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums; }
-.oc-shell-status-row { color: var(--text-faint); font-size: 12px; }
-.oc-shell-plan { border-inline-start: 2px solid var(--background-modifier-border); padding-inline-start: 8px; font-size: 13px; }
-.oc-shell-plan-title { font-weight: 600; }
-.oc-shell-plan-row { color: var(--text-muted); }
-.oc-shell-raw { font-size: 12px; color: var(--text-muted); }
-.oc-shell-raw pre { max-height: 30vh; overflow: auto; white-space: pre-wrap; }
-.oc-shell-permission { border: 1px solid var(--interactive-accent); border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
-.oc-shell-permission-title { font-weight: 600; }
-.oc-shell-permission-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.oc-permission-card { gap: 6px; }
-.oc-permission-meta { color: var(--text-muted); font-size: 12px; }
-.oc-approval-raw summary { cursor: pointer; color: var(--text-muted); font-size: 12px; }
-.oc-approval-raw pre { max-height: 30vh; overflow: auto; white-space: pre-wrap; font-size: 12px; }
-.oc-shell-notice { color: var(--text-muted); font-size: 12px; }
-.oc-shell-undo { border: 1px solid var(--background-modifier-border); }
-.oc-shell-error { color: var(--color-red); white-space: pre-wrap; }
-.oc-shell-error-hint { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
-.oc-shell-composer { display: flex; flex-direction: column; gap: 6px; }
-.oc-shell-input { width: 100%; resize: vertical; }
-.oc-shell-buttons { display: flex; justify-content: flex-end; gap: 6px; }
-.oc-shell-btn { padding: 4px 10px; border-radius: 6px; }
-.oc-shell-hidden { display: none; }

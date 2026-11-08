@@ -36,6 +36,9 @@ export type WebSocketCtor = new (
   options?: { headers?: Record<string, string> },
 ) => WebSocketLike;
 
+import { RECONNECT_ATTEMPTS } from "../session/limits.ts";
+export { RECONNECT_ATTEMPTS };
+
 const DEFAULT_TIMEOUT_MS = 8_000;
 
 function listen(socket: WebSocketLike, type: string, listener: (...args: unknown[]) => void): () => void {

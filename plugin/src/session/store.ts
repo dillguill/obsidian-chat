@@ -29,6 +29,8 @@ export interface SessionSummary {
   header: SessionHeader;
   path: string;
   degraded: boolean;
+  /** Record size in bytes (for the 50 MiB warning). */
+  bytes: number;
 }
 
 export interface SessionRead {
@@ -37,6 +39,8 @@ export interface SessionRead {
   /** True when the file ended in a partial (no newline) line. */
   degradedTail: boolean;
   malformedLines: number;
+  /** Serialized record size in bytes. */
+  bytes: number;
 }
 
 export interface CreateSessionInput {
@@ -201,7 +205,7 @@ export class SessionStore {
     if (!header) throw new Error(`session record has no valid header: ${sessionId}`);
     if (entries.length) this.seq.set(sessionId, lastSeq);
     if (trailingPartial) this.needsSeparator.add(sessionId);
-    return { header, entries, degradedTail: trailingPartial, malformedLines };
+    return { header, entries, degradedTail: trailingPartial, malformedLines, bytes: new TextEncoder().encode(text).length };
   }
 
   async list(): Promise<SessionSummary[]> {
@@ -222,6 +226,7 @@ export class SessionStore {
           header: read.header,
           path: join(this.root, name),
           degraded: read.degradedTail || read.malformedLines > 0,
+          bytes: read.bytes,
         });
       } catch {
         // Unreadable record: skip it rather than fabricating a session.

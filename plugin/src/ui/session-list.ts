@@ -3,7 +3,7 @@
  *  standard `session/load` path. */
 import { App, Modal, Setting } from "obsidian";
 import type { SessionListEntry } from "../shell/runtime.ts";
-import { conversationMeta, conversationStatusLabel, recordStatusLabel } from "./labels.ts";
+import { conversationMeta, conversationStatusLabel, recordSizeLabel, recordStatusLabel } from "./labels.ts";
 
 export class SessionListModal extends Modal {
   private sessions: SessionListEntry[];
@@ -36,6 +36,7 @@ export class SessionListModal extends Modal {
             // plain-language labels (T125).
             conversationStatusLabel(session.resume),
             recordStatusLabel(session.degraded),
+            recordSizeLabel(session.large),
           ]),
         );
       setting.addButton((button) =>

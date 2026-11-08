@@ -111,10 +111,21 @@ export function mapSessionUpdate(update: SessionUpdate): RenderUpdate | null {
     case "available_commands_update":
       // Applied to declared-control state by the client; no transcript body.
       return null;
-    default:
+    default: {
+      // Some harnesses use newer/renamed chunk kinds. If the update still
+      // carries ACP text content, render it as the corresponding text chunk
+      // instead of flooding the transcript with raw rows (the raw record keeps
+      // the exact payload either way).
+      const text = textOfContent((update as { content?: unknown }).content);
+      if (text) {
+        if (/thought|reason/i.test(kind)) return { type: "thought", text };
+        if (/user/i.test(kind)) return { type: "message", role: "user", text };
+        if (/message|chunk|assistant|agent|output/i.test(kind)) return { type: "message", role: "agent", text };
+      }
       // plan_removed is handled above; compaction_*, future/unstable kinds and
       // anything newer than this SDK are surfaced raw, never dropped.
       return { type: "raw", sessionUpdate: kind, payload: update };
+    }
   }
 }
 

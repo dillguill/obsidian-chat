@@ -7,8 +7,42 @@
  */
 import type { StopReason } from "@agentclientprotocol/sdk";
 
+import { MAX_ENTRY_BYTES } from "./limits.ts";
+
 export const RECORD_VERSION = 1;
-export const MAX_ENTRY_BYTES = 256 * 1024;
+export { MAX_ENTRY_BYTES };
+
+/** Strips secret-bearing binary payloads before an entry is stored (FR-058):
+ *  image/audio bytes are recorded by type/name only, never by content. */
+export function sanitizeForRecord<T>(value: T): T {
+  return sanitize(value) as T;
+}
+
+function sanitize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sanitize);
+  if (!value || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  const type = record.type;
+  const out: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    if ((type === "image" || type === "audio") && key === "data") {
+      out.data = "";
+      continue;
+    }
+    if (key === "headers" && Array.isArray(entry)) {
+      // MCP/ACP auth headers never belong in a conversation record.
+      out.headers = entry.map((header) => {
+        const item = header as { name?: unknown; value?: unknown };
+        return item && typeof item.name === "string" && /authorization|token/i.test(item.name)
+          ? { ...item, value: "***" }
+          : sanitize(header);
+      });
+      continue;
+    }
+    out[key] = sanitize(entry);
+  }
+  return out;
+}
 
 export type RecordKind =
   | "header"

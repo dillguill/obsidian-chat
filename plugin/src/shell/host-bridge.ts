@@ -35,7 +35,9 @@ import {
   type SetSessionModeResponse,
 } from "@agentclientprotocol/sdk";
 import { cancelledPermission } from "../acp/permissions.ts";
+import { CONTEXT_META_KEY } from "../acp/types.ts";
 import type { ContentBlock } from "@agentclientprotocol/sdk";
+import { sanitizeForRecord } from "../session/record.ts";
 import { buildDigest, buildFullReplay, digestBlock } from "../session/digest.ts";
 import type { NewEntry, SessionStore, SessionSummary } from "../session/store.ts";
 import { continuityMeta, decideContinuity, isResumableState, type CurrentHarness, type ResumeDecision, type StoredContinuity, type ResumeRegistry } from "../session/resume.ts";
@@ -71,7 +73,8 @@ interface HostSession {
 const POLICY_ERROR = -32003;
 /** Bounded live replay window; a device further behind gets a full replay from
  *  the record instead of an unbounded stream (contracts/host-transport.md §5). */
-export const REPLAY_MAX_ENTRIES = 20_000;
+import { REPLAY_MAX_ENTRIES, SESSION_SIZE_WARN_BYTES } from "../session/limits.ts";
+export { REPLAY_MAX_ENTRIES };
 const CONTINUITY_CHOICES = ["digest", "fresh", "full_replay"] as const;
 type ContinuityChoice = (typeof CONTINUITY_CHOICES)[number];
 
@@ -364,7 +367,7 @@ export class HostBridge implements RelayBridge {
     await this.record(session.hostId, {
       kind: "prompt",
       turn,
-      blocks: recordBlocks,
+      blocks: sanitizeForRecord(recordBlocks),
       textChars: JSON.stringify(recordBlocks).length,
     });
     try {
@@ -550,6 +553,8 @@ export class HostBridge implements RelayBridge {
         "obsidian-chat/resume": decision.state,
         "obsidian-chat/warning": decision.warning,
         "obsidian-chat/degraded": summary.degraded,
+        "obsidian-chat/size": summary.bytes,
+        "obsidian-chat/large": summary.bytes >= SESSION_SIZE_WARN_BYTES,
       },
     };
   }
@@ -571,7 +576,7 @@ export class HostBridge implements RelayBridge {
         kind: "update",
         turn,
         sessionUpdate: kind,
-        payload: params.update,
+        payload: sanitizeForRecord(params.update),
         late: meta.late || undefined,
       });
       this.registry?.touch(session.hostId, entry.seq);
@@ -717,7 +722,9 @@ function promptText(blocks: unknown): string {
   if (!Array.isArray(blocks)) return "";
   const parts: string[] = [];
   for (const block of blocks) {
-    const value = block as { type?: string; text?: string };
+    const value = block as { type?: string; text?: string; _meta?: Record<string, unknown> };
+    // Attached context blocks are not what the user typed; replay shows the prompt.
+    if (value?._meta?.[CONTEXT_META_KEY] !== undefined) continue;
     if (value?.type === "text" && typeof value.text === "string") parts.push(value.text);
   }
   return parts.join("\n");

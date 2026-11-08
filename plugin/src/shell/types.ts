@@ -45,3 +45,14 @@ export interface AttachStatus {
   retries: number;
   lastError: string | null;
 }
+
+/** True for addresses that stay on this machine. */
+export function isLoopbackBind(address: string): boolean {
+  const value = address.trim().toLowerCase();
+  return value === "127.0.0.1" || value === "::1" || value === "localhost" || value === "::ffff:127.0.0.1";
+}
+
+/** A wider bind is only allowed after explicit confirmation in settings. */
+export function bindAllowed(address: string | undefined, allowWiderBind: boolean): boolean {
+  return isLoopbackBind(address ?? "127.0.0.1") || allowWiderBind;
+}

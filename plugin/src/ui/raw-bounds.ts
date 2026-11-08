@@ -3,7 +3,9 @@
  *  host's session record; the UI shows at most 16 KiB with an explicit
  *  truncation marker. */
 
-export const RAW_DISPLAY_LIMIT = 16 * 1024;
+import { RAW_DISPLAY_LIMIT } from "../session/limits.ts";
+
+export { RAW_DISPLAY_LIMIT };
 
 export interface BoundedJson {
   text: string;

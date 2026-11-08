@@ -9,7 +9,9 @@
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
     "test": "node --test \"src/**/*.test.ts\"",
-    "test:conformance": "node scripts/check-conformance.mjs"
+    "test:conformance": "node scripts/check-conformance.mjs",
+    "check:mobile": "node scripts/check-mobile.mjs",
+    "check": "npm run test:conformance && npm run check:mobile"
   },
   "devDependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",

@@ -300,7 +300,7 @@ was implemented in the reverted work and is trivially re-appliable.
 
 - Build: `cd plugin && npm run build && bash install.sh` (npm workspace root
   rejects bare `npm run build`). Vault target:
-  `~/Library/Mobile Documents/iCloud~md~obsidian/Documents/Vault/.obsidian/plugins/obsidian-chat/`.
+  `<vault>/.obsidian/plugins/obsidian-chat/`.
 - After install, Obsidian must reload the plugin; on mobile, fully kill and
   reopen the app to be sure styles.css is re-read.
 - TypeScript gotcha: this TS lib's `VisualViewport` type omits `scrollTop`

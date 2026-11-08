@@ -19,6 +19,9 @@ import { HostServer, createVaultMcpHandler } from "./host-server.ts";
 import { mintToken } from "./device-auth.ts";
 import { fingerprint, redactLabel } from "./identity.ts";
 import { LocalTransportConnector } from "./local-transport.ts";
+import { backoffDelay } from "./transport.ts";
+import { HARNESS_RESTART_ATTEMPTS } from "../session/limits.ts";
+import { bindAllowed } from "./types.ts";
 import { ObsidianShellEnvironment } from "./environment.ts";
 import type { ShellAttachConfig } from "./types.ts";
 
@@ -28,6 +31,7 @@ export interface HostCoreSettings {
   blacklistFolders: string[];
   /** Paired device credentials (name → token). */
   pairedDevices: Record<string, string>;
+  allowWiderBind: boolean;
 }
 
 export interface HostCoreOptions {
@@ -53,6 +57,9 @@ export class HostCore {
   private localTokenValue = mintToken();
   private mcpTokenValue = mintToken();
   private legacyStopped = false;
+  private stopping = false;
+  private harnessRestartAttempts = 0;
+  private harnessRestartTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: HostCoreOptions) {
     this.opts = options;
@@ -117,11 +124,18 @@ export class HostCore {
   async start(): Promise<void> {
     if (this.server) return;
     if (!Platform.isDesktopApp) throw new Error("host mode is desktop-only");
+    const settings = this.settings();
+    const bindAddress = settings.shell.bindAddress ?? "127.0.0.1";
+    if (!bindAllowed(bindAddress, settings.allowWiderBind)) {
+      throw new Error(
+        `refusing to bind ${bindAddress}: binding beyond loopback requires explicit confirmation (Settings → Shell → Allow wider bind)`,
+      );
+    }
+    this.stopping = false;
     if (this.opts.stopLegacy && !this.legacyStopped) {
       this.legacyStopped = true;
       await this.opts.stopLegacy().catch((err) => this.log(`legacy host stop failed: ${String(err)}`));
     }
-    const settings = this.settings();
     const mcp = new VaultMcpServer({
       vault: this.vault(),
       policy: () => this.vault().policy(),
@@ -153,7 +167,7 @@ export class HostCore {
     this.relay = relay;
     const server = new HostServer({
       port: settings.shell.port ?? 8765,
-      host: settings.shell.bindAddress ?? "127.0.0.1",
+      host: bindAddress,
       devices: () => this.settings().pairedDevices,
       localToken: this.localTokenValue,
       mcpHandler: createVaultMcpHandler({ server: mcp, token: () => this.mcpTokenValue }),
@@ -168,6 +182,19 @@ export class HostCore {
   /** Lazily connects the single harness child and wires the relay bridge. */
   async ensureHarness(): Promise<AcpShellClient> {
     if (this.harness) return this.harness;
+    // Concurrent callers (two devices/views creating sessions at once) share
+    // one spawn: there is exactly one harness child.
+    if (!this.harnessStarting) {
+      this.harnessStarting = this.spawnHarness().finally(() => {
+        this.harnessStarting = null;
+      });
+    }
+    return this.harnessStarting;
+  }
+
+  private harnessStarting: Promise<AcpShellClient> | null = null;
+
+  private async spawnHarness(): Promise<AcpShellClient> {
     if (!Platform.isDesktopApp) throw new Error("the harness can only be started on desktop");
     const settings = this.settings();
     const cwd = settings.shell.cwd?.trim() || this.vaultRoot();
@@ -186,7 +213,11 @@ export class HostCore {
       }),
       autoSession: false,
       onLog: this.log,
-      onTransportLost: (reason) => this.log(`harness transport lost: ${reason}`),
+      onTransportLost: (reason) => {
+        this.log(`harness transport lost: ${reason}`);
+        this.harness = null;
+        this.scheduleHarnessRestart(reason);
+      },
     });
     await client.connect();
     this.harness = client;
@@ -201,6 +232,37 @@ export class HostCore {
     this.server?.closeDevice(deviceId);
   }
 
+  /** Restart the single harness child with bounded backoff after an unexpected
+   *  exit (FR-003). A deliberate stop never respawns. */
+  private scheduleHarnessRestart(reason: string): void {
+    if (this.stopping) return;
+    if (this.harnessRestartAttempts >= HARNESS_RESTART_ATTEMPTS) {
+      this.log(`harness restart budget exhausted after ${HARNESS_RESTART_ATTEMPTS} attempts (${reason})`);
+      return;
+    }
+    const delay = backoffDelay(this.harnessRestartAttempts);
+    this.harnessRestartAttempts += 1;
+    if (this.harnessRestartTimer) clearTimeout(this.harnessRestartTimer);
+    this.harnessRestartTimer = setTimeout(() => {
+      this.harnessRestartTimer = null;
+      void this.restartHarnessChild(reason);
+    }, delay);
+    this.harnessRestartTimer.unref?.();
+  }
+
+  private async restartHarnessChild(reason: string): Promise<void> {
+    if (this.stopping) return;
+    try {
+      const client = await this.ensureHarness();
+      this.bridge?.attachHarness(client);
+      this.harnessRestartAttempts = 0;
+      this.log(`harness restarted after ${reason}`);
+    } catch (err) {
+      this.log(`harness restart failed: ${String(err)}`);
+      this.scheduleHarnessRestart(reason);
+    }
+  }
+
   /** Host-side undo surface for harness writes (FR-021/FR-072). */
   lastSnapshot(): import("../vault/acp-fs.ts").WriteSnapshot | null {
     return this.environment?.lastSnapshot() ?? null;
@@ -211,6 +273,11 @@ export class HostCore {
   }
 
   async stop(): Promise<void> {
+    this.stopping = true;
+    if (this.harnessRestartTimer) {
+      clearTimeout(this.harnessRestartTimer);
+      this.harnessRestartTimer = null;
+    }
     if (this.registry) {
       for (const row of this.registry.all()) {
         if (row.state === "live") this.registry.mark(row.sessionId, "detached");

@@ -194,3 +194,7 @@ export function toolContentView(raw: ToolCallContent | undefined): ToolContentVi
   }
   return { type: "unknown", raw };
 }
+
+/** `_meta` key marking a prompt text block as attached context (note,
+ *  selection, vault rules) rather than what the user typed. */
+export const CONTEXT_META_KEY = "obsidian-chat/context";

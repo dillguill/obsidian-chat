@@ -31,6 +31,11 @@ export function recordStatusLabel(degraded: boolean): string | null {
   return degraded ? "Record repaired" : null;
 }
 
+/** Warning tag for unusually large records (50 MiB), or null. */
+export function recordSizeLabel(large: boolean): string | null {
+  return large ? "Large record (>50 MB)" : null;
+}
+
 /** Join only the labels that should actually be shown. */
 export function conversationMeta(parts: Array<string | null | undefined>): string {
   return parts.filter((part): part is string => typeof part === "string" && part.length > 0).join(" · ");

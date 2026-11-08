@@ -12,18 +12,7 @@ import { splitCommand } from "./identity.ts";
 
 export { splitCommand };
 
-/** Loads a Node built-in lazily: dynamic import works under `node --test` and
- *  in Electron's Node integration; a global `require` is the fallback for
- *  environments whose ESM loader refuses built-in specifiers. */
-async function loadNodeModule<T>(id: string): Promise<T> {
-  try {
-    return (await import(/* @vite-ignore */ id)) as T;
-  } catch {
-    const req = (globalThis as { require?: (moduleId: string) => unknown }).require;
-    if (typeof req === "function") return req(id) as T;
-    throw new Error(`local attach requires the desktop app (could not load ${id})`);
-  }
-}
+import { loadNodeModule } from "./node.ts";
 
 export function respawnDelay(attempt: number): number {
   return backoffDelay(attempt);

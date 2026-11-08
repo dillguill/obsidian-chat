@@ -86,7 +86,8 @@ interface ParkedPermission {
   timer?: ReturnType<typeof setTimeout>;
 }
 
-const DEFAULT_APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+import { DEFAULT_APPROVAL_TIMEOUT_MS } from "../session/limits.ts";
+export { DEFAULT_APPROVAL_TIMEOUT_MS };
 
 /** Per-session live state (turns, declared controls). */
 interface SessionState {
@@ -119,6 +120,7 @@ export class AcpShellClient implements AcpChatClient {
   private permissionListeners = new Set<(request: PendingPermission) => void>();
   private stateListeners = new Set<() => void>();
   private rawUpdateListeners = new Set<(params: SessionNotification, meta: RawUpdateMeta) => void>();
+  private loggedUnmapped = new Set<string>();
   private rawPermissionListeners = new Set<(request: RequestPermissionRequest, requestId: string) => boolean>();
   private parked = new Map<string, ParkedPermission>();
   private permissionCounter = 0;
@@ -522,6 +524,12 @@ export class AcpShellClient implements AcpChatClient {
     }
     const mapped: RenderUpdate | null = mapSessionUpdate(update);
     if (!mapped) return;
+    if (mapped.type === "raw" && !this.loggedUnmapped.has(kind)) {
+      // One diagnostic line per unusual kind; helps distinguish "harness sends
+      // newer update kinds" from a rendering bug without flooding the console.
+      this.loggedUnmapped.add(kind);
+      this.log(`unmapped ACP update kind (rendered raw): ${kind}`);
+    }
     if (kind === "session_info_update") {
       this.emitState();
     }

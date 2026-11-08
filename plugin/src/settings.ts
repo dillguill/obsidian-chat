@@ -80,6 +80,15 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
           });
         });
       new Setting(containerEl)
+        .setName("Allow wider bind")
+        .setDesc("Required before binding beyond loopback. Only do this on a trusted VPN/private network.")
+        .addToggle((toggle) =>
+          toggle.setValue(this.plugin.settings.allowWiderBind).onChange(async (value) => {
+            this.plugin.settings.allowWiderBind = value;
+            await this.plugin.saveSettings();
+          }),
+        );
+      new Setting(containerEl)
         .setName("Restart harness")
         .setDesc("Reload the harness so it picks up new credentials.")
         .addButton((button) => button.setButtonText("Restart").onClick(() => void this.plugin.restartHarness()));
@@ -160,11 +169,11 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
     containerEl.createEl("h4", { text: "Transcript" });
     new Setting(containerEl)
       .setName("Activity density")
-      .setDesc("Chronological is the faithful default; grouped collapses runs of agent work.")
+      .setDesc("Chat keeps the conversation readable and collapses each turn's agent activity; Expanded shows every ACP update in arrival order.")
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("chronological", "Chronological")
-          .addOption("grouped", "Grouped")
+          .addOption("grouped", "Chat (activity collapsed)")
+          .addOption("chronological", "Expanded protocol stream")
           .setValue(this.plugin.settings.activityDensity)
           .onChange(async (value) => {
             this.plugin.settings.activityDensity = value === "grouped" ? "grouped" : "chronological";

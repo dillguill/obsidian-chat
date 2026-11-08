@@ -1,9 +1,9 @@
 #!/bin/bash
 # Dev-install the built plugin into the Obsidian vault.
-# Usage: bash plugin/install.sh
+# Usage: OBSIDIAN_VAULT=/path/to/vault bash plugin/install.sh
 set -euo pipefail
 
-VAULT="${OBSIDIAN_VAULT:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Dillon}"
+VAULT="${OBSIDIAN_VAULT:?set OBSIDIAN_VAULT to your vault path}"
 SRC="$(cd "$(dirname "$0")" && pwd)"
 DEST="$VAULT/.obsidian/plugins/obsidian-chat"
 
