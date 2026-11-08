@@ -10,6 +10,7 @@
 | 4 | Conversations sync between devices | L | host + plugin | 2 (titles shown in the shared list) |
 | 5 | Skills folder | M | plugin + host | 4 helps (same list on every device), not required |
 | 6 | Web search/fetch toggle | M | dsh profile + plugin | dsh exposing a per-session switch |
+| 7 | Voice input (stt.example) | M | plugin settings + composer | your whisper.cpp server |
 
 Why this order: 1–3 are small, plugin-only and hit on every phone use. 4 is
 the largest change and the one that makes the phone a real second client;
@@ -59,19 +60,21 @@ name. Rename from the header title or the History list (extension method
 
 ## 4. Conversations sync between devices
 
-Conversations are stored by the host on the machine that runs it
-(`.chat/sessions/`) and are owned by the device that started them: the phone
-only lists its own conversations, and the Mac's local chats don't appear on
-the phone (or vice versa).
+Done: one shared list. Every paired device lists and opens every
+conversation (History shows "from <device>" and "open on <device>"); the
+host stays the single source. Opening a conversation that is live on
+another device hands control over; the previous device shows "moved to …"
+with a Take it back button. A newly opened view starts a new chat instead of
+auto-opening the newest shared one.
 
-- [ ] Decide the model: one shared conversation list across devices (the
+- [x] Decide the model: one shared conversation list across devices (the
       host is the single source of truth) vs. per-device lists.
-- [ ] Let any paired device list and open conversations started on another
+- [x] Let any paired device list and open conversations started on another
       device (relax the per-device ownership check in `host-bridge.ts`
       `loadSession`, with a clear policy).
-- [ ] Desktop local chats and phone chats show in the same History list,
+- [x] Desktop local chats and phone chats show in the same History list,
       with the originating device shown.
-- [ ] Handle two devices opening the same live conversation (read-only
+- [x] Handle two devices opening the same live conversation (read-only
       follower, or hand-off).
 
 ## 5. Skills
@@ -100,3 +103,19 @@ shell, no web tools."). The toggle needs a dsh-side switch first.
       goes through the permission card.
 - [ ] The toggle state is visible in the composer and stored per
       conversation.
+
+## 7. Voice input (stt.example)
+
+- [ ] Settings: a speech-to-text server URL (your whisper.cpp instance,
+      e.g. `https://stt.example`), with a connection test. Off when
+      empty.
+- [ ] Composer: a microphone button to the left of send (desktop and
+      mobile), shown only when a server is set. Tap to record, tap again to
+      stop; the transcript is inserted into the input for editing, not sent
+      automatically.
+- [ ] Recording state is obvious (pulsing mic, elapsed time); cancel with Esc
+      or a second tap target.
+- [ ] Audio goes only to the configured server; nothing is stored in the
+      vault or the session record.
+- [ ] Check mic permission and the `.internal` certificate on iOS (Caddy's
+      internal CA must be trusted on the phone).

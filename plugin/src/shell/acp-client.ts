@@ -42,6 +42,7 @@ import type {
   PendingPermission,
   RenderUpdate,
 } from "../acp/types.ts";
+import { unwrapHostNotice } from "../acp/types.ts";
 import { mapSessionUpdate } from "../acp/session-update.ts";
 import { cancelledPermission, decidePermission, toPendingPermission } from "../acp/permissions.ts";
 import { flattenSelectOptions } from "../acp/controls.ts";
@@ -478,7 +479,8 @@ export class AcpShellClient implements AcpChatClient {
 
   /** Handles `session/update`; control-only kinds update state, everything else
    *  becomes a render update (including unknown kinds, raw). */
-  private handleUpdate(params: SessionNotification): void {
+  private handleUpdate(incoming: SessionNotification): void {
+    const params = { ...incoming, update: unwrapHostNotice(incoming.update as SessionUpdate) } as SessionNotification;
     const update = params.update as SessionUpdate;
     const kind = (update as { sessionUpdate?: string }).sessionUpdate ?? "unknown";
     const state = this.sessions.get(params.sessionId);

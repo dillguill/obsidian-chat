@@ -76,17 +76,17 @@ test("a stored conversation that is not live replays through session/load", asyn
   );
 });
 
-test("a stored conversation is only loadable by the device that owns it", async () => {
+test("a stored conversation started on the desktop opens from a paired device too", async () => {
   const { bridge, store } = bridgeFor();
   const report = await importLegacySessions({
     store,
     notes: [{ path: "chat/old.md", text: legacyNote(), mtime: 1_700_000_000_000 }],
   });
   const sessionId = report.importedSessions[0].sessionId;
-  await assert.rejects(
-    bridge.loadSession("phone", { sessionId, cwd: "/vault" } as never),
-    /not owned by this device/,
-  );
+  const listed = await bridge.listSessions("phone");
+  assert.equal(listed.sessions.length, 1);
+  assert.equal((listed.sessions[0]._meta as Record<string, unknown>)["obsidian-chat/device"], "Desktop");
+  await bridge.loadSession("phone", { sessionId, cwd: "/vault" } as never);
 });
 
 test("session/list reports stored conversations even when their harness is gone", async () => {

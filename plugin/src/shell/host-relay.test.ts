@@ -6,6 +6,7 @@
  *  - HostBridge (the real routing implementation) forwards a harness permission
  *    request to the owning device only and returns its exact optionId.
  */
+import { unwrapHostNotice } from "../acp/types.ts";
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { methods, type AgentContext, type RequestPermissionRequest, type RequestPermissionResponse } from "@agentclientprotocol/sdk";
@@ -236,19 +237,40 @@ test("a harness permission request goes only to the owning device and returns it
   assert.deepEqual((response as { outcome?: unknown }).outcome, { outcome: "selected", optionId: "allow_always" });
 });
 
-test("a device cannot prompt, load, or list another device's session", async () => {
-  const { bridge, harness } = bridgeFixture();
+test("conversations are shared across devices; opening a live one hands control over", async () => {
+  const { bridge, owner } = bridgeFixture();
   const created = await bridge.newSession("phoneA", { cwd: "/", mcpServers: [] } as never);
-  void harness;
+  await bridge.prompt("phoneA", { sessionId: created.sessionId, prompt: [{ type: "text", text: "hello" }] } as never);
+
+  // Another device sees it, labelled with where it started and where it is open.
+  const listed = (await bridge.listSessions("phoneB")).sessions.find((s) => s.sessionId === created.sessionId);
+  assert.ok(listed, "phoneB lists phoneA's conversation");
+  const meta = listed._meta as Record<string, unknown>;
+  assert.equal(meta["obsidian-chat/device"], "phoneA");
+  assert.equal(meta["obsidian-chat/open-on"], "phoneA");
+
+  // Sending without opening it first is refused with a hand-off hint.
   await assert.rejects(
     bridge.prompt("phoneB", { sessionId: created.sessionId, prompt: [{ type: "text", text: "x" }] } as never),
-    /not owned by this device/,
+    /open on phoneA; reopen it here/,
   );
+
+  // Opening it moves control; the previous device is told and is refused next.
+  await bridge.loadSession("phoneB", { sessionId: created.sessionId, cwd: "/vault" } as never);
+  // Sent inside a schema-valid session_info_update (the SDK drops unknown kinds).
+  const handoff = owner.notifications
+    .map((n) => unwrapHostNotice((n.params as { update: { sessionUpdate?: string } }).update))
+    .find((u) => u?.sessionUpdate === "obsidian_chat_handoff");
+  assert.deepEqual(handoff, { sessionUpdate: "obsidian_chat_handoff", to: "phoneB" });
+  await bridge.prompt("phoneB", { sessionId: created.sessionId, prompt: [{ type: "text", text: "from B" }] } as never);
   await assert.rejects(
-    bridge.loadSession("phoneB", { sessionId: created.sessionId, cwd: "/vault" } as never),
-    /not owned by this device/,
+    bridge.prompt("phoneA", { sessionId: created.sessionId, prompt: [{ type: "text", text: "x" }] } as never),
+    /open on phoneB/,
   );
-  assert.deepEqual((await bridge.listSessions("phoneB")).sessions, []);
+
+  // And it can be taken back.
+  await bridge.loadSession("phoneA", { sessionId: created.sessionId, cwd: "/vault" } as never);
+  await bridge.prompt("phoneA", { sessionId: created.sessionId, prompt: [{ type: "text", text: "back" }] } as never);
 });
 
 test("disconnecting the owning device cancels its parked approvals", async () => {
@@ -418,12 +440,12 @@ test("a failed record write is surfaced to the owning device, not silently dropp
     { late: true },
   );
   await waitFor(() => context.notifications.some((entry) => {
-    const update = entry.params as { update?: { sessionUpdate?: string } };
-    return update.update?.sessionUpdate === "obsidian_chat_store_error";
+    const update = entry.params as { update: { sessionUpdate?: string } };
+    return unwrapHostNotice(update.update).sessionUpdate === "obsidian_chat_store_error";
   }));
   const failure = context.notifications.find((entry) => {
-    const update = entry.params as { update?: { sessionUpdate?: string } };
-    return update.update?.sessionUpdate === "obsidian_chat_store_error";
+    const update = entry.params as { update: { sessionUpdate?: string } };
+    return unwrapHostNotice(update.update).sessionUpdate === "obsidian_chat_store_error";
   });
   assert.ok(failure, "the write failure is surfaced to the owning device");
   const read = await store.read(created.sessionId);

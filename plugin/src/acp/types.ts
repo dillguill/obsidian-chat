@@ -198,3 +198,17 @@ export function toolContentView(raw: ToolCallContent | undefined): ToolContentVi
 /** `_meta` key marking a prompt text block as attached context (note,
  *  selection, vault rules) rather than what the user typed. */
 export const CONTEXT_META_KEY = "obsidian-chat/context";
+
+/** Envelope for host notices inside a valid `session_info_update`. */
+export const HOST_NOTICE_KEY = "obsidian-chat/notice";
+export const HOST_NOTICE_PAYLOAD = "obsidian-chat/payload";
+
+/** Unwraps a host notice into `{ sessionUpdate: kind, ...payload }`; returns
+ *  the update unchanged when it is not one. */
+export function unwrapHostNotice<T extends { sessionUpdate?: string }>(update: T): T {
+  const meta = (update as { _meta?: Record<string, unknown> | null })._meta;
+  const kind = meta?.[HOST_NOTICE_KEY];
+  if (update.sessionUpdate !== "session_info_update" || typeof kind !== "string") return update;
+  const payload = meta?.[HOST_NOTICE_PAYLOAD];
+  return { ...(payload && typeof payload === "object" ? payload : {}), sessionUpdate: kind } as unknown as T;
+}

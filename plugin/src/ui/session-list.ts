@@ -40,6 +40,8 @@ export class SessionListModal extends Modal {
         .setDesc(
           conversationMeta([
             formatWhen(session.updatedAt),
+            session.device ? `from ${session.device}` : null,
+            session.openOn ? `open on ${session.openOn}` : null,
             // A healthy, resumable conversation is untagged; only exceptions get
             // plain-language labels (T125).
             conversationStatusLabel(session.resume),
@@ -64,7 +66,7 @@ export class SessionListModal extends Modal {
       );
       setting.addButton((button) =>
         button
-          .setButtonText("Open")
+          .setButtonText(session.openOn ? "Take over" : "Open")
           .onClick(() => {
             this.close();
             this.onPick(session.sessionId);

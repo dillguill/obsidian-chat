@@ -26,6 +26,8 @@ export interface ConnectionDebugInfo {
   storePath?: string | null;
   /** Stored conversations visible to this device. */
   sessionCount?: number;
+  /** Context-window usage of the current conversation, e.g. "25k / 1M". */
+  context?: string | null;
   /** Session-wide raw ACP notifications (local-only rendering; never persisted here). */
   rawEntries?: RawRecordEntry[];
 }
@@ -61,6 +63,7 @@ export class ConnectionInfoModal extends Modal {
     const { contentEl } = this;
     contentEl.createEl("h3", { text: "Connection info" });
     const rows: [string, string][] = [];
+    if (this.info?.context) rows.push(["Context used", this.info.context]);
     if (this.info?.mode) {
       rows.push(
         ["Mode", this.info.mode],

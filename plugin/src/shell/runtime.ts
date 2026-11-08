@@ -63,6 +63,10 @@ export interface SessionListEntry {
   degraded: boolean;
   bytes: number;
   large: boolean;
+  /** Device the conversation was started on. */
+  device?: string;
+  /** Device it is currently open on, when that is another device. */
+  openOn?: string;
 }
 
 export class ShellRuntime {
@@ -392,6 +396,8 @@ export class ShellRuntime {
         degraded: meta["obsidian-chat/degraded"] === true,
         bytes: typeof meta["obsidian-chat/size"] === "number" ? (meta["obsidian-chat/size"] as number) : 0,
         large: meta["obsidian-chat/large"] === true,
+        device: typeof meta["obsidian-chat/device"] === "string" ? (meta["obsidian-chat/device"] as string) : undefined,
+        openOn: typeof meta["obsidian-chat/open-on"] === "string" ? (meta["obsidian-chat/open-on"] as string) : undefined,
       };
     });
   }

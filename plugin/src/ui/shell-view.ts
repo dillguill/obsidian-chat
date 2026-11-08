@@ -112,6 +112,10 @@ export class ShellChatView extends ItemView {
   private contextChips: ContextChip[] = [];
   private pendingImages: PendingImage[] = [];
   private continuityBar: HTMLElement | null = null;
+  private handoffBar: HTMLElement | null = null;
+  /** Latest context usage ("25k / 1M"); shown in the header, and in
+   *  Connection info (the status dot) on mobile where the header is narrow. */
+  private usageText: string | null = null;
   private rulesSentFor: string | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianChatPlugin) {
@@ -371,7 +375,9 @@ export class ShellChatView extends ItemView {
 
   private setUsage(usage: { used: number; size: number; cost?: { amount: number; currency: string } }): void {
     const cost = usage.cost ? ` · ${usage.cost.amount} ${usage.cost.currency}` : "";
-    this.usageEl.setText(`${formatTokens(usage.used)} / ${formatTokens(usage.size)}${cost}`);
+    this.usageText = `${formatTokens(usage.used)} / ${formatTokens(usage.size)}${cost}`;
+    this.usageEl.setText(this.usageText);
+    this.statusEl.setAttr("aria-label", `Connection info · context ${this.usageText}`);
     this.usageEl.setAttr("aria-label", `Context: ${usage.used.toLocaleString()} of ${usage.size.toLocaleString()} tokens`);
     this.usageEl.removeClass("oc-hidden");
   }
@@ -616,6 +622,7 @@ export class ShellChatView extends ItemView {
     this.turn = null;
     this.setTitle("New chat", false);
     this.usageEl.addClass("oc-hidden");
+    this.usageText = null;
   }
 
   private setBusy(busy: boolean): void {
@@ -842,6 +849,14 @@ export class ShellChatView extends ItemView {
           this.showError(String((update.payload as { message?: unknown })?.message ?? "error"));
           return;
         }
+        if (update.sessionUpdate === "obsidian_chat_store_error") {
+          this.showError(String((update.payload as { message?: unknown })?.message ?? "session record write failed"));
+          return;
+        }
+        if (update.sessionUpdate === "obsidian_chat_handoff") {
+          this.showHandoff(String((update.payload as { to?: unknown })?.to ?? "another device"));
+          return;
+        }
         if (update.sessionUpdate.startsWith("obsidian_chat_")) return;
         const turn = this.ensureTurn();
         const group = this.activityGroup(turn);
@@ -994,20 +1009,13 @@ export class ShellChatView extends ItemView {
       return;
     }
     if (runtime.mode !== "remote") return;
+    // Like the desktop: a newly opened view starts a new chat, or keeps the
+    // conversation this device already has open. It never auto-opens the
+    // newest shared conversation, which could take it from another device.
     try {
-      const sessions = await runtime.listSessions();
-      const continuity = sessions.length ? await runtime.loadSession(sessions[0].sessionId) : null;
-      if (this.turn) this.endTurn(undefined);
-      // An empty conversation that the host cannot reattach has nothing worth
-      // keeping: start a fresh harness session (which also brings the
-      // harness's model/mode controls) instead of a detached, control-less one.
-      const empty = !this.threadEl.querySelector(".oc-user, .oc-agent");
-      if (!sessions.length || (continuity && !continuity.attached && empty)) {
-        await runtime.newSession();
-      } else {
-        this.setTitle(sessions[0].title, false);
-        this.renderContinuity(continuity);
-      }
+      const current = runtime.clientDebugInfo?.sessionId;
+      if (current) await this.openConversation(current);
+      else await runtime.newSession();
       this.renderControls();
     } catch (err) {
       this.showError(`Could not open host history: ${String((err as Error).message ?? err)}`);
@@ -1073,6 +1081,60 @@ export class ShellChatView extends ItemView {
     }).open();
   }
 
+  /** Opens a stored conversation: clears the view, loads it through
+   *  session/load (which replays it, and takes control if it is live on
+   *  another device), then shows the continuity choice when needed. */
+  private async openConversation(sessionId: string, title?: string): Promise<void> {
+    const runtime = this.plugin.shellRuntime();
+    this.clearTranscript();
+    this.clearHandoffBar();
+    this.setBusy(false);
+    try {
+      const continuity = await runtime.loadSession(sessionId);
+      // Replay carries no turn markers: close the last replayed turn.
+      if (this.turn) this.endTurn(undefined);
+      if (title === undefined) title = (await runtime.listSessions()).find((s) => s.sessionId === sessionId)?.title;
+      this.setTitle(title || "New chat", false);
+      this.renderControls();
+      const history = await runtime.history();
+      if (history && !this.threadEl.querySelector(".oc-user, .oc-agent")) {
+        for (const entry of history.entries) this.collectHistoryRaw(entry);
+        const visible = history.entries.slice(-HISTORY_RENDER_LIMIT);
+        for (const entry of visible) this.renderHistoryEntry(entry);
+        if (this.turn) this.endTurn(undefined);
+        this.scroll(true);
+      }
+      this.renderContinuity(continuity);
+    } catch (err) {
+      this.showError(`Could not open that conversation: ${String((err as Error).message ?? err)}`);
+    }
+    this.updateStatus();
+  }
+
+  /** Another device opened this conversation and now controls it. */
+  private showHandoff(to: string): void {
+    this.clearHandoffBar();
+    if (this.turn) this.endTurn(undefined);
+    this.setBusy(false);
+    this.hideEmpty();
+    const bar = this.threadEl.createDiv({ cls: "oc-callout oc-handoff" });
+    this.handoffBar = bar;
+    bar.createDiv({ cls: "oc-callout-head", text: `This conversation moved to ${to}` });
+    bar.createDiv({ cls: "oc-callout-hint", text: "Replies now stream there. Take it back to continue here." });
+    const actions = bar.createDiv({ cls: "oc-continuity-actions" });
+    const back = actions.createEl("button", { cls: "mod-cta", text: "Take it back", attr: { type: "button" } });
+    back.addEventListener("click", () => {
+      const id = this.plugin.shellRuntime().clientDebugInfo?.sessionId;
+      if (id) void this.openConversation(id, this.titleEl.getText());
+    });
+    this.scroll(true);
+  }
+
+  private clearHandoffBar(): void {
+    this.handoffBar?.remove();
+    this.handoffBar = null;
+  }
+
   private async openHistory(): Promise<void> {
     const runtime = this.plugin.shellRuntime();
     try {
@@ -1088,30 +1150,8 @@ export class ShellChatView extends ItemView {
         return saved;
       };
       new SessionListModal(this.plugin.app, sessions, onRename, (sessionId) => {
-        void (async () => {
-          this.clearTranscript();
-          this.setBusy(false);
-          const chosen = sessions.find((session) => session.sessionId === sessionId) as { title?: string | null } | undefined;
-          try {
-            const continuity = await runtime.loadSession(sessionId);
-            // Replay carries no turn markers: close the last replayed turn.
-            if (this.turn) this.endTurn(undefined);
-            this.setTitle(chosen?.title || "New chat", false);
-            this.renderControls();
-            const history = await runtime.history();
-            if (history && !this.threadEl.querySelector(".oc-user, .oc-agent")) {
-              for (const entry of history.entries) this.collectHistoryRaw(entry);
-              const visible = history.entries.slice(-HISTORY_RENDER_LIMIT);
-              for (const entry of visible) this.renderHistoryEntry(entry);
-              if (this.turn) this.endTurn(undefined);
-              this.scroll(true);
-            }
-            this.renderContinuity(continuity);
-          } catch (err) {
-            this.showError(`Could not open that conversation: ${String((err as Error).message ?? err)}`);
-          }
-          this.updateStatus();
-        })();
+        const chosen = sessions.find((session) => session.sessionId === sessionId);
+        void this.openConversation(sessionId, chosen?.title);
       }).open();
     } catch (err) {
       this.showError(`Conversation list unavailable: ${String((err as Error).message ?? err)}`);
@@ -1187,6 +1227,7 @@ export class ShellChatView extends ItemView {
       listener: host ? host.wsUrl : null,
       storePath: runtime.mode === "local" ? this.plugin.settings.sessionStoreFolder : null,
       sessionCount: undefined as number | undefined,
+      context: this.usageText,
       rawEntries: [...this.allRaw],
     };
     void runtime

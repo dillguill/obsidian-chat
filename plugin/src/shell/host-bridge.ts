@@ -8,6 +8,7 @@
  *  continuity ladder (resume → load → explicit digest/fresh/full replay).
  */
 import { cleanTitle } from "../session/title.ts";
+import { HOST_NOTICE_KEY, HOST_NOTICE_PAYLOAD } from "../acp/types.ts";
 import {
   RequestError,
   methods,
@@ -65,6 +66,8 @@ export interface HostBridgeOptions {
 
 interface HostSession {
   hostId: string;
+  /** The device currently in control (live stream, send, permissions). Any
+   *  paired device may take a conversation over by opening it (hand-off). */
   deviceId: string;
   harnessId: string;
   cwd: string;
@@ -72,6 +75,27 @@ interface HostSession {
 }
 
 const POLICY_ERROR = -32003;
+
+/** Display name for a device: the pairing name, or "Desktop" for the host's
+ *  own window. */
+export function deviceLabel(deviceId: string): string {
+  return deviceId === "__local__" ? "Desktop" : deviceId;
+}
+
+/** Host-originated notices travel inside a schema-valid ACP update (the SDK
+ *  drops unknown `sessionUpdate` kinds): a `session_info_update` with no
+ *  title, carrying the notice kind and payload in `_meta`. The client unwraps
+ *  it back into `{ sessionUpdate: kind, ...payload }`. */
+function hostNotice(kind: string, payload: Record<string, unknown>): SessionUpdate {
+  return {
+    sessionUpdate: "session_info_update",
+    _meta: { [HOST_NOTICE_KEY]: kind, [HOST_NOTICE_PAYLOAD]: payload },
+  } as unknown as SessionUpdate;
+}
+
+function movedMessage(deviceId: string): string {
+  return `this conversation is now open on ${deviceLabel(deviceId)}; reopen it here to take it back`;
+}
 /** Bounded live replay window; a device further behind gets a full replay from
  *  the record instead of an unbounded stream (contracts/host-transport.md §5). */
 import { REPLAY_MAX_ENTRIES, SESSION_SIZE_WARN_BYTES } from "../session/limits.ts";
@@ -185,14 +209,10 @@ export class HostBridge implements RelayBridge {
 
   async loadSession(deviceId: string, request: LoadSessionRequest): Promise<LoadSessionResponse> {
     const live = this.sessions.get(request.sessionId);
-    let read;
-    if (live) {
-      if (live.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, "policy: session is not owned by this device");
-      read = await this.opts.store().read(live.hostId);
-    } else {
-      read = await this.opts.store().read(request.sessionId);
-      if (read.header.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, "policy: session is not owned by this device");
-    }
+    // Conversations are shared across paired devices; opening one that is
+    // live on another device hands control to this one.
+    if (live && live.deviceId !== deviceId) await this.handOff(live, deviceId);
+    const read = await this.opts.store().read(live ? live.hostId : request.sessionId);
     const header = read.header;
     let decision = this.decideFor(header, read.entries);
     const since = this.sinceSeq(request);
@@ -202,7 +222,7 @@ export class HostBridge implements RelayBridge {
 
     if (!live && isResumableState(decision.state)) {
       try {
-        const restored = await this.reattach(header, decision.action === "resume" ? "resume" : "load");
+        const restored = await this.reattach(header, decision.action === "resume" ? "resume" : "load", deviceId);
         attached = true;
         modes = restored.modes ?? null;
         configOptions = restored.configOptions ?? null;
@@ -240,10 +260,7 @@ export class HostBridge implements RelayBridge {
       if (pending.length > REPLAY_MAX_ENTRIES) {
         await context.notify(methods.client.session.update, {
           sessionId: session.hostId,
-          update: {
-            sessionUpdate: "obsidian_chat_replay_truncated",
-            skipped: pending.length - REPLAY_MAX_ENTRIES,
-          } as unknown as SessionUpdate,
+          update: hostNotice("obsidian_chat_replay_truncated", { skipped: pending.length - REPLAY_MAX_ENTRIES }),
           _meta: { "obsidian-chat/replay": true },
         });
       }
@@ -268,15 +285,15 @@ export class HostBridge implements RelayBridge {
     const sessions = await this.opts.store().list();
     const info: SessionInfo[] = sessions
       // Opened-but-unused chats (no prompt) are not worth listing.
-      .filter((summary) => summary.header.deviceId === deviceId && !summary.empty)
-      .map((summary) => this.sessionInfo(summary));
+      .filter((summary) => !summary.empty)
+      .map((summary) => this.sessionInfo(summary, deviceId));
     return { sessions: info };
   }
 
   async prompt(deviceId: string, request: PromptRequest): Promise<PromptResponse> {
     const live = this.sessions.get(request.sessionId);
     if (live) {
-      if (live.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, "policy: session is not owned by this device");
+      if (live.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, movedMessage(live.deviceId));
       return this.promptLive(live, request);
     }
     return this.promptWithContinuity(deviceId, request);
@@ -293,7 +310,6 @@ export class HostBridge implements RelayBridge {
    *  harness session on the SAME conversation record. */
   private async promptWithContinuity(deviceId: string, request: PromptRequest): Promise<PromptResponse> {
     const read = await this.opts.store().read(request.sessionId);
-    if (read.header.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, "policy: session is not owned by this device");
     const header = read.header;
     const decision = this.decideFor(header, read.entries);
     const choice = this.choiceOf(request);
@@ -398,9 +414,7 @@ export class HostBridge implements RelayBridge {
     const title = cleanTitle(String(request?.title ?? ""));
     if (!title) throw new RequestError(-32602, "title must not be empty");
     const store = this.opts.store();
-    const live = this.sessions.get(request.sessionId);
-    const owner = live ? live.deviceId : (await store.read(request.sessionId)).header.deviceId;
-    if (owner !== deviceId) throw new RequestError(POLICY_ERROR, "policy: session is not owned by this device");
+    await store.read(request.sessionId); // unknown ids fail here
     await store.setTitle(request.sessionId, title, "user");
     const context = this.devices.get(deviceId);
     await context
@@ -444,8 +458,26 @@ export class HostBridge implements RelayBridge {
 
   private sessionFor(deviceId: string, hostId: string): HostSession {
     const session = this.sessions.get(hostId);
-    if (!session || session.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, "policy: session is not owned by this device");
+    if (!session) throw new RequestError(POLICY_ERROR, "policy: session is not open on this host");
+    if (session.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, movedMessage(session.deviceId));
     return session;
+  }
+
+  /** Moves control of a live conversation to `deviceId` and tells the
+   *  previous device, which keeps its transcript and can take it back. */
+  private async handOff(session: HostSession, deviceId: string): Promise<void> {
+    const previous = session.deviceId;
+    session.deviceId = deviceId;
+    this.registry?.upsert(this.rowFor(session.hostId, session, "live"));
+    void this.registry?.flush();
+    this.log(`session ${session.hostId} handed off: ${previous} -> ${deviceId}`);
+    await this.devices
+      .get(previous)
+      ?.notify(methods.client.session.update, {
+        sessionId: session.hostId,
+        update: hostNotice("obsidian_chat_handoff", { to: deviceLabel(deviceId) }),
+      })
+      .catch(() => undefined);
   }
 
   private decideFor(header: SessionHeader, entries: RecordEntry[]): ResumeDecision {
@@ -487,7 +519,7 @@ export class HostBridge implements RelayBridge {
     };
   }
 
-  private async reattach(header: SessionHeader, method: "resume" | "load") {
+  private async reattach(header: SessionHeader, method: "resume" | "load", deviceId = header.deviceId) {
     const harness = await this.opts.ensureHarness();
     const harnessId = header.harnessSessionId;
     if (!harnessId) throw new Error("session has no harness session id");
@@ -502,7 +534,7 @@ export class HostBridge implements RelayBridge {
       });
       const session: HostSession = {
         hostId: header.sessionId,
-        deviceId: header.deviceId,
+        deviceId,
         harnessId,
         cwd: header.harness.cwd || this.opts.vaultRoot(),
         turn: 0,
@@ -563,8 +595,10 @@ export class HostBridge implements RelayBridge {
     await this.record(hostId, { kind: "resume", ...entry });
   }
 
-  private sessionInfo(summary: SessionSummary): SessionInfo {
+  private sessionInfo(summary: SessionSummary, viewer?: string): SessionInfo {
     const header = summary.header;
+    const live = this.sessions.get(header.sessionId);
+    const openElsewhere = live && viewer !== undefined && live.deviceId !== viewer && this.devices.has(live.deviceId);
     const decision = this.decideFor(header, header.lastSeq > 0 ? [{ kind: "prompt" } as RecordEntry] : []);
     return {
       sessionId: header.sessionId,
@@ -577,6 +611,8 @@ export class HostBridge implements RelayBridge {
         "obsidian-chat/degraded": summary.degraded,
         "obsidian-chat/size": summary.bytes,
         "obsidian-chat/large": summary.bytes >= SESSION_SIZE_WARN_BYTES,
+        "obsidian-chat/device": deviceLabel(header.deviceId),
+        ...(openElsewhere ? { "obsidian-chat/open-on": deviceLabel(live.deviceId) } : {}),
       },
     };
   }
@@ -621,7 +657,7 @@ export class HostBridge implements RelayBridge {
     await context
       .notify(methods.client.session.update, {
         sessionId: session.hostId,
-        update: { sessionUpdate: "obsidian_chat_store_error", message } as unknown as SessionUpdate,
+        update: hostNotice("obsidian_chat_store_error", { message }),
       })
       .catch(() => undefined);
   }
@@ -714,7 +750,7 @@ export class HostBridge implements RelayBridge {
     if (entry.kind === "resume") {
       await context.notify(methods.client.session.update, {
         sessionId: session.hostId,
-        update: { sessionUpdate: "obsidian_chat_continuity", ...entry } as unknown as SessionUpdate,
+        update: hostNotice("obsidian_chat_continuity", { ...entry }),
         _meta: meta,
       });
       return;

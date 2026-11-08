@@ -526,7 +526,8 @@
 .oc-chat-mobile .oc-status-dot { width: 9px; height: 9px; }
 /* Mobile: the coloured dot alone (tap retries / opens info); text would crowd the title. */
 .oc-chat-mobile .oc-chat-status .oc-status-text { display: none; }
-.oc-chat-mobile .oc-chat-usage { margin-right: 2px; }
+/* Mobile: context usage lives in Connection info (tap the dot); the header keeps the title. */
+.oc-chat-mobile .oc-chat-usage { display: none !important; }
 
 .oc-chat-mobile .oc-chat-scroll { padding: 12px 12px 6px; }
 .oc-chat-mobile .oc-user-bubble { max-width: 92%; }
