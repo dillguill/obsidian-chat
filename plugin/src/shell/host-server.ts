@@ -17,9 +17,13 @@ export interface HostServerOptions {
   localToken: string;
   /** Handles `/mcp`; returns true when it wrote a response. */
   mcpHandler: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
-  /** Called for an authenticated `/acp` WebSocket; the relay attaches ACP.
-   *  Absent until the host relay is enabled (US3) — upgrades are then refused. */
+  /** Called for an authenticated `/acp` WebSocket; the relay attaches ACP. */
   onAcpConnection?: (socket: WebSocket, deviceId: string) => void;
+  /** Heartbeat interval (contract §5: ping every 15 s, close after two missed
+   *  pongs). Overridable for tests. */
+  heartbeatMs?: number;
+  /** Missed pongs tolerated before the socket is terminated (default 2). */
+  missedPongLimit?: number;
   log?: (message: string) => void;
 }
 
@@ -111,7 +115,8 @@ export class HostServer {
   private registry: DeviceRegistry;
   private server: Server | null = null;
   private wss: WebSocketServerType | null = null;
-  private sockets = new Set<WebSocket>();
+  private sockets = new Map<WebSocket, { deviceId: string; alive: boolean; missed: number }>();
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: HostServerOptions) {
     this.options = options;
@@ -137,17 +142,96 @@ export class HostServer {
     const server = createServer((req, res) => void this.routeHttp(req, res));
     const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024, perMessageDeflate: false });
     server.on("upgrade", (req, socket, head) => this.handleUpgrade(req, socket, head, wss));
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: Error) => reject(err);
-      server.once("error", onError);
-      server.listen(this.options.port, this.options.host ?? "127.0.0.1", () => {
-        server.off("error", onError);
-        resolve();
-      });
-    });
+    await this.bindListener(server, this.options.port, this.options.host ?? "127.0.0.1");
     this.server = server;
     this.wss = wss;
+    this.startHeartbeat();
     this.options.log?.(`host listener on ${this.options.host ?? "127.0.0.1"}:${this.options.port}`);
+  }
+
+  /** Binds the listener, retrying briefly if the legacy host is still
+   *  releasing the same port during the US1→US3 handoff. */
+  private async bindListener(server: Server, port: number, host: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const onError = (err: NodeJS.ErrnoException) => {
+            server.off("listening", onListening);
+            reject(err);
+          };
+          const onListening = () => {
+            server.off("error", onError);
+            resolve();
+          };
+          server.once("error", onError);
+          server.once("listening", onListening);
+          server.listen(port, host);
+        });
+        return;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "EADDRINUSE" || attempt >= 2) throw err;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+    }
+  }
+
+  private startHeartbeat(): void {
+    if (this.heartbeat) return;
+    const interval = this.options.heartbeatMs ?? 15_000;
+    const limit = this.options.missedPongLimit ?? 2;
+    this.heartbeat = setInterval(() => {
+      for (const [ws, state] of [...this.sockets]) {
+        if (!state.alive) {
+          state.missed += 1;
+          if (state.missed >= limit) {
+            this.options.log?.(`closing unresponsive socket for device ${state.deviceId}`);
+            this.sockets.delete(ws);
+            try {
+              ws.terminate();
+            } catch {
+              // already gone
+            }
+            continue;
+          }
+        }
+        state.alive = false;
+        try {
+          ws.ping();
+        } catch {
+          // The close handler will clean up.
+        }
+      }
+    }, interval);
+    this.heartbeat.unref?.();
+  }
+
+  /** Test/teardown hook: runs one heartbeat pass immediately. */
+  heartbeatOnce(): void {
+    for (const [ws, state] of [...this.sockets]) {
+      if (!state.alive) {
+        state.missed += 1;
+        if (state.missed >= (this.options.missedPongLimit ?? 2)) {
+          this.sockets.delete(ws);
+          try {
+            ws.terminate();
+          } catch {
+            // already gone
+          }
+          continue;
+        }
+      }
+      state.alive = false;
+      try {
+        ws.ping();
+      } catch {
+        // close handler cleans up
+      }
+    }
+  }
+
+  get localToken(): string {
+    return this.options.localToken;
   }
 
   private async routeHttp(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -196,23 +280,38 @@ export class HostServer {
         ws.close(1011, "host relay is not enabled");
         return;
       }
-      this.sockets.add(ws);
+      this.sockets.set(ws, { deviceId, alive: true, missed: 0 });
+      ws.on("pong", () => {
+        const state = this.sockets.get(ws);
+        if (state) {
+          state.alive = true;
+          state.missed = 0;
+        }
+      });
       ws.on("close", () => this.sockets.delete(ws));
       handler(ws, deviceId);
     });
   }
 
-  /** Closes a revoked device's live sockets (FR-017). */
+  /** Closes only a revoked device's live sockets (FR-017). */
   closeDevice(deviceId: string): void {
-    // Sockets are tracked with their device id via a weak map in the relay;
-    // callers may prefer to close all and let reconnects re-authenticate.
-    void deviceId;
-    for (const ws of [...this.sockets]) ws.close(1008, "device revoked");
-    this.sockets.clear();
+    for (const [ws, state] of [...this.sockets]) {
+      if (state.deviceId !== deviceId) continue;
+      this.sockets.delete(ws);
+      try {
+        ws.close(1008, "device revoked");
+      } catch {
+        // already gone
+      }
+    }
   }
 
   async close(): Promise<void> {
-    for (const ws of [...this.sockets]) ws.close(1001, "host stopping");
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
+    }
+    for (const ws of [...this.sockets.keys()]) ws.close(1001, "host stopping");
     this.sockets.clear();
     this.wss?.close();
     this.wss = null;

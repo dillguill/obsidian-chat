@@ -1,65 +1,93 @@
-# Obsidian Chat
+# Obsidian Chat — an ACP shell for your vault
 
-An Obsidian plugin that puts an AI agent in your vault: chat on desktop or phone, with the agent
-reading, searching and editing notes through tools you approve.
+Obsidian Chat turns Obsidian into a **thin frontend for whatever ACP-compatible harness you attach**.
+One Obsidian install is the host: it spawns the harness, owns the conversation record, and serves the
+vault's native read/search tools. Every other device — phone or second desktop — is a shell that
+attaches to that host over your private network/VPN.
 
-**What you need:** Obsidian and an agent harness that speaks the
-[Agent Client Protocol](https://agentclientprotocol.com) (ACP), such as opencode, Gemini CLI or
-Goose. Nothing else: no extra plugins, no background services, no Node install.
+**What you need:** Obsidian (desktop for the host) and an harness that speaks the
+[Agent Client Protocol](https://agentclientprotocol.com). The harness owns the model/provider
+configuration; this plugin never holds a provider key and has no model settings of its own.
 
 ## How it works
 
 ```
-Phone / other desktop ──HTTP/SSE──┐
-                                  ▼
-               Obsidian on the host computer (this plugin, host mode)
-                 ├─ runs the harness as a child process, speaking ACP over stdio
-                 ├─ relays the chat to every device (replay on reconnect)
-                 └─ serves the vault to the harness as MCP tools (loopback only)
+Phone / other desktop ── ACP over WebSocket ──┐
+                                              ▼
+              Obsidian on the host computer (one plugin listener)
+                ├─ runs exactly one harness child (ACP over stdio)
+                ├─ answers the harness's vault read/write requests natively
+                ├─ serves read-only search/backlinks/tags/outline tools over loopback MCP
+                └─ stores every conversation in a host-owned JSONL record
 ```
 
-- **One computer is the host.** Turn on *Settings → Obsidian Chat → Host on this device*, and set
-  the harness command (default `opencode acp`). Obsidian starts the harness when it opens and
-  stops it when it quits, and restarts it if it crashes.
-- **Other devices are clients.** Pair one under *Host → Paired devices*, then enter the host
-  address (e.g. `http://100.x.y.z:8765` over Tailscale or your LAN) and the device code in that
-  device's settings.
-- **The harness owns the model; the plugin only remembers your choice.** Providers and API keys live
-  in the harness's own config. In the chat's model picker, clicking a row applies it to the current
-  session, the pin icon keeps favourites at the top, and the target icon sets the default for new
-  sessions — with a "Harness default" row that hands the choice back to the harness. A default the
-  harness no longer offers is reported and skipped rather than replayed.
+- **One host, one harness.** Shell mode → Local starts the configured harness command as a child of
+  the plugin. There is no bridge, daemon, launchd job, or second process.
+- **Remote devices attach to the host.** Pair a device on the host, then enter the host's WebSocket
+  endpoint and the device code on that device. A remote never spawns a process, opens a listener,
+  reads the vault, or keeps local history.
+- **Native vault access.** Reads and writes go through Obsidian's own vault API via ACP filesystem
+  capabilities; open editors refresh, parent folders are created, and a best-effort snapshot enables
+  host-side undo. Paths are confined to the vault and the folder blacklist; `.obsidian/` is always
+  refused.
+- **Native Obsidian tools.** The harness gets read-only note search, backlinks, outgoing links, tags,
+  headings/outline and note metadata over an in-process MCP server on loopback. Writes are never
+  exposed through MCP: the only write path is ACP plus an approval.
+- **Approvals are inline and owner-only.** The card shows the harness's real proposed change and
+  exactly the options it offered; only the device that owns the session can answer.
+- **The transcript is the protocol.** Tool calls, plans, usage, unknown/experimental updates and raw
+  payloads are rendered generically from ACP's own fields — no tool-name dictionary — with per-turn
+  and session-wide raw views. Composer controls are generated from the harness's declared modes and
+  config options.
+- **Continuity without silent resets.** Reopening a conversation tries the harness's resume/load
+  capabilities; when it cannot reattach, you get an explicit choice: continue with a bounded,
+  deterministic digest (default), start fresh, or replay the full transcript. No new session is
+  created until you choose.
 
-Vault tools the harness gets: `list`, `read`, `search`, `write`, `append`, `edit`, `move`,
-`delete` (to trash). Folders on the blacklist are invisible to them.
+## Conversations and history
 
-Harnesses without native ACP support work through their ACP adapter; set the adapter's command as
-the harness command. For example, Claude Code uses
-[`@zed-industries/claude-agent-acp`](https://www.npmjs.com/package/@zed-industries/claude-agent-acp).
+Conversations are host-owned **JSONL records** in the hidden `.chat/sessions/` folder. The ACP Shell
+is the only viewer; no Markdown session notes are written, and **there is no note-folder setting**.
+On first upgrade, old Markdown conversations are discovered vault-wide by their content and imported
+once (idempotent, originals untouched). If History looks wrong, run **“Reimport legacy chats
+(diagnostics)”** from the command palette — it reports exactly what was scanned, found, skipped, and
+stored.
+
+## Setup
+
+1. **Host:** Settings → Obsidian Chat → mode **Local**, set the harness command (e.g. `opencode acp`),
+   listen port (default 8765) and bind address (loopback by default).
+2. **Pair devices** under *Paired devices*. Each gets its own code; revoking one closes its live
+   connection immediately.
+3. **Remote:** on the other device set mode **Remote**, the host endpoint
+   (`ws://<host>:8765/acp`, e.g. over Tailscale) and the device code.
+4. Open the **ACP Shell** view.
+
+The host binds loopback by default. Choosing a wider bind is deliberate; the VPN/private network is
+yours to provide and secure.
 
 ## Build & install
 
 ```bash
+cd plugin
 npm install
-npm run plugin:build      # typecheck + bundle → plugin/main.js
-bash plugin/install.sh    # copies main.js/manifest.json/styles.css into the vault
+node esbuild.config.mjs production   # → plugin/main.js
+cd ..
+OBSIDIAN_VAULT="<your vault>" bash plugin/install.sh
 ```
 
-`install.sh` copies rather than symlinks, so re-run it after every build and reload the plugin.
+`install.sh` copies the bundle, manifest and styles into the vault; re-run it after every build and
+reload the plugin (or restart Obsidian).
 
 ## Repo layout
 
 ```
-plugin/   The Obsidian plugin (TypeScript + esbuild)
-  src/host/   host mode: HTTP/SSE server, ACP stdio peer, vault MCP server
-  src/acp/    the chat client every device uses
-  src/ui/     chat view
-docs/     Architecture and history
-specs/    Feature specs
+plugin/            The Obsidian plugin (TypeScript + esbuild)
+  src/shell/       ACP client/transports, host listener, relay bridge, runtime
+  src/vault/       Shared VaultService, path policy, ACP fs handlers, read-only MCP server
+  src/session/     Host-owned JSONL record, store, continuity/digest, legacy import
+  src/acp/         Protocol types, update mapping, permissions, declared controls
+  src/ui/          ACP Shell view, renderer, raw views, approval card, controls, labels
+docs/              Architecture and the ACP Shell guide
+specs/             Spec Kit artifacts (004-acp-shell is this rebuild)
 ```
-
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full design.
-
-## License
-
-MIT

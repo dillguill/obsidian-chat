@@ -1,22 +1,23 @@
-/** Session-level shell runtime: owns the ACP client, the native environment,
- *  the session recorder, and the record identity. The chat view only renders
- *  and calls this; closing the view does not stop the turn (FR-066).
+/** Session-level shell runtime: the facade the chat view talks to.
  *
- *  US1 supports local attach only; remote attach arrives with the host relay
- *  in US3 and is refused here with a clear message.
+ *  Local mode = this install is the host: one listener, one harness child, the
+ *  host-owned store, and the vault tools. The UI still attaches over the
+ *  loopback WebSocket with a per-run local token (T060) — there is no second
+ *  in-process client path.
+ *
+ *  Remote mode = this install is only a frontend: it attaches to a host over
+ *  the VPN, spawns nothing, opens no listener, and keeps no conversation store.
  */
 import { App, FileSystemAdapter, Platform } from "obsidian";
-import type { AcpDebugInfo, ChatEvent, PendingPermission } from "../acp/types.ts";
-import type { NewEntry, SessionStore } from "../session/store.ts";
+import type { AcpDebugInfo, ChatEvent, PendingPermission, RenderUpdate } from "../acp/types.ts";
+import type { AvailableCommand, SessionConfigOption, SessionModeState } from "@agentclientprotocol/sdk";
+import type { SessionStore } from "../session/store.ts";
 import type { RecordEntry, SessionHeader } from "../session/record.ts";
-import { SessionRecorder } from "../session/recorder.ts";
-import { AcpShellClient, type McpServerEntry } from "./acp-client.ts";
-import { LocalTransportConnector } from "./local-transport.ts";
-import { ObsidianShellEnvironment } from "./environment.ts";
-import { VaultService } from "../vault/service.ts";
-import { VaultMcpServer } from "../vault/mcp-server.ts";
-import { HostServer, createVaultMcpHandler } from "./host-server.ts";
-import { mintToken } from "./device-auth.ts";
+import { AcpShellClient } from "./acp-client.ts";
+import { HostCore } from "./host-core.ts";
+import { RemoteTransportConnector, SeqDedupe } from "./remote-transport.ts";
+import { backoffDelay } from "./transport.ts";
+import { fingerprint, redactLabel } from "./identity.ts";
 import type { WriteSnapshot } from "../vault/acp-fs.ts";
 import type { ShellAttachConfig } from "./types.ts";
 
@@ -24,6 +25,7 @@ export interface ShellRuntimeSettings {
   shell: ShellAttachConfig;
   sessionStoreFolder: string;
   blacklistFolders: string[];
+  pairedDevices: Record<string, string>;
 }
 
 export interface ShellRuntimeOptions {
@@ -40,26 +42,44 @@ export interface ShellHistory {
   entries: RecordEntry[];
 }
 
+export interface ContinuityInfo {
+  state: string;
+  reason?: string;
+  warning?: string;
+  digestAvailable: boolean;
+  attached: boolean;
+  choices: string[];
+}
+
+export type ContinuityChoice = "digest" | "fresh" | "full_replay";
+
+export interface SessionListEntry {
+  sessionId: string;
+  title: string;
+  updatedAt: string;
+  resume: string;
+  degraded: boolean;
+}
+
 export class ShellRuntime {
   private app: App;
   private getSettings: () => ShellRuntimeSettings;
   private getStore: () => SessionStore;
   private stopLegacy?: () => Promise<void>;
   private log: (message: string) => void;
+  private host: HostCore | null = null;
   private client: AcpShellClient | null = null;
-  private recorder: SessionRecorder | null = null;
-  private storeSessionId: string | null = null;
-  private environment: ObsidianShellEnvironment | null = null;
-  private vaultService: VaultService | null = null;
-  /** Loopback MCP listener serving the read-only vault tools (US2). */
-  private mcpHost: HostServer | null = null;
-  private mcpPort: number | null = null;
-  private mcpToken: string | null = null;
-  private mcpError: string | null = null;
   private eventListeners = new Set<(event: ChatEvent) => void>();
   private permissionListeners = new Set<(request: PendingPermission) => void>();
   private stateListeners = new Set<() => void>();
   private legacyStopped = false;
+  private dedupe = new SeqDedupe();
+  private lastSeq = new Map<string, number>();
+  private reconnectAttempts = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private closed = false;
+  /** Explicit continuity choice for the next prompt in a detached conversation. */
+  private continuityChoice: ContinuityChoice | null = null;
 
   constructor(options: ShellRuntimeOptions) {
     this.app = options.app;
@@ -87,41 +107,53 @@ export class ShellRuntime {
   }
 
   get recordId(): string | null {
-    return this.storeSessionId;
+    return this.client?.getSessionId() ?? null;
   }
 
   get isConnected(): boolean {
     return !!this.client && this.client.getState() === "connected";
   }
 
-  get isBusy(): boolean {
-    // The client refuses a second prompt locally; the view mirrors that.
-    return false;
+  /** Declared controls for the composer — exactly the attached harness's
+   *  current declarations, never a plugin-owned set (FR-039/FR-040). */
+  get modes(): SessionModeState | null {
+    return this.client?.getModes() ?? null;
   }
 
-  /** Whether the harness advertises HTTP MCP support for this attach. */
-  get harnessSupportsVaultTools(): boolean {
-    return this.client?.getCapabilitiesSnapshot().mcpHttp ?? false;
+  get configOptions(): SessionConfigOption[] | null {
+    return this.client?.getConfigOptions() ?? null;
   }
 
-  /** Native vault tools are unavailable when the listener failed or the
-   *  harness did not advertise `mcpCapabilities.http` (contract §6). */
+  get commands(): AvailableCommand[] | null {
+    return this.client?.getCommands() ?? null;
+  }
+
+  get mode(): "local" | "remote" {
+    return this.getSettings().shell.mode;
+  }
+
+  /** Host listener URL/state for the connection-details surface. */
+  get hostInfo(): { port: number; wsUrl: string } | null {
+    return this.host ? { port: this.host.boundPort, wsUrl: this.host.wsUrl() } : null;
+  }
+
+  /** Whether this install serves the native vault tools (local host only). */
   get vaultToolsAvailable(): boolean {
-    return this.harnessSupportsVaultTools && this.mcpPort !== null;
+    if (this.mode === "remote") return true; // provided by the host, not this device
+    return !!this.host;
   }
 
   get vaultToolsError(): string | null {
-    return this.mcpError;
+    return null;
   }
 
-  /** The next host-side Undo the UI may offer, if any. */
+  /** The next host-side Undo the UI may offer, if any (host only). */
   pendingUndo(): WriteSnapshot | null {
-    return this.environment?.lastSnapshot() ?? null;
+    return this.host?.lastSnapshot() ?? null;
   }
 
-  /** Restores the pre-write content of the last harness write. */
   async undoLastWrite(): Promise<WriteSnapshot | null> {
-    const restored = (await this.environment?.undoLast()) ?? null;
+    const restored = (await this.host?.undoLast()) ?? null;
     this.emitState();
     return restored;
   }
@@ -146,146 +178,123 @@ export class ShellRuntime {
     }
   }
 
-  private vault(): VaultService {
-    if (!this.vaultService) {
-      this.vaultService = new VaultService({
-        app: this.app,
-        blacklist: () => this.getSettings().blacklistFolders,
-        storeFolder: () => this.getSettings().sessionStoreFolder,
-      });
-    }
-    return this.vaultService;
-  }
-
-  private shellEnvironment(): ObsidianShellEnvironment {
-    if (!this.environment) {
-      this.environment = new ObsidianShellEnvironment(this.vault(), () => this.emitState());
-    }
-    return this.environment;
-  }
-
-  /** Starts the single loopback listener that serves `/mcp` (US2). The `/acp`
-   *  route stays closed until the host relay arrives in US3. */
-  private async startVaultTools(): Promise<void> {
-    if (!Platform.isDesktopApp) {
-      this.mcpError = "native vault tools need the desktop app";
-      return;
-    }
-    if (this.mcpHost) return;
-    const vault = this.vault();
-    const mcp = new VaultMcpServer({
-      vault,
-      policy: () => vault.policy(),
-      token: () => this.mcpToken,
-    });
-    const host = new HostServer({
-      port: 0,
-      devices: () => ({}),
-      // The UI's own ACP attach is local in US2, so no device tokens yet.
-      localToken: mintToken(),
-      mcpHandler: createVaultMcpHandler({ server: mcp, token: () => this.mcpToken }),
-      log: (message) => this.log(message),
-    });
-    try {
-      await host.start();
-      this.mcpHost = host;
-      this.mcpPort = host.boundPort;
-      this.mcpError = null;
-    } catch (err) {
-      this.mcpError = `vault tools unavailable: ${String((err as Error).message ?? err)}`;
-      this.log(this.mcpError);
+  private emitPermission(request: PendingPermission): void {
+    for (const cb of [...this.permissionListeners]) {
+      try {
+        cb(request);
+      } catch {
+        // ignored
+      }
     }
   }
 
-  /** The `mcpServers` entry for this session, or null when unavailable. */
-  private mcpEndpoint(): McpServerEntry | null {
-    if (!this.mcpPort || !this.mcpToken) return null;
-    return {
-      name: "vault",
-      type: "http",
-      url: `http://127.0.0.1:${this.mcpPort}/mcp`,
-      headers: [{ name: "Authorization", value: `Bearer ${this.mcpToken}` }],
-    };
-  }
-
-  private attachCwd(): string {
-    if (!Platform.isDesktopApp) throw new Error("local attach requires the desktop app");
+  private vaultRoot(): string {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) throw new Error("this vault has no filesystem path");
-    const shell = this.getSettings().shell;
-    return shell.cwd?.trim() || adapter.getBasePath();
+    return adapter.getBasePath();
   }
 
-  async connect(): Promise<void> {
-    if (this.client) return;
-    const shell = this.getSettings().shell;
-    if (shell.mode !== "local") {
-      throw new Error("remote attach arrives with the host relay (US3); set the shell mode to Local for now");
-    }
-    if (!shell.command.trim()) throw new Error("no harness command is configured");
-    if (this.stopLegacy && !this.legacyStopped) {
-      this.legacyStopped = true;
-      await this.stopLegacy().catch((err) => this.log(`legacy host stop failed: ${String(err)}`));
-    }
-    const cwd = this.attachCwd();
-    const environment = this.shellEnvironment();
-    // Vault tools need the listener before session/new advertises the entry.
-    await this.startVaultTools();
-    this.mcpToken = this.mcpPort ? mintToken() : null;
-    const client = new AcpShellClient({
-      mode: "local",
-      label: redactLabel(shell.command),
-      cwd,
-      environment,
-      mcpServer: () => this.mcpEndpoint(),
-      connector: new LocalTransportConnector({
-        command: shell.command,
-        cwd,
-        onStderr: (line) => this.log(`harness stderr: ${line}`),
-      }),
-      onLog: this.log,
+  /** Starts the host listener and the single harness attachment (local mode). */
+  async startHost(): Promise<void> {
+    if (this.host) return;
+    if (!Platform.isDesktopApp) throw new Error("host mode is desktop-only");
+    const settings = this.getSettings();
+    const host = new HostCore({
+      app: this.app,
+      settings: () => settings,
+      store: this.getStore,
+      stopLegacy: async () => {
+        if (this.legacyStopped) return;
+        this.legacyStopped = true;
+        await this.stopLegacy?.();
+      },
+      log: this.log,
     });
-    this.client = client;
-    client.onEvent((event) => {
-      void this.recorder?.recordEvent(event).catch((err) => this.log(`record append failed: ${String(err)}`));
-      this.emit(event);
-    });
-    client.onPermissionRequest((request) => {
-      void this.recorder
-        ?.recordPermissionRequest(request.requestId, request.toolCall, request.options)
-        .catch((err) => this.log(`permission record failed: ${String(err)}`));
-      for (const cb of [...this.permissionListeners]) {
-        try {
-          cb(request);
-        } catch {
-          // ignored
-        }
-      }
-    });
-    client.onStateChange(() => this.emitState());
-    await client.connect();
-    const store = this.getStore();
-    const id = await store.createSession({
-      deviceId: "__local__",
-      commandLabel: redactLabel(shell.command),
-      commandFingerprint: fingerprint(shell.command, cwd),
-      cwd,
-      protocolVersion: 1,
-      capabilities: client.getCapabilitiesSnapshot(),
-      harnessSessionId: client.getSessionId(),
-      title: "ACP session",
-    });
-    this.storeSessionId = id;
-    this.recorder = new SessionRecorder(store, id);
+    await host.start();
+    this.host = host;
     this.emitState();
   }
 
-  async send(text: string): Promise<void> {
+  /** Attaches the UI client: loopback WebSocket on the host, remote otherwise. */
+  async connect(): Promise<void> {
+    if (this.client && this.client.getState() === "connected") return;
+    const shell = this.getSettings().shell;
+    let connector: RemoteTransportConnector;
+    let mode: "relay" | "remote";
+    let cwd: string;
+    if (shell.mode === "local") {
+      if (!Platform.isDesktopApp) throw new Error("local attach requires the desktop app");
+      if (!shell.command.trim()) throw new Error("no harness command is configured");
+      await this.startHost();
+      const host = this.host;
+      if (!host) throw new Error("the host listener did not start");
+      connector = new RemoteTransportConnector({ url: host.wsUrl(), token: host.localToken, attempts: 3, baseMs: 100 });
+      mode = "relay";
+      cwd = this.vaultRoot();
+    } else {
+      const url = shell.remoteUrl?.trim();
+      const token = shell.remoteToken?.trim();
+      if (!url) throw new Error("no host address is configured for remote attach");
+      if (!token) throw new Error("no device code is configured for remote attach");
+      connector = new RemoteTransportConnector({ url, token, attempts: 3, baseMs: 250 });
+      mode = "remote";
+      cwd = "/";
+    }
+    const client = new AcpShellClient({
+      mode,
+      label: shell.mode === "local" ? `host ${this.host?.wsUrl() ?? "loopback"}` : `remote ${shell.remoteUrl ?? ""}`,
+      cwd,
+      // The host serves the vault; a remote/loopback shell never does.
+      environment: undefined,
+      mcpServer: () => null,
+      connector,
+      // A remote opens/selections a stored session explicitly (session/list +
+      // session/load); a local host view starts a fresh conversation.
+      autoSession: shell.mode === "local",
+      onLog: this.log,
+      onTransportLost: (reason) => {
+        this.log(`attach lost: ${reason}`);
+        this.scheduleReconnect(reason);
+      },
+    });
+    client.onEvent((event) => {
+      if (event.raw?.seq !== undefined) {
+        const highest = this.lastSeq.get(event.sessionId) ?? 0;
+        if (event.raw.seq > highest) this.lastSeq.set(event.sessionId, event.raw.seq);
+        if (!this.dedupe.accept(event.sessionId, event.raw.seq)) return;
+      }
+      this.emit(event);
+    });
+    client.onPermissionRequest((request) => this.emitPermission(request));
+    client.onStateChange(() => this.emitState());
+    this.client = client;
+    this.closed = false;
+    this.reconnectAttempts = 0;
+    try {
+      await client.connect();
+    } catch (err) {
+      this.client = null;
+      this.emitState();
+      throw err;
+    }
+    this.emitState();
+  }
+
+  async send(text: string, options: { images?: Array<{ mimeType: string; data: string }> } = {}): Promise<void> {
     if (!this.client) await this.connect();
-    const client = this.client!;
-    const blocks = [{ type: "text" as const, text }];
-    await this.recorder?.recordPrompt(blocks);
-    await client.prompt(blocks);
+    const client = this.client;
+    if (!client) throw new Error("not connected");
+    const blocks: Array<{ type: "text"; text: string } | { type: "image"; mimeType: string; data: string }> = [];
+    if (text.trim()) blocks.push({ type: "text", text });
+    for (const image of options.images ?? []) {
+      blocks.push({ type: "image", mimeType: image.mimeType, data: image.data });
+    }
+    if (!blocks.length) throw new Error("the message is empty");
+    const meta = this.continuityChoice
+      ? { "obsidian-chat/continuity": this.continuityChoice }
+      : undefined;
+    await client.prompt(blocks as never, meta);
+    this.continuityChoice = null;
   }
 
   async cancel(): Promise<void> {
@@ -294,58 +303,172 @@ export class ShellRuntime {
 
   async respondPermission(requestId: string, optionId: string | null): Promise<void> {
     await this.client?.respondPermission(requestId, optionId);
-    await this.recorder?.recordPermissionResponse(
-      requestId,
-      optionId ? { outcome: "selected", optionId } : { outcome: "cancelled" },
-    );
   }
 
+  async setMode(modeId: string): Promise<void> {
+    await this.client?.setMode(modeId);
+  }
+
+  async setConfigOption(configId: string, value: string | boolean): Promise<void> {
+    await this.client?.setConfigOption(configId, value);
+  }
+
+  /** Local host transcript from the record; a remote keeps no local history. */
   async history(): Promise<ShellHistory | null> {
-    if (!this.storeSessionId) return null;
-    const read = await this.getStore().read(this.storeSessionId);
+    if (this.mode !== "local") return null;
+    const id = this.client?.getSessionId();
+    if (!id) return null;
+    const read = await this.getStore().read(id);
     return { header: read.header, entries: read.entries };
   }
 
-  /** Explicit New Session: end the harness session and drop the record binding. */
-  async reset(): Promise<void> {
+  /** Standard `session/list` over the attach (host-scoped on the host side). */
+  async listSessions(): Promise<SessionListEntry[]> {
+    if (!this.client) return [];
+    const sessions = await this.client.listSessions();
+    return sessions.map((session) => {
+      const meta = (session._meta ?? {}) as Record<string, unknown>;
+      return {
+        sessionId: session.sessionId,
+        title: session.title?.trim() || "Untitled conversation",
+        updatedAt: session.updatedAt ?? "",
+        resume: String(meta["obsidian-chat/resume"] ?? "unknown"),
+        degraded: meta["obsidian-chat/degraded"] === true,
+      };
+    });
+  }
+
+  /** Loads a stored conversation through standard `session/load`; the host
+   *  replays the record as `session/update` notifications before resolving and
+   *  returns the continuity state used for the explicit digest/fresh choice. */
+  async loadSession(sessionId: string): Promise<ContinuityInfo | null> {
+    if (!this.client) await this.connect();
     const client = this.client;
-    this.client = null;
-    this.recorder = null;
-    this.storeSessionId = null;
-    this.mcpToken = null;
-    if (client) await client.close().catch(() => undefined);
-    if (this.mcpHost) {
-      await this.mcpHost.close().catch(() => undefined);
-      this.mcpHost = null;
-      this.mcpPort = null;
+    if (!client) throw new Error("not connected");
+    // An explicit open always renders the stored transcript: clear replay
+    // dedupe state first (reconnect replay is protected by `sinceSeq`).
+    this.dedupe.reset();
+    const response = await client.loadSession(sessionId, { cwd: this.mode === "local" ? this.vaultRoot() : "/" });
+    this.continuityChoice = null;
+    this.emitState();
+    const meta = (response as { _meta?: Record<string, unknown> })._meta;
+    if (!meta) return null;
+    return {
+      state: String(meta["obsidian-chat/resume"] ?? "unknown"),
+      reason: typeof meta["obsidian-chat/reason"] === "string" ? meta["obsidian-chat/reason"] : undefined,
+      warning: typeof meta["obsidian-chat/warning"] === "string" ? meta["obsidian-chat/warning"] : undefined,
+      digestAvailable: meta["obsidian-chat/digest"] === true,
+      attached: meta["obsidian-chat/attached"] === true,
+      choices: Array.isArray(meta["obsidian-chat/continuity"]) ? (meta["obsidian-chat/continuity"] as string[]) : [],
+    };
+  }
+
+  /** Bounded reconnect after transport loss (contracts/host-transport.md §5:
+   *  1 s → 15 s, 8 attempts). Reattachment uses session/load with `sinceSeq`, so
+   *  no already-rendered notification is duplicated and no prompt is resent. */
+  private scheduleReconnect(reason: string): void {
+    if (this.closed || !this.client) return;
+    if (this.reconnectAttempts >= 8) {
+      this.emit({
+        sessionId: this.client.getSessionId() ?? "unknown",
+        error: {
+          message: `Could not reconnect to the host after 8 attempts (${reason}). The turn is interrupted; history is preserved.`,
+          scope: "transport",
+        },
+      });
+      return;
     }
+    const delay = backoffDelay(this.reconnectAttempts);
+    this.reconnectAttempts += 1;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      void this.attemptReconnect();
+    }, delay);
+    this.reconnectTimer.unref?.();
+  }
+
+  private async attemptReconnect(): Promise<void> {
+    const client = this.client;
+    if (!client || this.closed) return;
+    const sessionId = client.getSessionId();
+    const sinceSeq = sessionId ? this.lastSeq.get(sessionId) : undefined;
+    try {
+      await client.reconnect({ sinceSeq });
+      this.reconnectAttempts = 0;
+      this.emitState();
+    } catch (err) {
+      this.emit({
+        sessionId: sessionId ?? "unknown",
+        error: {
+          message: `Reconnect attempt ${this.reconnectAttempts}/8 failed: ${String((err as Error).message ?? err)}`,
+          scope: "transport",
+        },
+      });
+      this.scheduleReconnect("retry");
+    }
+  }
+
+  /** Revoking a paired device closes its live sockets immediately (host only). */
+  revokeDevice(deviceId: string): void {
+    this.host?.revokeDevice(deviceId);
+  }
+
+  /** The user's explicit continuity choice for a detached conversation. No
+   *  prompt is seeded until the user chooses (FR-060). */
+  setContinuityChoice(choice: ContinuityChoice | null): void {
+    this.continuityChoice = choice;
+  }
+
+  get pendingContinuityChoice(): ContinuityChoice | null {
+    return this.continuityChoice;
+  }
+
+  /** Creates a new conversation on the current attach without leaving the
+   *  host/harness (the old session is closed first). */
+  async newSession(): Promise<void> {
+    if (!this.client) await this.connect();
+    const client = this.client;
+    if (!client) throw new Error("not connected");
+    const previous = client.getSessionId();
+    if (previous) await client.closeSession(previous).catch(() => undefined);
+    await client.createSession({ cwd: this.mode === "local" ? this.vaultRoot() : "/" });
     this.emitState();
   }
 
-  async close(): Promise<void> {
+  /** Explicit New Session: end the ACP session, keep the host/harness alive. */
+  async reset(): Promise<void> {
+    this.continuityChoice = null;
+    this.dedupe.reset();
+    this.lastSeq.clear();
+    const client = this.client;
+    this.client = null;
+    if (client) await client.close().catch(() => undefined);
+    this.emitState();
+  }
+
+  /** Restarts the harness child (host only) and reattaches the UI. */
+  async restartHarness(): Promise<void> {
+    if (this.mode !== "local") throw new Error("only the host can restart the harness");
     await this.reset();
-    this.vaultService?.dispose();
-    this.vaultService = null;
-    this.environment = null;
+    await this.host?.stop().catch(() => undefined);
+    this.host = null;
+    await this.connect();
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const client = this.client;
+    this.client = null;
+    if (client) await client.close().catch(() => undefined);
+    await this.host?.stop().catch(() => undefined);
+    this.host = null;
+    this.emitState();
   }
 }
 
-/** Never store a secret that a user may have embedded in the command line. */
-export function redactLabel(command: string): string {
-  return command.replace(/((?:token|key|secret|password|api[_-]?key)\s*[=:]\s*)\S+/gi, "$1***");
-}
-
-/** FNV-1a 64-bit (as two 32-bit halves) over argv + cwd — deterministic, sync. */
-export function fingerprint(command: string, cwd: string): string {
-  let h1 = 0x811c9dc5;
-  let h2 = 0x811c9dc5;
-  const input = `${command}\0${cwd}`;
-  for (let i = 0; i < input.length; i++) {
-    const c = input.charCodeAt(i);
-    h1 ^= c;
-    h1 = Math.imul(h1, 0x01000193) >>> 0;
-    h2 ^= (c + i) & 0xff;
-    h2 = Math.imul(h2, 0x01000193) >>> 0;
-  }
-  return (h1.toString(16).padStart(8, "0") + h2.toString(16).padStart(8, "0")).slice(0, 16);
-}
+export { redactLabel, fingerprint };

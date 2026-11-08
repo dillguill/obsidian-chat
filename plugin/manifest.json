@@ -3,7 +3,7 @@
   "name": "Obsidian Chat",
   "version": "0.1.22",
   "minAppVersion": "1.5.0",
-  "description": "Vault-native AI workspace: grounded chat, read-only agent tools, and harness connection (BYOK).",
+  "description": "ACP shell for Obsidian: chat with any ACP-compatible harness, with native vault tools.",
   "author": "Dillon",
   "isDesktopOnly": false
 }

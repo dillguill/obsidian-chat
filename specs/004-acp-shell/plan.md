@@ -49,13 +49,19 @@ export-map entries with no directory on disk; TS 5.5 supports this). Obsidian Pl
 (`Vault`, `MetadataCache`, `Workspace`, `FileSystemAdapter`, `Platform`, `Setting`, `Notice`,
 `requestUrl`, `Menu`, `SuggestModal`). No provider SDKs, no HTTP framework, no database.
 
-**Storage**: Host-owned append-only JSONL session records in a hidden vault configuration folder
-(default `.chat/sessions/`, configurable via settings). One record per conversation with a header
+**Storage**: Host-owned append-only JSONL session records in a fixed hidden vault configuration
+folder (`.chat/sessions/`). There is no note-folder or store-folder setting; the shell must work with
+zero folder configuration. Legacy Markdown conversations are discovered by content during a one-time,
+idempotent import. One record per conversation with a header
 (resume identity, harness fingerprint, protocol version, capability snapshot, last sequence, last
 selected modes/config) and ordered entries for prompts, ACP updates, permissions, and turn
 boundaries. Settings persist in the plugin's `data.json`. No Markdown session notes are written; the
 legacy chat folder is read once for migration. The session index (id → title/updated/resume state)
 is derived from record headers; the host maintains a persisted session registry for reattach.
+**Terminology**: *session record* (spec `SessionRecord`) is the JSONL conversation log; *session
+store* is `session/store.ts`, the code that writes/reads it; the legacy Markdown note module is
+`session/legacy-note.ts` and is deleted after import (T110). The *shell UI* is
+`ui/shell-view.ts`; the *legacy chat view* is `ui/chat-view.ts` until T121.
 
 **Testing**: `cd plugin && npm test` → `node --test 'src/**/*.test.ts'` (existing script, Node 24
 type stripping). New suites: path policy; session-record append/read/crash-repair; transcript/raw
@@ -86,7 +92,11 @@ process, daemon, or launchd job. One host listener, two endpoints, one auth boun
 default; explicit confirmation for wider binds. ACP v1 only. Mobile must not evaluate Node built-ins
 or spawn. Path confinement + blacklist + `.obsidian/` refusal are shared by ACP fs and MCP tools.
 Writes go only through ACP fs + permission; MCP is read-only. Terminal capability `false`. Digest is
-deterministic and model-free. No provider credentials anywhere in the shell.
+deterministic and model-free. No provider credentials anywhere in the shell. Explicit bounds:
+remote reconnect 1 s → 15 s over 8 attempts and approval timeout 10 minutes
+(`contracts/host-transport.md`); cancellation is authoritative only through `stopReason: cancelled`
+(`contracts/acp-shell.md`) and a permission timeout resolves cancelled with reason `timeout`; no
+unbounded retry loop anywhere.
 
 **Scale/Scope**: Personal use — one host, one vault, one attached harness, a small number of paired
 devices, multiple sessions per device, potentially long conversations (thousands of updates per
@@ -161,6 +171,8 @@ plugin/
     │   ├── host-server.ts         #   one listener: ws.WebSocketServer + SDK AcpServer + loopback /mcp
     │   ├── host-relay.ts          #   per-device AcpServer agent factory relaying onto harness sessions
     │   ├── device-auth.ts         #   paired-device credentials, revocation, per-run local UI token
+    │   ├── environment.ts         #   Obsidian-backed ACP fs environment (VaultService edge)
+    │   ├── runtime.ts             #   session-level runtime: attach, spawn, record, fs, MCP host
     │   └── types.ts               #   attach config, connection/attach state, capability cache
     ├── acp/                       # NEW: shared, Obsidian-free ACP logic
     │   ├── types.ts               #   AcpChatClient seam + render-model types
@@ -176,12 +188,17 @@ plugin/
     │   └── mcp-server.ts          #   read-only MCP tool server over loopback → service
     ├── session/                   # NEW: host-owned conversation record
     │   ├── record.ts              #   entry/header types, validation, sequence rules
-    │   ├── store.ts               #   append-only JSONL store, index, crash repair
+    │   ├── store.ts               #   append-only JSONL store, index, crash repair (RETAINED)
+    │   ├── recorder.ts            #   session-level event→record appender (survives view close)
     │   ├── digest.ts              #   deterministic bounded digest for the fallback path
     │   ├── resume.ts              #   resume ladder decision (resume/load/digest/fresh) + registry
-    │   └── migrate.ts             #   legacy Markdown-note import (canonical block + prose fallback)
+    │   ├── migrate.ts             #   legacy Markdown-note import (canonical block + prose fallback)
+    │   ├── legacy-note.ts         #   legacy Markdown note writer/parser (import-only; deleted in T110)
+    │   ├── legacy-bridge.ts       #   read-side bridge for the legacy view (deleted with T121/T110)
+    │   └── test-adapter.ts        #   in-memory StoreAdapter for the store/recorder suites
     ├── ui/                        # REBUILT: chat as a generic ACP renderer
-    │   ├── chat-view.ts           #   transcript/composer shell; no tool vocabulary, no custom protocol
+    │   ├── shell-view.ts          #   the shell UI: transcript/composer/status/approval; parity port T120
+    │   ├── chat-view.ts           #   LEGACY monolithic view (retired in T121; not rebuilt)
     │   ├── renderer.ts            #   update-kind renderer, generic tool card, content variants, raw row
     │   ├── controls.ts            #   composer controls generated from declared modes/config options
     │   ├── approval.ts            #   permission card with one action per offered option
@@ -198,13 +215,14 @@ plugin/
         ├── host/jsonrpc.ts        #   custom stdio JSON-RPC peer (replaced by SDK ndJsonStream)
         ├── host/vault-mcp.ts      #   replaced by vault/mcp-server.ts (read-only, shared service)
         ├── acp/client.ts          #   legacy AcpBridgeClient (SSE client)
-        ├── session/store.ts       #   legacy Markdown note writer/parser (import-only during migration)
+        ├── ui/chat-view.ts        #   legacy monolithic chat view (replaced by ui/shell-view.ts; T121)
         ├── ui/activity.ts         #   tool-name → verb/icon dictionary (replaced by generic renderer)
         ├── chat/tool-input.ts     #   target derivation heuristics (replaced by raw-bounds)
         ├── chat/types.ts          #   old StreamEvent/ActivityItem model (replaced by record/render types)
         ├── ui/session-suggest.ts  #   note picker (replaced by store-backed session-list)
         ├── ui/acp-model-suggest.ts#   model-specific picker (replaced by generic select suggest)
-        └── ui/connection-info.ts  #   SSE cursor/retry view (rebuilt for attach/store/raw)
+        ├── ui/record-suggest.ts   #   legacy store picker (replaced by ui/session-list.ts; T121)
+        └── session/legacy-note.ts #   legacy Markdown note writer/parser (import-only until T108)
 ```
 
 **Structure Decision**: Reuse the single `plugin/` project and rebuild its internals in four module
@@ -213,18 +231,21 @@ groups — `shell/` (ACP + transports + host), `vault/` (one VaultService + adap
 logic. Obsidian imports stay at the edges (`main.ts`, `settings.ts`, `shell/host-server.ts`,
 `vault/service.ts`, `ui/`); `path-policy.ts`, `session/`, `acp/`, and the transports are
 Obsidian-free where possible so they run under plain Node in tests. Mobile must be able to load the
-bundle without evaluating Node-only modules.
+bundle without evaluating Node-only modules. The shell UI is `ui/shell-view.ts` (built new in US1);
+legacy `ui/chat-view.ts` is retired in T121 rather than rebuilt in place. `ui/connection-info.ts` is
+retained and rebuilt for attach/registry/raw (T085) — it is not a deletion target.
 
 ## Phase Plan and Gates
 
 ### P1 — Shell core, session record, one local turn (foundation)
 
 **Delivers**: `shell/acp-client.ts`, `shell/transport.ts`, `shell/local-transport.ts`,
-`acp/types.ts`, `session/record.ts`, `session/store.ts`, minimal `main.ts`/`settings.ts` wiring, plus
-the two test doubles: an in-process SDK `agent()` app and a `mock-harness` child. A turn runs
-end-to-end locally against the mock: initialize → session/new → prompt → updates → stopReason,
-appended to the session record. `plugin/tsconfig.json` moves to `moduleResolution: "bundler"` here
-because it is required to import the SDK subpaths.
+`shell/environment.ts`, `shell/runtime.ts`, `acp/types.ts`, `session/record.ts`,
+`session/store.ts`, `session/recorder.ts`, minimal `main.ts`/`settings.ts` wiring, plus the two test
+doubles: an in-process SDK `agent()` app and a `mock-harness` child. A turn runs end-to-end locally
+against the mock: initialize → session/new → prompt → updates → stopReason, appended to the session
+record. `plugin/tsconfig.json` moves to `moduleResolution: "bundler"` here because it is required to
+import the SDK subpaths.
 
 **Gate P1**:
 - `cd plugin && npx tsc -noEmit -skipLibCheck` and the production build pass.
@@ -298,8 +319,9 @@ history, and the explicit Resume with digest / Start fresh / full-replay choice.
 ### P5 — Faithful ACP renderer and declared-control composer
 
 **Delivers**: `acp/session-update.ts`, `ui/renderer.ts`, `ui/controls.ts`, `ui/raw-view.ts`,
-rebuilt `ui/chat-view.ts` (no `activity.ts`), approval card with offered options, activity-density
-setting, per-turn raw disclosure, connection raw log.
+expanded `ui/shell-view.ts` (the shell UI; legacy `ui/chat-view.ts` is retired here via T121),
+approval card with offered options, activity-density setting, per-turn raw disclosure, connection raw
+log.
 
 **Gate P5**:
 - Renderer unit tests: tool card uses title/name/kind/status/content/locations/raw input-output;
@@ -310,11 +332,13 @@ setting, per-turn raw disclosure, connection raw log.
 - UI check with a mock harness emitting all fixture kinds: chronological expanded default, raw
   disclosures present, density setting changes presentation only; raw display capped at 16 KiB and
   stringified only on expand; late updates rendered as late rows.
-- Grep/proof: `activity.ts` deleted; no tool-name dictionaries; no hardcoded control labels.
-- Bundle check on a real dev machine (the container's esbuild binary is `@esbuild/darwin-arm64` and
-  cannot run here): production build succeeds and the bundle stays within the plugin envelope; the
-  ACP SDK pulls zod validation into the bundle, so this is measured, not assumed. If it fails, the
-  fallback is a thin typed router over `ndJsonStream`/WS (documented trade-off), not a new protocol.
+- Grep/proof: legacy UI retired (T121: `chat-view.ts`/`activity.ts` gone); no tool-name
+  dictionaries; no hardcoded control labels; exactly one registered chat surface.
+- Bundle check: the container initially lacked a linux esbuild binary; the linux-arm64 binary is now
+  installed and the production build runs here (last measured ~1.29 MB before legacy deletion).
+  Re-measure after the US9 deletions; the ACP SDK pulls zod validation into the bundle, so this is
+  measured, not assumed. If it fails, the fallback is a thin typed router over `ndJsonStream`/WS
+  (documented trade-off), not a new protocol.
 
 ### P6 — Remote host, delete legacy, full verification
 
@@ -331,8 +355,9 @@ then deletion of the legacy modules listed above; full migration path; settings 
   token; no second in-process client path exists.
 - Mobile bundle check: loads without Node-only evaluation; no spawn attempts; host UI absent.
 - Legacy-deletion check: `host/server.ts`, `host/jsonrpc.ts`, `host/vault-mcp.ts`, `acp/client.ts`,
-  old `session/store.ts`, `ui/activity.ts` removed; no SSE/EventSource/turn_end/Last-Event-ID
-  references remain outside docs/history; no name dictionaries remain.
+  `session/legacy-note.ts` (after migration), `ui/activity.ts`, and the legacy UI retired in T121 are
+  removed; no SSE/EventSource/turn_end/Last-Event-ID references remain outside docs/history; no name
+  dictionaries remain; the JSONL `session/store.ts` is retained.
 - Process/listener check on a live host: exactly one listener, two endpoints, one harness child,
   no extra processes.
 - Full quickstart manual pass on real hardware (real harness, VPN, phone) for the scenarios in
@@ -358,14 +383,18 @@ then deletion of the legacy modules listed above; full migration path; settings 
 | `plugin/src/host/jsonrpc.ts` (custom stdio JSON-RPC) | ACP SDK `ndJsonStream` in `shell/local-transport.ts` |
 | `plugin/src/host/vault-mcp.ts` (writable vault MCP) | `vault/mcp-server.ts` (read-only, shared VaultService) |
 | `plugin/src/acp/client.ts` (`AcpBridgeClient`, SSE, `turn_end`) | `shell/acp-client.ts` over SDK transports |
-| `plugin/src/session/store.ts` (Markdown note writer/parser) | `session/record.ts` + `store.ts` (JSONL); import via `session/migrate.ts` |
+| `plugin/src/session/legacy-note.ts` (legacy Markdown note writer/parser) | parsers move to `session/migrate.ts` (vault-wide discovery, no folder setting); the JSONL `session/store.ts` is **retained** |
 | `plugin/src/ui/activity.ts` (name→verb/icon dictionary) | `acp/session-update.ts` + `ui/renderer.ts` (generic); keep only pure `formatDuration`/`diffStat` in `ui/format.ts` |
 | `plugin/src/chat/tool-input.ts` (target/verb derivation) | `ui/raw-bounds.ts` (bounded raw JSON only) |
 | `plugin/src/chat/types.ts` (StreamEvent/ActivityItem) | `session/record.ts` + `acp/types.ts` render model |
 | `plugin/src/ui/session-suggest.ts` (note picker) | `ui/session-list.ts` (store-backed) |
 | `plugin/src/ui/acp-model-suggest.ts` (model picker) | `ui/acp-select-suggest.ts` (generic declared select) |
-| `plugin/src/ui/connection-info.ts` (SSE cursor/retry) | rebuilt for attach mode/listener/registry/raw record |
-| `host`/`gateway` settings blocks, device-pair UI glue to SSE, `chatFolder` note writing | `shell`/`store`/`devices` settings; legacy folder used only for import |
+| `plugin/src/ui/chat-view.ts` (legacy monolithic UI) | `ui/shell-view.ts` + `ui/renderer.ts`/`controls.ts`/`session-list.ts`; retired by T121 |
+| `host`/`gateway` settings blocks, the `chatFolder`/note-folder setting, device-pair UI glue to SSE | `shell`/`store`/`devices` settings; no folder setting remains, legacy notes are discovered by content |
+
+Retained and rebuilt, not deleted: `ui/connection-info.ts` (attach/registry/raw, T085),
+`ui/mention.ts`, `ui/markdown.ts`, `chat/ground.ts`, `chat/session-title.ts` (parity helpers ported
+by T120).
 
 ## Verification Strategy
 
@@ -381,7 +410,13 @@ npm test
 Required follow-up checks (grep/architecture):
 - no `turn_end`, `Last-Event-ID`, `EventSource`, `text/event-stream` outside docs/history;
 - no top-level `child_process`/`fs` in shared/mobile-loaded modules; only lazy desktop requires;
-- no provider/harness-name branches in `shell/`, `acp/`, `vault/`, `session/`;
+- no provider/model names in **any** active surface (`plugin/src`, `plugin/manifest.json`,
+  `plugin/preview.html`, handoff/instructions, settings) — provider choice is harness-side only;
+- no Markdown transcript writer/reader in runtime code; the legacy note module is allowed only as the
+  read-side import helper until T108 (`session/legacy-note.ts` / `migrate.ts`), then deleted;
+- no note-folder/session-folder setting in the settings tab; legacy discovery is vault-wide by content;
+- exactly one registered chat surface after T121 (`ui/shell-view.ts`); `ui/connection-info.ts` is
+  retained and rebuilt (T085), not deleted;
 - no tool-name→verb/icon dictionary and no hardcoded control sets in `ui/`;
 - one `http.createServer`/listener on the host; no other `listen(`;
 - no second vault read/write/policy implementation outside `vault/service.ts` + `vault/path-policy.ts`;
@@ -417,6 +452,18 @@ search API (implement a small scored search — the existing `retrieval/index.ts
 BM25); the store's internal turn-boundary entry is `turn`, not `turn_end`; the MCP SDK stays out
 (minimal handler); bundle size cannot be measured in this container and is a real-machine gate.
 `upstream research.md` remains the evidence source for every dependency claim above.
+
+**Realignment note (2026-11-07, later pass)**: the note-folder setting was removed entirely as the
+specification requires: legacy conversations are discovered vault-wide by note content/frontmatter,
+the session store is a fixed hidden `.chat/sessions/` folder, and History never depends on a
+configured folder. The earlier `chatFolder`-based importer was a regression from that design.
+
+**Realignment note (2026-11-07)**: implementation built the shell UI as a new `ui/shell-view.ts`
+rather than rebuilding `ui/chat-view.ts` in place, so `ui/chat-view.ts` is a **deletion** target
+(T121), not a rewrite target. The legacy note writer/parser is `session/legacy-note.ts`;
+`session/store.ts` is the new JSONL store and must not be deleted. Tasks T120–T124 were added for
+UX-parity, two-view/fault-path coverage, and explicit edge bounds; the P1–P6 gate→task map is
+explicit in `tasks.md`.
 
 ## What Ships Now vs Later
 

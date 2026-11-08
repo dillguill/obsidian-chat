@@ -45,3 +45,15 @@ export function makePartialTail(adapter: MemoryAdapter, path: string): void {
   const base = text.endsWith("\n") || !text ? text : `${text}\n`;
   adapter.files.set(path, `${base}{"kind":"update","seq":99`);
 }
+
+/** Adapter whose `list` returns full vault-relative paths, matching Obsidian's
+ *  real DataAdapter (regression for the History-empty bug). */
+export class FullPathAdapter extends MemoryAdapter {
+  async list(path: string): Promise<{ files: string[]; folders: string[] }> {
+    const listing = await super.list(path);
+    return {
+      files: listing.files.map((name) => `${path}/${name}`),
+      folders: listing.folders.map((name) => `${path}/${name}`),
+    };
+  }
+}

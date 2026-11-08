@@ -591,8 +591,9 @@ it in order, with backpressure). Images are stored by name/type only (as today,
 conflict files (e.g. `*.sync-conflict-*`) and never merge them; a changed tail/sequence marks the
 session degraded. Two hosts on the same vault are out of scope (spec assumption).
 
-**Migration** (first run after upgrade): scan the legacy chat folder (`chat/` by default; the old
-`settings.chatFolder`). For each `*.md`, parse with the existing canonical block
+**Migration** (first run after upgrade): discover legacy conversations **vault-wide** by note content
+and frontmatter (`type: chat-session` / the canonical transcript marker). There is no note-folder
+setting. For each matching `*.md`, parse with the existing canonical block
 `<!-- oc-transcript-b64: … -->` (`plugin/src/session/store.ts:68`, `:203`) via
 `parseSessionNote` (`:76–88`), falling back to the prose parser (`:107–171`) which already handles
 `oc-activity-b64` (`:55`, `:102`). Convert `ChatMessage[]` → `prompt`/`update`/`meta` entries:
@@ -613,14 +614,19 @@ vault adapter's `append` is the portable primitive; direct `fs` would duplicate 
 and is forbidden for vault content. Naming the boundary entry `turn` avoids resurrecting the deleted
 `turn_end` vocabulary in grep gates and docs.
 
+**Realignment note (2026-11-07)**: during implementation the legacy Markdown note writer/parser was
+moved to `plugin/src/session/legacy-note.ts`, and `plugin/src/session/store.ts` became the **new JSONL
+store**. Any historical citation below that attributes the Markdown format to `session/store.ts`
+refers to the legacy module, not to the retained JSONL store.
+
 ### Alternatives considered
 
 - **One JSON file rewritten per turn**: rejected; O(size) rewrite per turn, whole-file corruption on
   crash, and it breaks the append-only guarantee.
 - **SQLite/IndexedDB**: rejected; new dependency, migration complexity, not vault-syncable, and
   overkill for a personal log.
-- **Markdown notes with embedded base64**: the current design (`plugin/src/session/store.ts`); rejected
-  by the spec (no note-based history; whole-note rewrites; base64 bloat).
+- **Markdown notes with embedded base64**: the old design (now `plugin/src/session/legacy-note.ts`);
+  rejected by the spec (no note-based history; whole-note rewrites; base64 bloat).
 - **Append via direct `fs.appendFile` + `fsync`**: rejected for portability and FR-024; the adapter's
   append is enough for process-crash durability (page cache survives a process crash; power loss may
   lose the last line, which the repair path handles).
@@ -945,10 +951,10 @@ fallback). Mapping:
 | `plugin/src/host/jsonrpc.ts` (101 lines: hand-rolled stdio JSON-RPC) | **Delete** | SDK `ndJsonStream` + `client()` in `shell/acp-client.ts`/`local-transport.ts` |
 | `plugin/src/host/vault-mcp.ts` (285 lines; includes write/append/edit/move/delete tools) | **Rewrite** | `vault/mcp-server.ts` (read-only six tools over `VaultService`) |
 | `plugin/src/acp/client.ts` (679 lines: `AcpBridgeClient`, SSE, `turn_end`, dict helpers) | **Delete** | `shell/acp-client.ts` (SDK client, transport-injected), `shell/remote-transport.ts` |
-| `plugin/src/session/store.ts` (235 lines: Markdown note writer/parser) | **Delete after migration** | `session/store.ts` (JSONL), `session/migrate.ts` (parsers moved here) |
+| `plugin/src/session/legacy-note.ts` (252 lines: legacy Markdown note writer/parser) | **Delete after migration** | `session/migrate.ts` (parsers moved here); the new JSONL `session/store.ts` is retained |
 | `plugin/src/ui/activity.ts` (260 lines: name→verb/icon/label dictionary) | **Delete** | `acp/session-update.ts` + `ui/renderer.ts`; keep only pure `formatDuration`/`diffStat` in `ui/format.ts` |
 | `plugin/src/chat/tool-input.ts` (95 lines: target derivation/sanitizer) | **Delete/replace** | `ui/raw-bounds.ts` (bounded raw JSON display only; no verb/target derivation) |
-| `plugin/src/ui/chat-view.ts` (2 676 lines: monolithic view, note persistence, allowlist, custom renderers) | **Rewrite/split** | `ui/chat-view.ts` (shell), `ui/renderer.ts`, `ui/controls.ts`, `ui/raw-view.ts`, `ui/session-list.ts` |
+| `plugin/src/ui/chat-view.ts` (2 676 lines: monolithic view, note persistence, allowlist, custom renderers) | **Retire** | `ui/shell-view.ts` (shell, built new rather than evolving this file), `ui/renderer.ts`, `ui/controls.ts`, `ui/raw-view.ts`, `ui/session-list.ts`; deletion owned by T121 |
 | `plugin/src/ui/approval.ts` (100 lines: Approve/Reject + "always allow" + undo) | **Rewrite** | One action per offered `PermissionOption`; no allowlist; optional host-side snapshot/undo |
 | `plugin/src/ui/connection-info.ts` (94 lines: SSE cursor/retry fields) | **Rewrite** | Attach mode, listener, harness state, registry, raw record (paged); no tokens |
 | `plugin/src/ui/session-suggest.ts` (36 lines: note picker) | **Delete** | `ui/session-list.ts` (store-backed titles/time/resume state) |
@@ -1012,9 +1018,10 @@ choice.
 - **Evolve `chat-view.ts` in place**: rejected; 2 676 lines already mix transport, persistence, and
   rendering, and the new renderer/controls/raw view have different data sources (the store, not the
   view).
-- **Keep `store.ts` parsers in place for migration only**: acceptable temporarily during P4, but the
-  plan requires the legacy writer removed and only the reader retained under `session/migrate.ts`;
-  the final tree must not import `session/store.ts` from runtime code.
+- **Keep the legacy note parsers in place for migration only**: acceptable temporarily during P4, but
+  the plan requires the legacy writer removed and only the reader retained under `session/migrate.ts`;
+  the final tree must not import the legacy note module (`session/legacy-note.ts`) from runtime code.
+  `session/store.ts` is the JSONL store and remains runtime code by design.
 - **Use Vitest/Jest**: rejected; `node --test` is already the project convention, runs TS directly on
   Node 24, and adds no dependency.
 - **Test against a real `opencode acp` in CI**: rejected as the only strategy; too slow/flaky and

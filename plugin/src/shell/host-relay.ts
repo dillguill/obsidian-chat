@@ -11,6 +11,7 @@ import {
   agent,
   methods,
   type AgentCapabilities,
+  type AgentContext,
   type CloseSessionRequest,
   type InitializeRequest,
   type InitializeResponse,
@@ -34,6 +35,10 @@ import type { WebSocket } from "ws";
 export interface RelayBridge {
   /** Capabilities this host can actually honour (load/list at minimum). */
   capabilities(): AgentCapabilities;
+  /** Binds the device's ACP connection so the relay can send updates and
+   *  permission requests to the owning device only. */
+  bindDevice?(deviceId: string, context: AgentContext): void;
+  unbindDevice?(deviceId: string): void;
   initialize(deviceId: string, request: InitializeRequest): Promise<InitializeResponse>;
   newSession(deviceId: string, request: NewSessionRequest): Promise<NewSessionResponse>;
   loadSession(deviceId: string, request: LoadSessionRequest): Promise<LoadSessionResponse>;
@@ -76,6 +81,12 @@ export class HostRelay {
   private agentFor(deviceId: string) {
     const bridge = this.bridge;
     return agent({ name: "obsidian-chat" })
+      .onConnect((connection) => {
+        bridge.bindDevice?.(deviceId, connection.client);
+        connection.closed
+          .then(() => bridge.unbindDevice?.(deviceId))
+          .catch(() => bridge.unbindDevice?.(deviceId));
+      })
       .onRequest(methods.agent.initialize, async (ctx) => {
         const request = ctx.params as InitializeRequest;
         if (request.protocolVersion !== PROTOCOL_VERSION) {

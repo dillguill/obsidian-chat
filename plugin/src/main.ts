@@ -1,37 +1,32 @@
 /** Obsidian Chat plugin entry point.
- *  Registers the chat view (two layouts), the settings tab, a ribbon + command
- *  to open the chat, and owns the shared VaultIndex (read-only, for @mention). */
-import { Plugin, WorkspaceLeaf, Platform, Notice, TFile, TFolder, FileSystemAdapter, type Editor } from "obsidian";
-import { ChatView, VIEW_TYPE_CHAT } from "./ui/chat-view";
-import { ObsidianChatSettingTab, DEFAULT_SETTINGS, type ObsidianChatSettings } from "./settings";
-import { VaultIndex } from "./retrieval/index";
-import { AcpBridgeClient } from "./acp/client";
-import { AcpHost } from "./host/server";
-import { migrateDefaultModel, normalizePinnedModels } from "./chat/model-prefs";
+ *
+ *  The plugin wires the ACP shell: one registered view, the host-owned session
+ *  store, the shell runtime (local host or remote attach), and the one-time
+ *  folder-free recovery of old Markdown conversations. The legacy chat view is
+ *  gone; conversations live in JSONL and are viewed in the shell.
+ */
+import { Notice, Platform, Plugin, WorkspaceLeaf } from "obsidian";
+import { ObsidianChatSettingTab } from "./settings";
+import { DEFAULT_SETTINGS, migrateSettings, type ObsidianChatSettings } from "./settings-model.ts";
 import { SessionStore, type StoreAdapter } from "./session/store";
-import type { ShellAttachConfig } from "./shell/types";
-import { ShellRuntime } from "./shell/runtime";
+import { importLegacySessions, looksLikeLegacyConversation, type LegacyNote, type MigrationReport } from "./session/migrate";
 import { ShellChatView, SHELL_VIEW_TYPE } from "./ui/shell-view";
+import { LegacyImportInfoModal, type LegacyImportDiagnostics } from "./ui/legacy-import-info";
+import { ShellRuntime } from "./shell/runtime";
+import type { ShellAttachConfig } from "./shell/types";
 
 export default class ObsidianChatPlugin extends Plugin {
   settings: ObsidianChatSettings = DEFAULT_SETTINGS;
-  index!: VaultIndex;
-  /** Present only on the host device: serves the harness and the vault. */
-  host: AcpHost | null = null;
-  /** Host-owned append-only conversation store (the chat UI is its viewer). */
+  /** Host-owned append-only conversation store (the shell UI is its viewer). */
   private sessionStore: SessionStore | null = null;
-  /** New ACP shell runtime (US1 local attach; host relay arrives in US3). */
+  /** The ACP shell runtime: local host (listener + harness + store) or remote attach. */
   private runtime: ShellRuntime | null = null;
-
-  /** The ACP session outlives any single chat view. Closing the tab — or
-   *  Obsidian re-laying out the workspace, which destroys and rebuilds the
-   *  view — must not end the conversation on the harness, so the client is
-   *  owned here and views merely subscribe to it. */
-  private acpClient: AcpBridgeClient | null = null;
-  private acpClientConfig: { baseUrl: string; token: string } | null = null;
-  /** Note backing the live session, so a reopened view can restore its
-   *  transcript instead of coming back blank in front of a live session. */
-  currentSessionPath: string | null = null;
+  /** Result of the most recent legacy Markdown import, for History diagnostics. */
+  private lastLegacyImport: LegacyImportDiagnostics | null = null;
+  /** In-flight vault discovery, so view opens and commands share one scan. */
+  private legacyImportRun: Promise<MigrationReport | null> | null = null;
+  /** Paired devices at load time, so a saved removal can close live sockets. */
+  private devicesSnapshot: Record<string, string> = {};
 
   /** The host's JSONL session store, created on first use from the vault adapter. */
   store(): SessionStore {
@@ -44,7 +39,7 @@ export default class ObsidianChatPlugin extends Plugin {
     return this.sessionStore;
   }
 
-  /** The new shell attach configuration (US1 wires it to the client). */
+  /** The shell attach configuration (local spawn or remote host). */
   shellAttachConfig(): ShellAttachConfig {
     const shell = this.settings.shell;
     return {
@@ -53,10 +48,11 @@ export default class ObsidianChatPlugin extends Plugin {
       cwd: shell.cwd,
       remoteUrl: shell.remoteUrl,
       remoteToken: shell.remoteToken,
+      port: shell.port,
+      bindAddress: shell.bindAddress,
     };
   }
 
-  /** The new shell runtime: local attach, record persistence, no legacy bridge. */
   shellRuntime(): ShellRuntime {
     if (!this.runtime) {
       this.runtime = new ShellRuntime({
@@ -65,12 +61,9 @@ export default class ObsidianChatPlugin extends Plugin {
           shell: this.shellAttachConfig(),
           sessionStoreFolder: this.settings.sessionStoreFolder || ".chat/sessions",
           blacklistFolders: this.settings.blacklistFolders,
+          pairedDevices: this.settings.pairedDevices,
         }),
         store: () => this.store(),
-        stopLegacy: async () => {
-          await this.closeAcpSession();
-          this.stopHost();
-        },
         log: (message) => console.log(`[obsidian-chat shell] ${message}`),
       });
     }
@@ -88,325 +81,197 @@ export default class ObsidianChatPlugin extends Plugin {
     if (leaf) workspace.revealLeaf(leaf);
   }
 
-  /** The shared ACP client, rebuilt if the bridge settings changed under it. */
-  acp(): AcpBridgeClient {
-    // The host device talks to its own server over loopback with a token it
-    // minted itself; every other device uses the configured host address.
-    const { baseUrl, token } = this.host
-      ? { baseUrl: `http://127.0.0.1:${this.host.port}`, token: this.host.localToken }
-      : this.settings.gateway;
-    if (this.acpClient && (this.acpClientConfig?.baseUrl !== baseUrl || this.acpClientConfig?.token !== token)) {
-      void this.acpClient.close().catch(() => {});
-      this.acpClient = null;
-    }
-    if (!this.acpClient) {
-      this.acpClient = new AcpBridgeClient({ baseUrl, token });
-      this.acpClientConfig = { baseUrl, token };
-    }
-    return this.acpClient;
-  }
-
-  /** True when a conversation is live on the harness right now. */
-  hasLiveAcpSession(): boolean {
-    return !!this.acpClient?.getSessionId();
-  }
-
-  /** Ends the harness-side session for good — explicit "New session", or
-   *  plugin unload. Ordinary view teardown must NOT call this. */
-  async closeAcpSession(): Promise<void> {
-    const client = this.acpClient;
-    this.acpClient = null;
-    this.acpClientConfig = null;
-    this.currentSessionPath = null;
-    if (client) await client.close().catch(() => {});
-  }
-
-  /** Re-applies view-scoped settings (density) to every open chat view (W6.9). */
-  refreshOpenChatViews(): void {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)) {
-      if (leaf.view instanceof ChatView) leaf.view.applyViewSettings();
-    }
-  }
-
-  /** Re-renders the composer toolbar on every open chat view — model pins and
-   *  the default are edited in settings as well as in the picker, so both
-   *  surfaces have to agree immediately. */
-  refreshChatToolbars(): void {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)) {
-      if (leaf.view instanceof ChatView) leaf.view.refreshModelPrefs();
-    }
-  }
-
-  /** Shared by the command and the editor context menu (W3.1). */
-  private addEditorSelectionToChat(editor: Editor): void {
-    const text = editor.getSelection().trim();
-    if (!text) {
-      new Notice("No text selected");
-      return;
-    }
-    const file = this.app.workspace.getActiveFile();
-    void this.addSelectionContext({
-      text,
-      path: file?.path,
-      startLine: editor.getCursor("from").line + 1,
-      endLine: editor.getCursor("to").line + 1,
-    });
-  }
-
-  /** Adds a selection chip to the chat and reveals it (W3.1). */
-  async addSelectionContext(ctx: {
-    text: string;
-    path?: string;
-    startLine?: number;
-    endLine?: number;
-  }): Promise<void> {
-    await this.activateView();
-    const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]?.view;
-    if (!(view instanceof ChatView)) return;
-    const lines = ctx.text.split(/\r?\n/).length;
-    view.addContextChip({
-      id: `selection:${ctx.path ?? "unknown"}:${ctx.startLine ?? 0}-${ctx.endLine ?? 0}:${ctx.text.slice(0, 32)}`,
-      kind: "selection",
-      label: `${lines} line${lines === 1 ? "" : "s"} selected`,
-      path: ctx.path,
-      text: ctx.text,
-      startLine: ctx.startLine,
-      endLine: ctx.endLine,
-    });
-    view.focusComposer();
-  }
-
-  /** Adds a note/folder reference chip to the chat and reveals it (W3.3). */
-  async addPathContext(path: string, label: string, isFolder: boolean): Promise<void> {
-    await this.activateView();
-    const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]?.view;
-    if (!(view instanceof ChatView)) return;
-    view.addContextChip({
-      id: `${isFolder ? "folder" : "note"}:${path}`,
-      kind: isFolder ? "folder" : "note",
-      label,
-      path,
-    });
-    view.focusComposer();
-  }
-
   async onload() {
     await this.loadSettings();
-    this.index = new VaultIndex(this.app, () => this.settings.chatFolder, () => this.settings.blacklistFolders);
+    // One-time, idempotent, folder-free discovery of pre-JSONL conversations
+    // (T108). After layout is ready so plugin load stays fast; History triggers
+    // it on demand if this has not finished yet.
+    this.app.workspace.onLayoutReady(() => void this.importLegacyHistory());
 
-    this.registerView(VIEW_TYPE_CHAT, (leaf) => new ChatView(leaf, this));
     this.registerView(SHELL_VIEW_TYPE, (leaf) => new ShellChatView(leaf, this));
-
-    this.addRibbonIcon("message-square", "Open Obsidian Chat", () => {
-      this.activateView();
-    });
-    this.addRibbonIcon("terminal-square", "Open ACP Shell", () => {
-      void this.activateShellView();
-    });
-
-    this.addCommand({
-      id: "open-chat",
-      name: "Open Obsidian Chat",
-      callback: () => this.activateView(),
-    });
+    this.addRibbonIcon("terminal-square", "Open ACP Shell", () => void this.activateShellView());
     this.addCommand({
       id: "open-acp-shell",
-      name: "Open ACP Shell (new shell)",
+      name: "Open ACP Shell",
       callback: () => void this.activateShellView(),
     });
-
-    // W3.1: send the editor's current selection to the chat as context.
     this.addCommand({
-      id: "add-selection-to-chat",
-      name: "Add selection to chat context",
-      editorCallback: (editor) => this.addEditorSelectionToChat(editor),
-    });
-
-    // Same action from the editor's right-click menu (desktop), matching how
-    // native tooling surfaces selection actions (W3.1).
-    this.registerEvent(
-      this.app.workspace.on("editor-menu", (menu, editor) => {
-        if (!editor.getSelection().trim()) return;
-        menu.addItem((item) =>
-          item
-            .setTitle("Add selection to Obsidian Chat")
-            .setIcon("message-square-plus")
-            .onClick(() => this.addEditorSelectionToChat(editor)),
-        );
-      }),
-    );
-
-    // Notes/folders from the file explorer (W3.3).
-    this.registerEvent(
-      this.app.workspace.on("file-menu", (menu, file) => {
-        const isFile = file instanceof TFile;
-        const isFolder = file instanceof TFolder;
-        if (!isFile && !isFolder) return;
-        menu.addItem((item) =>
-          item
-            .setTitle(isFile ? "Add to Obsidian Chat" : "Mention folder in Obsidian Chat")
-            .setIcon("message-square-plus")
-            .onClick(() => void this.addPathContext(file.path, file.name, isFolder)),
-        );
-      }),
-    );
-
-    this.addCommand({
-      id: "connection-info",
-      name: "Connection info",
-      callback: () => {
-        void this.activateView().then(() => {
-          const view = this.app.workspace.getLeavesOfType(VIEW_TYPE_CHAT)[0]?.view;
-          if (view instanceof ChatView) view.openConnectionInfo();
-        });
+      id: "acp-shell-connection-info",
+      name: "ACP Shell connection info",
+      callback: async () => {
+        await this.activateShellView();
+        const view = this.app.workspace.getLeavesOfType(SHELL_VIEW_TYPE)[0]?.view;
+        if (view instanceof ShellChatView) view.openConnectionInfo();
       },
     });
-
-    // The harness reads credentials and provider config at startup, so a
-    // rotated key is invisible to a long-running child. Reloading it is how
-    // that takes effect without quitting Obsidian — on the host itself or,
-    // through the host bridge, from any paired device.
+    this.addCommand({
+      id: "reimport-legacy-chats",
+      name: "Reimport legacy chats (diagnostics)",
+      callback: () => void this.reimportLegacyHistory(),
+    });
     this.addCommand({
       id: "restart-harness",
       name: "Restart harness",
-      checkCallback: (checking) => {
-        const local = Platform.isDesktopApp && this.settings.host.enabled;
-        const remote = !!this.settings.gateway.baseUrl.trim() && !!this.settings.gateway.token.trim();
-        if (!local && !remote) return false;
-        if (!checking) void this.restartHarness();
-        return true;
-      },
+      callback: () => void this.restartHarness(),
     });
 
     this.addSettingTab(new ObsidianChatSettingTab(this.app, this));
-
-    this.startHost();
-    // onunload() only fires on plugin disable/reload, NOT on a full Obsidian
-    // quit — `beforeunload` is what Electron fires as the app closes, so it's
-    // the only reliable place to stop the harness when the app itself quits.
-    this.registerDomEvent(window, "beforeunload", () => this.stopHost());
+    this.registerDomEvent(window, "beforeunload", () => void this.runtime?.close());
   }
 
   onunload() {
     void this.runtime?.close();
-    void this.closeAcpSession();
-    this.stopHost();
   }
 
-  /** On the device designated as host, serve the harness and the vault from
-   *  inside Obsidian: nothing to install or keep running beyond Obsidian and
-   *  the harness CLI itself. */
-  startHost(): void {
-    if (this.host || !Platform.isDesktopApp || !this.settings.host.enabled) return;
-    const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof FileSystemAdapter)) return;
-    if (!this.settings.host.command.trim()) {
-      new Notice("Obsidian Chat: hosting is on but no harness command is set.");
-      return;
-    }
-    this.host = new AcpHost({
-      app: this.app,
-      command: this.settings.host.command,
-      port: this.settings.host.port,
-      cwd: adapter.getBasePath(),
-      devices: () => this.settings.host.devices,
-      blacklist: () => this.settings.blacklistFolders,
-      log: (msg) => console.log(`[obsidian-chat host] ${msg}`),
-    });
-    this.host.start();
+  /** Settings-tab hook: restart the host/harness after connection changes. */
+  async restartHost(): Promise<void> {
+    if (this.settings.shell.mode !== "local") return;
+    await this.restartHarness();
   }
 
-  stopHost(): void {
-    this.host?.stop();
-    this.host = null;
-  }
-
-  /** Reloads the harness child so it re-reads credentials and provider
-   *  config. Runs locally on the host, or asks the host to do it when this
-   *  device is a remote client. */
   async restartHarness(): Promise<void> {
-    if (Platform.isDesktopApp && this.settings.host.enabled) {
-      if (!this.settings.host.command.trim()) {
-        new Notice("Obsidian Chat: no harness command is set.");
-        return;
-      }
-      if (this.host) this.host.restartHarness();
-      else this.startHost();
-      new Notice("Obsidian Chat: restarting harness…");
-      return;
-    }
-    const { baseUrl, token } = this.settings.gateway;
-    if (!baseUrl.trim() || !token.trim()) {
-      new Notice("Obsidian Chat: hosting is off and no host address/device code is set.");
+    if (this.settings.shell.mode !== "local") {
+      new Notice("Restart the harness on the host device.");
       return;
     }
     try {
-      await this.acp().restartHarness();
-      new Notice("Obsidian Chat: harness restart requested");
+      await this.shellRuntime().restartHarness();
+      new Notice("Obsidian Chat: harness restarted");
     } catch (err) {
-      new Notice(`Obsidian Chat: could not restart harness — ${String((err as Error).message ?? err)}`);
+      new Notice(`Obsidian Chat: could not restart the harness — ${String((err as Error).message ?? err)}`);
     }
   }
 
-  /** Applies a changed host setting: drops the live session (it belonged to
-   *  the old harness) and restarts the server. */
-  async restartHost(): Promise<void> {
-    await this.closeAcpSession();
-    this.stopHost();
-    this.startHost();
+  // ---------- legacy conversation recovery (folder-free) ----------
+
+  async importLegacyHistory(options: { silent?: boolean; deep?: boolean; force?: boolean } = {}): Promise<MigrationReport | null> {
+    if (this.legacyImportRun) return this.legacyImportRun;
+    const run = this.runLegacyImport(options).finally(() => {
+      if (this.legacyImportRun === run) this.legacyImportRun = null;
+    });
+    this.legacyImportRun = run;
+    return run;
   }
 
-  async activateView() {
-    const { workspace } = this.app;
-    let leaf: WorkspaceLeaf | null = null;
-    const leaves = workspace.getLeavesOfType(VIEW_TYPE_CHAT);
-    if (leaves.length) {
-      leaf = leaves[0];
-    } else if (Platform.isMobile) {
-      // Mobile: open as a full-page main leaf.
-      leaf = workspace.getLeaf(true);
-      await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true });
-    } else {
-      // Desktop: dock as a right sidebar pane.
-      leaf = workspace.getRightLeaf(false);
-      if (!leaf) leaf = workspace.getLeaf(true);
-      await leaf.setViewState({ type: VIEW_TYPE_CHAT, active: true });
+  private async runLegacyImport(options: { silent?: boolean; deep?: boolean; force?: boolean }): Promise<MigrationReport | null> {
+    if (!Platform.isDesktopApp) return null;
+    if (!options.force && !options.deep && this.settings.legacyImport?.version === 1) {
+      const count = await this.store().list().then((sessions) => sessions.length).catch(() => 0);
+      if (count > 0 || this.settings.legacyImport.imported === 0) return null;
     }
-    if (leaf) workspace.revealLeaf(leaf);
+    const markdown = this.app.vault.getMarkdownFiles();
+    if (!options.silent && markdown.length > 400) {
+      new Notice(`Obsidian Chat: scanning ${markdown.length} notes for old conversations…`);
+    }
+    const candidates = new Map<string, (typeof markdown)[number]>();
+    const texts = new Map<string, string>();
+    let fromFrontmatter = 0;
+    for (const file of markdown) {
+      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined;
+      if (frontmatter?.type === "chat-session") {
+        candidates.set(file.path, file);
+        fromFrontmatter += 1;
+      }
+    }
+    let fromScan = 0;
+    let readErrors = 0;
+    for (const file of markdown) {
+      if (candidates.has(file.path)) continue;
+      try {
+        const text = await this.app.vault.read(file);
+        if (looksLikeLegacyConversation(text)) {
+          candidates.set(file.path, file);
+          texts.set(file.path, text);
+          fromScan += 1;
+        }
+      } catch (err) {
+        readErrors += 1;
+        console.log(`[obsidian-chat] could not read ${file.path}: ${String(err)}`);
+      }
+    }
+    const notes: LegacyNote[] = [];
+    for (const [path, file] of candidates) {
+      let text = texts.get(path);
+      if (text === undefined) {
+        try {
+          text = await this.app.vault.read(file);
+        } catch (err) {
+          readErrors += 1;
+          console.log(`[obsidian-chat] could not read legacy note ${path}: ${String(err)}`);
+          continue;
+        }
+      }
+      notes.push({ path, text, mtime: file.stat.mtime });
+    }
+    let report: MigrationReport | null = null;
+    let error: string | undefined;
+    try {
+      report = await importLegacySessions({
+        store: this.store(),
+        notes,
+        log: (message) => console.log(`[obsidian-chat] ${message}`),
+      });
+      this.settings.legacyImport = { version: 1, completedAt: Date.now(), imported: report.imported };
+      await this.saveSettings();
+    } catch (err) {
+      error = String((err as Error).message ?? err);
+      console.log(`[obsidian-chat] legacy import failed: ${error}`);
+    }
+    const storeCount = await this.store().list().then((sessions) => sessions.length).catch(() => 0);
+    this.lastLegacyImport = {
+      scannedMarkdown: markdown.length,
+      storeFolder: this.settings.sessionStoreFolder || ".chat/sessions",
+      candidates: notes.length,
+      candidatesFromFrontmatter: fromFrontmatter,
+      candidatesFromScan: fromScan,
+      readErrors,
+      imported: report?.imported ?? 0,
+      alreadyImported: report?.alreadyImported ?? 0,
+      skipped: report?.skipped ?? [],
+      storeCount,
+      error,
+    };
+    if (!options.silent) {
+      const imported = report?.imported ?? 0;
+      if (imported > 0) {
+        new Notice(`Obsidian Chat: recovered ${imported} old conversation${imported === 1 ? "" : "s"} from the vault.`);
+      } else if (notes.length > 0) {
+        new Notice(`Obsidian Chat: found ${notes.length} old conversation note(s) but imported 0 — run “Reimport legacy chats (diagnostics)” for details.`);
+      }
+    }
+    return report;
   }
+
+  async reimportLegacyHistory(): Promise<void> {
+    await this.importLegacyHistory({ silent: true, deep: true, force: true });
+    new LegacyImportInfoModal(this.app, this.lastLegacyImport).open();
+  }
+
+  get legacyImportDiagnostics(): LegacyImportDiagnostics | null {
+    return this.lastLegacyImport;
+  }
+
+  // ---------- settings ----------
 
   async loadSettings() {
     const data = (await this.loadData()) ?? {};
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
-    // Older installs stored a harness directory; the host block is now
-    // self-contained, so fill any missing fields from the defaults.
-    this.settings.host = { ...DEFAULT_SETTINGS.host, ...(data.host ?? {}) };
-    this.settings.shell = { ...DEFAULT_SETTINGS.shell, ...(data.shell ?? {}) };
-    this.settings.sessionStoreFolder = data.sessionStoreFolder ?? DEFAULT_SETTINGS.sessionStoreFolder;
-    this.settings.activityDensity = data.activityDensity ?? DEFAULT_SETTINGS.activityDensity;
-    delete (this.settings.host as { harnessDir?: string }).harnessDir;
-    // Model pins/defaults: pins become opaque strings (the pre-ACP BYOK
-    // `{providerId, model}` entries are dropped), and a pre-pin install's
-    // `acpConfigOverrides.model` is promoted to `defaultModel` exactly once so
-    // upgrading doesn't silently change which model a session opens on.
-    this.settings.pinnedModels = normalizePinnedModels((data as { pinnedModels?: unknown }).pinnedModels);
-    const migrated = migrateDefaultModel(
-      (data as { defaultModel?: unknown }).defaultModel,
-      data.acpConfigOverrides as Record<string, string | boolean> | undefined,
-    );
-    this.settings.defaultModel = migrated.defaultModel;
-    this.settings.acpConfigOverrides = migrated.overrides;
-    // Write the upgrade back once, so a legacy `pinnedModels` array or a
-    // `model` key inside `acpConfigOverrides` doesn't linger on disk and get
-    // re-migrated (or misread by a downgrade) later.
-    const onDiskPins = JSON.stringify((data as { pinnedModels?: unknown }).pinnedModels ?? []);
-    const upgraded =
-      onDiskPins !== JSON.stringify(this.settings.pinnedModels) ||
-      (data as { defaultModel?: unknown }).defaultModel === undefined;
-    if (upgraded) await this.saveSettings();
+    const migration = migrateSettings(data, { isMobile: Platform.isMobile });
+    this.settings = migration.settings;
+    this.devicesSnapshot = { ...this.settings.pairedDevices };
+    if (migration.changed) {
+      console.log(`[obsidian-chat] settings upgraded: ${migration.notes.join("; ") || "legacy keys dropped"}`);
+      await this.saveSettings();
+    }
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
+    // Revoking a paired device takes effect immediately: close its live
+    // sockets (the relay cancels its parked approvals) without a restart.
+    const current = this.settings.pairedDevices;
+    for (const name of Object.keys(this.devicesSnapshot)) {
+      if (!(name in current)) this.runtime?.revokeDevice(name);
+    }
+    this.devicesSnapshot = { ...current };
   }
 }

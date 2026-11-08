@@ -1,7 +1,7 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { SessionStore } from "./store.ts";
-import { MemoryAdapter, makePartialTail } from "./test-adapter.ts";
+import { FullPathAdapter, MemoryAdapter, makePartialTail } from "./test-adapter.ts";
 
 function header(now = 1_700_000_000_000) {
   return {
@@ -116,4 +116,44 @@ test("oversized payloads are truncated explicitly, not dropped", async () => {
   });
   assert.ok(stored.truncated);
   assert.ok(adapter.files.get(`.chat/sessions/${id}.jsonl`)!.length > 0);
+});
+
+test("list tolerates Obsidian's full-path adapter entries", async () => {
+  const adapter = new FullPathAdapter();
+  const store = new SessionStore(adapter);
+  const id = await store.createSession({ ...header() });
+  const list = await store.list();
+  assert.deepEqual(list.map((session) => session.sessionId), [id]);
+  const read = await store.read(id);
+  assert.equal(read.header.sessionId, id);
+});
+
+test("a rejected append surfaces to the caller instead of pretending success", async () => {
+  const adapter = new MemoryAdapter();
+  const store = new SessionStore(adapter, ".chat/sessions");
+  const id = await store.createSession({ ...header() });
+  const path = `.chat/sessions/${id}.jsonl`;
+  const original = adapter.append.bind(adapter);
+  adapter.append = async () => {
+    throw new Error("disk full");
+  };
+  await assert.rejects(
+    store.append(id, { kind: "prompt", turn: 1, blocks: [{ type: "text", text: "lost?" }] }),
+    /disk full/,
+  );
+  adapter.append = original;
+  const read = await store.read(id);
+  assert.deepEqual(read.entries, [], "the failed write left the record intact");
+  assert.ok((adapter.files.get(path) ?? "").includes('"kind":"header"'));
+});
+
+test("an externally deleted record disappears from the conversation list", async () => {
+  const adapter = new MemoryAdapter();
+  const store = new SessionStore(adapter, ".chat/sessions");
+  const keep = await store.createSession({ ...header() });
+  const remove = await store.createSession({ ...header() });
+  assert.equal((await store.list()).length, 2);
+  await store.delete(remove);
+  const list = await store.list();
+  assert.deepEqual(list.map((session) => session.sessionId), [keep]);
 });

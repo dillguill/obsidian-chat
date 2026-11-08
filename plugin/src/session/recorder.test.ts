@@ -54,3 +54,24 @@ test("recording continues even when no listener/view is attached", async () => {
   assert.equal(read.entries.length, 2);
   assert.equal((read.entries[1] as { payload?: { text?: string } }).payload?.text, "still recorded");
 });
+
+test("two views of the same session share one record without duplicate sequence", async () => {
+  const adapter = new MemoryAdapter();
+  const store = new SessionStore(adapter, ".chat/sessions");
+  const id = await store.createSession({
+    deviceId: "__local__",
+    commandLabel: "test",
+    commandFingerprint: "test",
+    cwd: "/vault",
+    protocolVersion: 1,
+    capabilities: { loadSession: false, resume: false, mcpHttp: false },
+  });
+  const viewA = new SessionRecorder(store, id);
+  const viewB = new SessionRecorder(store, id);
+  await viewA.recordPrompt([{ type: "text", text: "from A" }]);
+  await viewB.recordPrompt([{ type: "text", text: "from B" }]);
+  await viewA.recordEvent({ sessionId: id, turn: { number: 1, stopReason: "end_turn" } });
+  const read = await store.read(id);
+  assert.deepEqual(read.entries.map((entry) => entry.seq), [1, 2, 3], "one session-owned sequence");
+  assert.equal(read.entries.filter((entry) => entry.kind === "prompt").length, 2);
+});

@@ -58,6 +58,54 @@ export function commandNames(commands: AvailableCommand[]): string[] {
   return commands.map((c) => c.name).filter((n): n is string => typeof n === "string" && n.length > 0);
 }
 
+/** One normalized control row for the composer: exactly the harness's
+ *  declaration, with no category filtering and no plugin-owned defaults. */
+export interface DeclaredControlModel {
+  modes: Array<{ id: string; name: string; description?: string; current: boolean }>;
+  options: Array<{
+    id: string;
+    name: string;
+    description?: string;
+    category?: string;
+    type: "select" | "boolean";
+    currentValue: string | boolean;
+    /** Select choices (empty for boolean); grouped ACP selects are flattened
+     *  in declared order. */
+    choices: SelectChoice[];
+  }>;
+  commands: Array<{ name: string; description?: string }>;
+}
+
+/** Normalizes modes, every declared config option (whatever its category),
+ *  and commands. An empty input yields an empty model — the composer renders
+ *  nothing rather than a fallback set. */
+export function declaredControls(input: {
+  modes: SessionModeState | null;
+  configOptions: SessionConfigOption[] | null;
+  commands: AvailableCommand[] | null;
+}): DeclaredControlModel {
+  const modes = (input.modes?.availableModes ?? []).map((mode) => ({
+    id: mode.id,
+    name: mode.name,
+    ...(mode.description ? { description: mode.description } : {}),
+    current: mode.id === input.modes?.currentModeId,
+  }));
+  const options = (input.configOptions ?? []).map((option) => ({
+    id: option.id,
+    name: option.name,
+    ...(option.description ? { description: option.description } : {}),
+    ...(option.category ? { category: option.category } : {}),
+    type: option.type,
+    currentValue: option.currentValue,
+    choices: option.type === "select" ? flattenSelectOptions(option) : [],
+  }));
+  const commands = (input.commands ?? []).map((command) => ({
+    name: command.name,
+    ...(command.description ? { description: command.description } : {}),
+  }));
+  return { modes, options, commands };
+}
+
 /** True when a control should be shown: a declared option/mode/command always
  *  is; the caller hides only the empty set, never a declared item. */
 export function hasControls(input: {

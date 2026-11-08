@@ -93,6 +93,8 @@ export interface ChatEvent {
   /** True for an update that arrived after its turn's prompt resolved. */
   late?: boolean;
   update?: RenderUpdate;
+  /** Raw ACP notification for the raw views (unmapped, never dropped). */
+  raw?: { sessionUpdate: string; payload: unknown; seq?: number; late?: boolean; replay?: boolean };
   /** A turn boundary; the prompt's resolution is the only terminator. */
   turn?: { number: number; stopReason?: StopReason | string; interrupted?: boolean };
   /** A visible error (transport, store, MCP unavailable, …). */

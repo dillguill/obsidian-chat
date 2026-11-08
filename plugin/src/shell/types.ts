@@ -12,6 +12,11 @@ export interface ShellAttachConfig {
   remoteUrl?: string;
   /** Remote mode: per-device transport token (never logged or stored). */
   remoteToken?: string;
+  /** Local host mode: listener port (default 8765). */
+  port?: number;
+  /** Local host mode: bind address (loopback by default; a wider bind needs
+   *  explicit confirmation before the listener starts). */
+  bindAddress?: string;
 }
 
 export interface ShellPaths {

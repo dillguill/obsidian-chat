@@ -9,6 +9,7 @@ import {
   methods,
   type AgentApp,
   type RequestPermissionRequest,
+  type RequestPermissionResponse,
   type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 
@@ -35,6 +36,10 @@ export interface MockAgentOptions {
   promptDelayMs?: number;
   /** Observes the session/new (and resume/load) request params verbatim. */
   onSessionRequest?: (method: "new" | "load" | "resume", params: unknown) => void;
+  /** Observes the permission response the client sent (verbatim). */
+  onPermissionResponse?: (response: RequestPermissionResponse) => void;
+  /** Observes declared-control requests (set_mode / set_config_option) verbatim. */
+  onControlRequest?: (method: "set_mode" | "set_config_option", params: unknown) => void;
 }
 
 const TOOL_CALL: SessionUpdate = {
@@ -95,10 +100,18 @@ export function createMockAgent(options: MockAgentOptions = {}): AgentApp {
     .onRequest(methods.agent.session.list, () => ({ sessions: [] }))
     .onRequest(methods.agent.session.close, () => ({}))
     .onRequest(methods.agent.session.setMode, (ctx) => {
+      options.onControlRequest?.("set_mode", ctx.params);
       currentModes = { ...(currentModes as Record<string, unknown> | undefined), currentModeId: ctx.params.modeId };
       return {};
     })
     .onRequest(methods.agent.session.setConfigOption, (ctx) => {
+      options.onControlRequest?.("set_config_option", ctx.params);
+      const params = ctx.params as { configId: string; value: string | boolean };
+      if (Array.isArray(currentConfig)) {
+        currentConfig = (currentConfig as Array<{ id: string }>).map((option) =>
+          option.id === params.configId ? { ...option, currentValue: params.value } : option,
+        );
+      }
       return { configOptions: (currentConfig ?? []) as never };
     })
     .onRequest(methods.agent.session.prompt, async (ctx) => {
@@ -126,7 +139,8 @@ export function createMockAgent(options: MockAgentOptions = {}): AgentApp {
             { optionId: "reject_once", name: "Reject", kind: "reject_once" },
           ],
         };
-        await ctx.client.request(methods.client.session.requestPermission, request);
+        const response = await ctx.client.request(methods.client.session.requestPermission, request);
+        options.onPermissionResponse?.(response);
       }
       const emit = async (update: SessionUpdate) => {
         await ctx.client.notify(methods.client.session.update, { sessionId: ctx.params.sessionId, update } as never);

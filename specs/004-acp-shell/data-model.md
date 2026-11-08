@@ -903,7 +903,8 @@ Small schema sketch (values abbreviated; wire shapes are fixed in the store cont
 
 ### 4.7 Migration from the legacy Markdown note format
 
-**Source**: the configured legacy chat folder (old `chatFolder`, default `chat/`), discovered on the
+**Source**: legacy Markdown conversations discovered vault-wide by content/frontmatter (no folder
+setting), discovered on the
 first run after upgrade. Notes carry `type: chat-session` frontmatter and either a canonical
 `<!-- oc-transcript-b64: … -->` transcript block or older rendered prose with role headings
 (`## 👤 User (timestamp)`, `## 🤖 Assistant`, `## 🔑 System`, `## 🔧 Tool`), `### 🧠 Thought (Ns)`,

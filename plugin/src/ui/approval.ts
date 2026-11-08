@@ -24,7 +24,7 @@ import type { PendingPermission, ToolContentView } from "../acp/types.ts";
 export interface WritePreview {
   action: string;
   path: string;
-  /** Real diff lines parsed from ACP's ToolCallContent (acp/client.ts's
+  /** Real diff lines parsed from ACP's ToolCallContent (the shell client's
    *  toolCallContentLines) — added: +, removed: -, unchanged: two spaces. */
   diff?: string[];
   summary: string;
@@ -110,32 +110,67 @@ export function renderApprovalCard(
 
 // ---------- generic ACP permission card (specs/004-acp-shell, FR-034…FR-038) ----------
 
+/** The pure view-model for one permission card. Kept separate from the DOM so
+ *  the card's exact contents (one action per offered option, verbatim title,
+ *  every content variant, locations) can be unit-tested without Obsidian. */
+export interface PermissionCardModel {
+  title: string;
+  meta: string;
+  locations: Array<{ path: string; line?: number }>;
+  content: ToolContentView[];
+  rawInput?: unknown;
+  /** Exactly the harness's offered options, in order. Never extended. */
+  options: PendingPermission["options"];
+}
+
+export function permissionCardModel(permission: PendingPermission): PermissionCardModel {
+  const call = permission.toolCall;
+  return {
+    title: call.title ?? call.name ?? "Permission requested",
+    meta: [call.kind, call.status].filter(Boolean).join(" · "),
+    locations: call.locations ?? [],
+    content: call.content ?? [],
+    rawInput: call.rawInput,
+    options: permission.options ?? [],
+  };
+}
+
 /** Renders the harness's real tool call and exactly the options it offered.
  *  There is no plugin-invented Approve/Reject pair and no default decision:
- *  every button is one of the harness's own `optionId`s, returned verbatim. */
+ *  every button is one of the harness's own `optionId`s, returned verbatim.
+ *  Undo after an approved write is host-side only; a remote device can approve
+ *  but cannot invoke the host's undo (documented v1 limitation). */
 export function renderPermissionCard(
   container: HTMLElement,
   permission: PendingPermission,
   onSelect: (optionId: string) => void,
 ): HTMLElement {
+  const model = permissionCardModel(permission);
   const card = container.createDiv({ cls: "oc-approval-card oc-permission-card" });
-  const call = permission.toolCall;
-  const title = call.title ?? call.name ?? "Permission requested";
-  card.createDiv({ cls: "oc-approval-head", text: title });
+  card.createDiv({ cls: "oc-approval-head", text: model.title });
 
-  const meta = [call.kind, call.status].filter(Boolean).join(" · ");
-  if (meta) card.createDiv({ cls: "oc-permission-meta", text: meta });
+  if (model.meta) card.createDiv({ cls: "oc-permission-meta", text: model.meta });
 
-  for (const content of call.content ?? []) renderContent(card, content);
+  if (model.locations.length) {
+    const locations = card.createDiv({ cls: "oc-permission-locations" });
+    for (const location of model.locations) {
+      locations.createDiv({
+        cls: "oc-permission-location",
+        text: location.line ? `${location.path}:${location.line}` : location.path,
+      });
+    }
+  }
 
-  if (call.rawInput !== undefined) {
+  for (const content of model.content) renderContent(card, content);
+
+  if (model.rawInput !== undefined) {
     const details = card.createEl("details", { cls: "oc-approval-raw" });
     details.createEl("summary", { text: "Requested input" });
-    details.createEl("pre", { text: clampRaw(call.rawInput) });
+    details.createEl("pre", { text: clampRaw(model.rawInput) });
   }
 
   const actions = card.createDiv({ cls: "oc-approval-actions" });
-  if (!permission.options.length) {
+  if (!model.options.length) {
     // An agent that offers no options can only be cancelled; say so instead of
     // inventing a decision the protocol does not define.
     card.createDiv({ cls: "oc-approval-summary", text: "The harness offered no options for this request." });
@@ -143,7 +178,7 @@ export function renderPermissionCard(
   }
   let decided = false;
   const buttons: HTMLButtonElement[] = [];
-  for (const option of permission.options) {
+  for (const option of model.options) {
     const button = actions.createEl("button", {
       cls: option.kind.startsWith("reject") ? "oc-approval-deny" : "oc-approval-allow",
       text: option.name,

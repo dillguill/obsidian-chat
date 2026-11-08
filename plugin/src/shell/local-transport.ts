@@ -8,6 +8,9 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Readable, Writable } from "node:stream";
 import { ndJsonStream, type Stream } from "@agentclientprotocol/sdk";
 import { backoffDelay, type ShellTransport, type TransportConnector } from "./transport.ts";
+import { splitCommand } from "./identity.ts";
+
+export { splitCommand };
 
 /** Loads a Node built-in lazily: dynamic import works under `node --test` and
  *  in Electron's Node integration; a global `require` is the fallback for
@@ -20,42 +23,6 @@ async function loadNodeModule<T>(id: string): Promise<T> {
     if (typeof req === "function") return req(id) as T;
     throw new Error(`local attach requires the desktop app (could not load ${id})`);
   }
-}
-
-/** Quote-aware command split: no shell interpolation in the argv path. */
-export function splitCommand(command: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let quote: "'" | '"' | null = null;
-  let escaped = false;
-  for (const ch of command.trim()) {
-    if (escaped) {
-      cur += ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      if (ch === quote) quote = null;
-      else cur += ch;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      quote = ch;
-      continue;
-    }
-    if (/\s/.test(ch)) {
-      if (cur) out.push(cur);
-      cur = "";
-      continue;
-    }
-    cur += ch;
-  }
-  if (cur) out.push(cur);
-  return out;
 }
 
 export function respawnDelay(attempt: number): number {

@@ -208,7 +208,11 @@ export class SessionStore {
     if (!(await this.adapter.exists(this.root))) return [];
     const listing = await this.adapter.list(this.root);
     const out: SessionSummary[] = [];
-    for (const name of listing.files) {
+    for (const raw of listing.files) {
+      // Obsidian's DataAdapter.list returns full vault-relative paths (while
+      // simple adapters/tests may return bare names). Normalize so a real
+      // vault never loses every record to a prefix.
+      const name = raw.replace(/\\/g, "/").split("/").pop() ?? "";
       if (!name.endsWith(".jsonl")) continue;
       const sessionId = name.slice(0, -".jsonl".length);
       try {

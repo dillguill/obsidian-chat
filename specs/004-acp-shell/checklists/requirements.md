@@ -43,5 +43,6 @@
 - The constitution amendment (host-mode spawn, in-process MCP vault server, host-owned store, one
   shared vault service) was **approved and applied** on 2026-11-07: `.specify/memory/constitution.md`
   is now v2.0.0. The checklist records requirements quality only; the amendment is its own artifact.
-- Reviewer sign-off is still required at the spec review gate; this checklist records the author's
-  self-validation, not the user's approval.
+- Reviewer sign-off is recorded in plan §Constitution Check and in the tasks prerequisites (spec
+  treated as approved 2026-11-07); this checklist records the author's self-validation, not the
+  user's approval. Status reconciled during the 2026-11-07 realignment.

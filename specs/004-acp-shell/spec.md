@@ -4,7 +4,7 @@
 
 **Created**: 2026-11-07
 
-**Status**: Draft
+**Status**: Approved 2026-11-07; implementation in progress (status reconciled during the 2026-11-07 realignment)
 
 **Input**: User description: "I want to reimagine the plugin as an ACP shell with native Obsidian
 integrations. The app should be built on the idea as a thin wrapper as a frontend for whatever ACP
@@ -352,9 +352,9 @@ second protocol is listening.
    reconfiguration is required.
 2. **Given** a device paired before the upgrade, **When** it updates and connects, **Then** it is
    accepted with the existing code and no re-pairing step.
-3. **Given** existing chat notes in the configured folder, **When** the upgraded plugin first runs,
-   **Then** every note's conversation is imported into the host session store losslessly, the
-   original notes are left untouched, and the import is idempotent.
+3. **Given** existing Markdown chat notes anywhere in the vault, **When** the upgraded plugin first
+   runs, **Then** every note's conversation is discovered by content and imported into the host
+   session store losslessly, the original notes are left untouched, and the import is idempotent.
 4. **Given** the branch is complete, **When** the plugin's runtime is inspected, **Then** the only
    network listener is the host's authenticated ACP/MCP endpoint, the only extra process is the
    harness child, and the legacy HTTP/SSE relay and custom client no longer exist.
@@ -483,8 +483,9 @@ second protocol is listening.
   mention index MUST be the same setting and the same enforcement code.
 - **FR-024**: The shell MUST NOT perform direct disk I/O or maintain a second content index; ACP
   filesystem handlers, MCP vault tools, and the mention index MUST call one shared vault service.
-- **FR-025**: Writes MUST NOT be exposed through MCP; the only write path is ACP filesystem
-  capabilities plus the harness's permission request, so approvals and snapshots cannot be bypassed.
+- **FR-025**: Writes MUST NOT be exposed through MCP (normative tool-surface rule in FR-028); the only
+  write path is ACP filesystem capabilities plus the harness's permission request, so approvals and
+  snapshots cannot be bypassed.
 
 **Native Obsidian tools through MCP**
 
@@ -580,9 +581,10 @@ second protocol is listening.
 - **FR-055**: The session log MUST record resume identity in its header: harness session id,
   working directory, harness command fingerprint, ACP protocol version, agent capabilities
   snapshot, last recorded sequence, and the session's last selected modes/config values.
-- **FR-056**: The session log MUST live inside the vault in a configuration folder by default so it
-  is durable, backed up, and synced with the vault, while remaining outside the ordinary note
-  surface; its location MUST be a setting, not scattered per device.
+- **FR-056**: The session log MUST live inside the vault in a fixed hidden configuration folder
+  (default `.chat/sessions/`) so it is durable, backed up, and synced with the vault, while remaining
+  outside the ordinary note surface. This is an internal location, not a note-folder setting: the
+  shell MUST work with no user-configured chat folder.
 - **FR-057**: Log writes MUST be append-only and atomic enough that a crash or partial write cannot
   corrupt a whole session; on a malformed entry the store MUST skip it, report the session as
   degraded, and preserve the rest.
@@ -624,11 +626,11 @@ second protocol is listening.
 **Configuration, migration, and scope**
 
 - **FR-068**: Settings MUST cover host enablement, harness command, listen port/interface, paired
-  devices and credentials, session-store location, and folder blacklist, with clear validation and a
-  visible attach/connection status.
-- **FR-069**: Upgrade MUST preserve existing host settings, paired-device credentials, session
-  folder discovery, and blacklist, MUST NOT require re-pairing, MUST import old notes, and MUST stop
-  writing note-based session history.
+  devices and credentials, and the agent folder blacklist, with clear validation and a visible
+  attach/connection status. There MUST NOT be a note-folder or session-store folder setting.
+- **FR-069**: Upgrade MUST preserve existing host settings, paired-device credentials, and blacklist,
+  MUST NOT require re-pairing, MUST discover and import old Markdown conversations automatically
+  (by note content, with no folder setting), and MUST stop writing note-based session history.
 - **FR-070**: This branch MUST delete the legacy path at the end: the HTTP/SSE relay, the custom
   `AcpBridgeClient`, the old note writer/parser as a history format, the custom SSE/RPC envelope,
   and the tool-name presentation dictionary. Nothing may remain as a parallel fallback.
@@ -642,7 +644,7 @@ second protocol is listening.
 - **FR-073**: The existing shell UX — transcript, approvals, activity presentation, context chips,
   current-note context, `@mention` index, session history, composer, and mobile layout — MUST
   continue to work, with transcript and control presentation updated exactly as FR-039…FR-052
-  describe.
+  describe. History MUST NOT depend on any note-folder setting.
 - **FR-074**: The implementation MUST be delivered as a greenfield module set on this branch; legacy
   modules MUST be removed rather than evolved in place or run side by side.
 
@@ -750,9 +752,10 @@ second protocol is listening.
   harness does not, the user is told rather than the shell silently serialising devices.
 - The conversation store is host-owned; remote devices browse and resume the host's conversations but
   keep no local history in v1. A remote with the host offline cannot open history.
-- The session log is stored in a hidden vault configuration folder by default (for durability,
-  backup, and vault sync) rather than in the plugin data folder; this default is pending the user's
-  final confirmation at the spec review gate.
+- The session log lives in a fixed hidden vault configuration folder (`.chat/sessions/`) for
+  durability, backup, and vault sync, rather than in the plugin data folder. It is not a user-facing
+  folder setting: there is no note-folder configuration, and legacy conversations are discovered by
+  content during the one-time import.
 - The chat UI is the only session viewer in v1; export to a Markdown note is deliberately out of
   scope.
 - MCP vault tools are read-only; all writes go through ACP and approvals. A future write-capable
@@ -785,10 +788,10 @@ second protocol is listening.
 
 ## Open product decisions (non-blocking for planning)
 
-1. **Session-store location**: hidden vault configuration folder (encoded default) vs plugin data
-   folder vs per-install setting. Confirm at review.
-2. **MCP transport implementation**: keep the minimal tool-only handler (lean) or adopt the official
-   MCP SDK server transport.
+1. **Session-store location**: resolved — fixed hidden vault configuration folder (`.chat/sessions/`);
+   not a user-facing setting (no folder configuration), recorded in plan §Storage.
+2. **MCP transport implementation**: resolved — minimal tool-only handler (plan research R4); no MCP
+   SDK dependency added.
 3. **Digest contents and cap**: exact turn/file/plan selection and token bound are plan-stage
    details; the user-facing behaviour is fixed (deterministic, bounded, labelled, explicit).
 4. **Session history search**: the list shows title/time/state in v1; full-text search across stored

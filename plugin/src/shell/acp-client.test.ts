@@ -5,6 +5,7 @@ import type { ShellEnvironment } from "./types.ts";
 import type { TransportConnector } from "./transport.ts";
 import { createMockAgent, linkedStreams, type MockAgentOptions } from "../../test/fixtures/mock-agent.ts";
 import type { ChatEvent } from "../acp/types.ts";
+import type { SessionUpdate } from "@agentclientprotocol/sdk";
 
 const env: ShellEnvironment = {
   canServeVault: () => true,
@@ -14,19 +15,25 @@ const env: ShellEnvironment = {
 
 function makeClient(
   options: MockAgentOptions = {},
-  extra: { mcpServer?: () => McpServerEntry | null } = {},
+  extra: {
+    mcpServer?: () => McpServerEntry | null;
+    approvalTimeoutMs?: number;
+    connector?: TransportConnector;
+  } = {},
 ): { client: AcpShellClient; events: ChatEvent[] } {
   const agentApp = createMockAgent(options);
   const streams = linkedStreams();
   agentApp.connect(streams.agentStream as never);
-  const connector: TransportConnector = {
-    connect: async () => ({
-      label: "mock",
-      stream: streams.clientStream as never,
-      close: async () => undefined,
-      onClose: () => () => undefined,
-    }),
-  };
+  const connector: TransportConnector =
+    extra.connector ??
+    {
+      connect: async () => ({
+        label: "mock",
+        stream: streams.clientStream as never,
+        close: async () => undefined,
+        onClose: () => () => undefined,
+      }),
+    };
   const client = new AcpShellClient({
     mode: "local",
     cwd: "/vault",
@@ -34,6 +41,7 @@ function makeClient(
     environment: env,
     connector,
     ...(extra.mcpServer ? { mcpServer: extra.mcpServer } : {}),
+    ...(extra.approvalTimeoutMs !== undefined ? { approvalTimeoutMs: extra.approvalTimeoutMs } : {}),
   });
   const events: ChatEvent[] = [];
   client.onEvent((event) => events.push(event));
@@ -124,4 +132,202 @@ test("the MCP vault entry is advertised only when the harness supports HTTP MCP"
   assert.deepEqual((loads[0] as { mcpServers: unknown[] }).mcpServers, []);
   assert.equal(unsupported.client.getCapabilitiesSnapshot().mcpHttp, false);
   await unsupported.client.close();
+});
+
+test("explicit cancel resolves a parked approval cancelled and never approves", async () => {
+  let response: unknown = null;
+  const { client } = makeClient({
+    requestPermission: true,
+    onPermissionResponse: (value) => {
+      response = value;
+    },
+  });
+  await client.connect();
+  const prompted = client.prompt([{ type: "text", text: "write" }]);
+  await waitFor(() => client.pendingPermissionCount === 1);
+  await client.cancel();
+  assert.equal(client.pendingPermissionCount, 0, "the parked request was answered cancelled");
+  await prompted;
+  await delay(20);
+  assert.deepEqual(response, { outcome: { outcome: "cancelled" } }, "cancel is never sent as an approval");
+  await client.close();
+});
+
+test("transport loss cancels every parked approval and explains it in the transcript", async () => {
+  const agentApp = createMockAgent({ requestPermission: true });
+  const streams = linkedStreams();
+  agentApp.connect(streams.agentStream as never);
+  let drop: ((reason: string) => void) | null = null;
+  const connector: TransportConnector = {
+    connect: async () => ({
+      label: "mock",
+      stream: streams.clientStream as never,
+      close: async () => undefined,
+      onClose: (callback) => {
+        drop = callback;
+        return () => undefined;
+      },
+    }),
+  };
+  const { client, events } = makeClient({ requestPermission: true }, { connector, approvalTimeoutMs: 0 });
+  await client.connect();
+  const prompted = client.prompt([{ type: "text", text: "write" }]);
+  const settled = prompted.catch((err: unknown) => err as Error);
+  await waitFor(() => client.pendingPermissionCount === 1);
+  drop!?.("host connection closed");
+  await delay(20);
+  assert.equal(client.pendingPermissionCount, 0);
+  assert.ok(
+    events.some(
+      (event) =>
+        event.error?.scope === "transport" &&
+        /1 pending approval were cancelled/i.test(event.error.message) &&
+        /host connection closed/.test(event.error.message),
+    ),
+    "the transcript says why the card disappeared",
+  );
+  await settled;
+  await client.close();
+});
+
+test("an approval timeout cancels the request (never approves) and says so", async () => {
+  const { client, events } = makeClient({ requestPermission: true }, { approvalTimeoutMs: 25 });
+  await client.connect();
+  const prompted = client.prompt([{ type: "text", text: "write" }]);
+  await waitFor(() => client.pendingPermissionCount === 1);
+  await waitFor(() => events.some((event) => /timed out/i.test(event.error?.message ?? "")), 1_000);
+  assert.equal(client.pendingPermissionCount, 0);
+  assert.ok(events.some((event) => event.error?.scope === "permission"), "timeout is surfaced");
+  const stop = await prompted;
+  assert.equal(stop, "end_turn", "the harness continued after the cancellation; nothing was approved");
+  await client.close();
+});
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("condition timed out");
+    await delay(5);
+  }
+}
+
+const modeState = {
+  currentModeId: "build",
+  availableModes: [
+    { id: "build", name: "Build" },
+    { id: "plan", name: "Plan" },
+  ],
+} as never;
+
+const configState = [
+  {
+    id: "model",
+    name: "Model",
+    category: "model",
+    type: "select",
+    currentValue: "m1",
+    options: [
+      { value: "m1", name: "Model One" },
+      { value: "m2", name: "Model Two" },
+    ],
+  },
+  { id: "thinking", name: "Thinking", category: "thought_level", type: "boolean", currentValue: false },
+] as never;
+
+test("mode/config selections are forwarded unchanged in ACP's tagged shapes", async () => {
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const { client } = makeClient({
+    modes: modeState,
+    configOptions: configState,
+    onControlRequest: (method, params) => requests.push({ method, params }),
+  });
+  await client.connect();
+  await client.setMode("plan");
+  await client.setConfigOption("model", "m2");
+  await client.setConfigOption("thinking", true);
+  assert.deepEqual(requests[0], {
+    method: "set_mode",
+    params: { sessionId: "session_mock_1", modeId: "plan" },
+  });
+  assert.deepEqual(requests[1], {
+    method: "set_config_option",
+    params: { sessionId: "session_mock_1", configId: "model", value: "m2" },
+  });
+  assert.deepEqual(requests[2], {
+    method: "set_config_option",
+    params: { sessionId: "session_mock_1", configId: "thinking", type: "boolean", value: true },
+  });
+  await client.close();
+});
+
+test("reapplyControls resends only the session's last selected declared values", async () => {
+  const requests: Array<{ method: string; params: unknown }> = [];
+  const { client } = makeClient({
+    modes: modeState,
+    configOptions: configState,
+    onControlRequest: (method, params) => requests.push({ method, params }),
+  });
+  await client.connect();
+  await client.setMode("plan");
+  await client.setConfigOption("model", "m2");
+  requests.length = 0;
+  // This is the helper the reconnect/resume path calls after session/load.
+  await client.reapplyControls();
+  const reapplied = requests.map((request) => ({
+    method: request.method,
+    params: request.params as Record<string, unknown>,
+  }));
+  assert.ok(
+    reapplied.some((request) => request.method === "set_mode" && request.params.modeId === "plan"),
+    "the last selected mode is reapplied",
+  );
+  assert.ok(
+    reapplied.some((request) => request.method === "set_config_option" && request.params.configId === "model" && request.params.value === "m2"),
+    "the last selected config value is reapplied",
+  );
+  assert.equal(requests.some((request) => (request.params as Record<string, unknown>).configId === "invented"), false);
+  await client.close();
+});
+
+test("declared controls update live from harness notifications", async () => {
+  const updates: SessionUpdate[] = [
+    { sessionUpdate: "current_mode_update", currentModeId: "plan" } as SessionUpdate,
+    {
+      sessionUpdate: "config_option_update",
+      configOptions: [
+        {
+          id: "model",
+          name: "Model",
+          category: "model",
+          type: "select",
+          currentValue: "m2",
+          options: [
+            { value: "m1", name: "Model One" },
+            { value: "m2", name: "Model Two" },
+          ],
+        },
+      ],
+    } as unknown as SessionUpdate,
+    {
+      sessionUpdate: "available_commands_update",
+      availableCommands: [{ name: "compact", description: "Compact" }],
+    } as unknown as SessionUpdate,
+  ];
+  const { client } = makeClient({ modes: modeState, configOptions: configState, updates });
+  await client.connect();
+  await client.prompt([{ type: "text", text: "hi" }]);
+  await delay(25);
+  assert.equal(client.getModes()?.currentModeId, "plan");
+  assert.equal(client.getConfigOptions()?.[0].currentValue, "m2");
+  assert.deepEqual(client.getCommands()?.map((command) => command.name), ["compact"]);
+  await client.close();
+});
+
+test("a second prompt while a turn is in flight is rejected locally", async () => {
+  const { client } = makeClient({ promptDelayMs: 80 });
+  await client.connect();
+  const first = client.prompt([{ type: "text", text: "first" }]);
+  await assert.rejects(client.prompt([{ type: "text", text: "second" }]), /already in flight/);
+  assert.equal(await first, "end_turn");
+  await client.close();
 });
