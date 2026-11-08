@@ -524,6 +524,8 @@
 .oc-chat-mobile .oc-chat-header .oc-icon-btn svg { width: 22px; height: 22px; }
 .oc-chat-mobile .oc-chat-status { min-height: 44px; min-width: 44px; justify-content: center; margin-right: 0; padding: 0 10px; }
 .oc-chat-mobile .oc-status-dot { width: 9px; height: 9px; }
+/* Mobile: the coloured dot alone (tap retries / opens info); text would crowd the title. */
+.oc-chat-mobile .oc-chat-status .oc-status-text { display: none; }
 .oc-chat-mobile .oc-chat-usage { margin-right: 2px; }
 
 .oc-chat-mobile .oc-chat-scroll { padding: 12px 12px 6px; }
@@ -552,8 +554,26 @@
 .oc-control-icon { display: inline-flex; color: var(--text-muted); }
 .oc-control-icon svg { width: 20px; height: 20px; }
 .oc-chat-mobile .oc-input { min-height: 28px; line-height: 1.45; }
-.oc-chat-mobile .oc-control-row, .oc-chat-mobile .oc-control-choice { min-height: 44px; font-size: var(--font-ui-medium) !important; }
-.oc-chat-mobile .oc-control-pop { border-radius: 16px; }
+/* Mobile popover: anchored to the composer (full width, always on screen),
+   height capped to the space above the composer, long names wrap. */
+.oc-chat-mobile .oc-composer { position: relative; }
+.oc-chat-mobile .oc-composer-right,
+.oc-chat-mobile .oc-controls { position: static; }
+.oc-chat-mobile .oc-control-pop {
+  left: 0;
+  right: 0;
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  max-height: min(50vh, 420px);
+  border-radius: 16px;
+  overscroll-behavior: contain;
+}
+.oc-chat-mobile .oc-control-row,
+.oc-chat-mobile .oc-control-choice { min-height: 44px; font-size: var(--font-ui-small) !important; }
+.oc-chat-mobile .oc-control-row-label { flex: 0 1 auto; }
+.oc-chat-mobile .oc-control-row-value,
+.oc-chat-mobile .oc-control-choice-name { white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
 
 /* Wide content scrolls inside its own box, never the page. */
 .oc-chat-mobile .oc-agent-text pre,
@@ -572,11 +592,8 @@
 /* ---------- settings & modals (carried over) ---------- */
 .oc-blacklist { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 
-.oc-mention-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.oc-mention-type { flex: 0 0 auto; display: inline-flex; align-items: center; margin-left: 8px; color: var(--text-muted); }
 
-.oc-mention-type svg { width: 14px; height: 14px; }
 
 .oc-attachments {
   display: flex;
@@ -662,3 +679,8 @@
   border-radius: 8px;
   padding: 10px 12px;
 }
+
+/* rename dialog: one full-width field */
+.setting-item:has(.oc-rename-input) .setting-item-info { display: none; }
+.setting-item:has(.oc-rename-input) .setting-item-control { flex: 1 1 auto; }
+.oc-rename-input { width: 100%; }

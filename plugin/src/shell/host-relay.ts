@@ -6,6 +6,7 @@
  *  then `accept(ws)`. Session/update/permission forwarding is delegated to a
  *  `RelayBridge` implemented by the host runtime (filled in US3).
  */
+import { RENAME_METHOD } from "../session/title.ts";
 import {
   PROTOCOL_VERSION,
   agent,
@@ -52,6 +53,8 @@ export interface RelayBridge {
     deviceId: string,
     request: SetSessionConfigOptionRequest,
   ): Promise<SetSessionConfigOptionResponse>;
+  /** Extension: user rename of a stored conversation. */
+  renameSession?(deviceId: string, request: { sessionId: string; title: string }): Promise<{ title: string }>;
 }
 
 export interface HostRelayOptions {
@@ -102,6 +105,14 @@ export class HostRelay {
       .onRequest(methods.agent.session.close, (ctx) => bridge.closeSession(deviceId, ctx.params).then(() => ({})))
       .onRequest(methods.agent.session.setMode, (ctx) => bridge.setMode(deviceId, ctx.params))
       .onRequest(methods.agent.session.setConfigOption, (ctx) => bridge.setConfigOption(deviceId, ctx.params))
+      .onRequest(
+        RENAME_METHOD,
+        (params: unknown) => (params ?? {}) as { sessionId: string; title: string },
+        (ctx) => {
+          if (!bridge.renameSession) throw new Error("rename is not supported by this host");
+          return bridge.renameSession(deviceId, ctx.params);
+        },
+      )
       .onNotification(methods.agent.session.cancel, (ctx) => bridge.cancel(deviceId, ctx.params));
   }
 

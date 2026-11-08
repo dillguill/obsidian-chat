@@ -1,17 +1,25 @@
 /** Store-backed conversation list (FR-051): the host's stored sessions as ACP
  *  `session/list` returns them. Opening an entry replays it through the
  *  standard `session/load` path. */
-import { App, Modal, Setting } from "obsidian";
+import { App, Modal, Notice, Setting } from "obsidian";
 import type { SessionListEntry } from "../shell/runtime.ts";
+import { RenameModal } from "./rename-modal.ts";
 import { conversationMeta, conversationStatusLabel, recordSizeLabel, recordStatusLabel } from "./labels.ts";
 
 export class SessionListModal extends Modal {
   private sessions: SessionListEntry[];
   private onPick: (sessionId: string) => void;
+  private onRename: (sessionId: string, title: string) => Promise<string>;
 
-  constructor(app: App, sessions: SessionListEntry[], onPick: (sessionId: string) => void) {
+  constructor(
+    app: App,
+    sessions: SessionListEntry[],
+    onRename: (sessionId: string, title: string) => Promise<string>,
+    onPick: (sessionId: string) => void,
+  ) {
     super(app);
     this.sessions = sessions;
+    this.onRename = onRename;
     this.onPick = onPick;
   }
 
@@ -39,6 +47,21 @@ export class SessionListModal extends Modal {
             recordSizeLabel(session.large),
           ]),
         );
+      setting.addExtraButton((button) =>
+        button
+          .setIcon("pencil")
+          .setTooltip("Rename")
+          .onClick(() => {
+            new RenameModal(this.app, session.title, (title) => {
+              void this.onRename(session.sessionId, title)
+                .then((saved) => {
+                  session.title = saved;
+                  setting.setName(saved);
+                })
+                .catch((err) => new Notice(`Could not rename: ${String((err as Error).message ?? err)}`));
+            }).open();
+          }),
+      );
       setting.addButton((button) =>
         button
           .setButtonText("Open")

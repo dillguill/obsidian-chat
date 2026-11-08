@@ -1,58 +1,63 @@
 # TODO
 
-## Mobile design
+## Order
 
-Built on desktop and checked at phone width in a narrowed pane; still needs a
-pass on a real phone.
+| # | Feature | Size | Where | Depends on |
+|---|---------|------|-------|------------|
+| 1 | Mobile bugs | S | plugin (CSS/view) | — |
+| 2 | Conversation naming | S | plugin + host record | — |
+| 3 | @ mentions on mobile | S | plugin | 1 (verify on phone) |
+| 4 | Conversations sync between devices | L | host + plugin | 2 (titles shown in the shared list) |
+| 5 | Skills folder | M | plugin + host | 4 helps (same list on every device), not required |
+| 6 | Web search/fetch toggle | M | dsh profile + plugin | dsh exposing a per-session switch |
 
-- [x] Remove buttons that do nothing on mobile ("attach current note",
-      "attach selection").
-- [x] Composer sits above Obsidian's bottom toolbar, with bottom padding
-      (`--view-bottom-spacing`), and moves down when the keyboard opens.
-- [x] Header buttons are 44px touch targets with spacing.
-- [x] Model and effort (and any other harness option, mode or command list)
-      merged into one compact control next to send, on desktop and mobile.
-- [x] Tables, code and tool output scroll inside their own box.
+Why this order: 1–3 are small, plugin-only and hit on every phone use. 4 is
+the largest change and the one that makes the phone a real second client;
+naming lands first so the shared list is readable. Skills are independent but
+benefit from 4. Web access is last because it needs dsh changes before the
+plugin has anything to show.
+
+---
+
+## 1. Mobile bugs
+
+- [x] Jittery transition when the keyboard appears. The composer padding
+      switches on focus (`oc-keyboard`) while iOS animates the keyboard and
+      Obsidian changes `--keyboard-height`; the two fight. Animate or delay the
+      padding change, or follow `--keyboard-height` only.
+- [x] The model/thinking popover is too large for the screen and partly cut
+      off. Anchor it to the composer width on mobile (full width, inside the
+      viewport), cap its height, and wrap long model names instead of clipping.
 - [ ] Verify on the phone: keyboard behaviour, popover placement, touch
       targets in tool rows, chips and permission cards.
 
-## Conversation naming
+Done so far: dead buttons removed, composer above the bottom toolbar, 44px
+header buttons, merged model/effort control (icon on mobile), wide content
+scrolls in place, info button removed, empty detached conversation replaced
+by a fresh one so the controls appear.
 
-New chats stay titled "New chat" unless the harness sends `session_info`.
+## 2. Conversation naming
 
-- [ ] Title a new conversation from the first prompt (trimmed typed text, not
+Done: the host derives the title on read (user rename > harness
+`session_info_update` > first typed prompt), so every device shows the same
+name. Rename from the header title or the History list (extension method
+`_obsidian-chat/session/rename`). Empty conversations are hidden from History.
+
+- [x] Title a new conversation from the first prompt (trimmed typed text, not
       the attached context) when the harness gives no title.
-- [ ] Prefer the harness's `session_info` title when one arrives.
-- [ ] Let the user rename a conversation from the header and from History.
-- [ ] Store the title in the session record so History and other devices show
+- [x] Prefer the harness's `session_info` title when one arrives.
+- [x] Let the user rename a conversation from the header and from History.
+- [x] Store the title in the session record so History and other devices show
       it.
 
-## @ mentions on mobile
+## 3. @ mentions on mobile
 
-- [ ] Typing `@` in the composer on mobile opens the note picker, as it does
-      on desktop (the @ button works; the typed trigger needs checking and
-      fixing on the phone keyboard).
+- [x] Typing `@` (or the @ button) opens the note picker in remote mode too,
+      reading the device's own synced vault; blacklisted folders are hidden;
+      the trigger works mid-sentence at the cursor.
+- [ ] Verify on the phone keyboard.
 
-## Web search and fetch (globe toggle)
-
-- [ ] A globe button in the composer turns `web_search` / `web_fetch` on for
-      the conversation. Off by default.
-- [ ] Gated: the harness gets the web tools only while the toggle is on, and
-      each call still goes through the permission card.
-- [ ] The toggle state is visible in the composer and stored per
-      conversation.
-
-## Skills
-
-- [ ] A setting picks one vault folder as the skills folder (user-selected,
-      vault level).
-- [ ] Each skill is a note (or folder with a main note) in that folder; the
-      plugin lists them and offers them to the harness.
-- [ ] Skills can be picked from the composer (e.g. `/` menu) and are sent as
-      tagged context like other attachments.
-- [ ] Skills sync with the vault, so every device sees the same set.
-
-## Conversations sync between devices
+## 4. Conversations sync between devices
 
 Conversations are stored by the host on the machine that runs it
 (`.chat/sessions/`) and are owned by the device that started them: the phone
@@ -68,3 +73,30 @@ the phone (or vice versa).
       with the originating device shown.
 - [ ] Handle two devices opening the same live conversation (read-only
       follower, or hand-off).
+
+## 5. Skills
+
+- [ ] A setting picks one vault folder as the skills folder (user-selected,
+      vault level).
+- [ ] Each skill is a note (or folder with a main note) in that folder; the
+      plugin lists them and offers them to the harness.
+- [ ] Skills can be picked from the composer (e.g. `/` menu) and are sent as
+      tagged context like other attachments.
+- [ ] Skills sync with the vault, so every device sees the same set.
+
+## 6. Web search and fetch (globe toggle)
+
+dsh has native `web_search` / `web_fetch` tools, but the `obsidian` profile
+disables them on purpose ("Thin vault surface: notes and search only. No
+shell, no web tools."). The toggle needs a dsh-side switch first.
+
+- [ ] dsh: expose web access as a per-session ACP config option (boolean,
+      default off) for the obsidian profile, instead of a profile-wide
+      on/off.
+- [ ] Plugin: render that declared option as a globe toggle in the composer,
+      off by default, without hard-coding tool names (driven by what the
+      harness declares).
+- [ ] Gated: web tools exist only while the toggle is on, and each call still
+      goes through the permission card.
+- [ ] The toggle state is visible in the composer and stored per
+      conversation.

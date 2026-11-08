@@ -4,6 +4,7 @@
  *  satisfies it). The host is the only writer; the chat UI is the only viewer.
  *  No Markdown notes are written.
  */
+import { effectiveTitle, lastActivity } from "./title.ts";
 import {
   type RecordEntry,
   type RecordLine,
@@ -31,6 +32,8 @@ export interface SessionSummary {
   degraded: boolean;
   /** Record size in bytes (for the 50 MiB warning). */
   bytes: number;
+  /** No prompt was ever sent (an opened-but-unused chat). */
+  empty?: boolean;
 }
 
 export interface SessionRead {
@@ -221,12 +224,14 @@ export class SessionStore {
       const sessionId = name.slice(0, -".jsonl".length);
       try {
         const read = await this.read(sessionId);
+        const title = effectiveTitle(read.header, read.entries);
         out.push({
           sessionId,
-          header: read.header,
+          header: { ...read.header, title: title ?? undefined, updatedAt: lastActivity(read.header, read.entries) },
           path: join(this.root, name),
           degraded: read.degradedTail || read.malformedLines > 0,
           bytes: read.bytes,
+          empty: !read.entries.some((entry) => entry.kind === "prompt"),
         });
       } catch {
         // Unreadable record: skip it rather than fabricating a session.
@@ -249,7 +254,7 @@ export class SessionStore {
   }
 
   /** Appends a `meta` entry when the harness (or user) changes the title. */
-  async setTitle(sessionId: string, title: string): Promise<void> {
-    await this.append(sessionId, { kind: "meta", title });
+  async setTitle(sessionId: string, title: string, source: "user" | "harness" = "harness"): Promise<void> {
+    await this.append(sessionId, { kind: "meta", title, source } as NewEntry);
   }
 }

@@ -7,6 +7,7 @@
  *  permission requests only to that device, and implements the mandatory
  *  continuity ladder (resume → load → explicit digest/fresh/full replay).
  */
+import { cleanTitle } from "../session/title.ts";
 import {
   RequestError,
   methods,
@@ -266,7 +267,8 @@ export class HostBridge implements RelayBridge {
   async listSessions(deviceId: string): Promise<ListSessionsResponse> {
     const sessions = await this.opts.store().list();
     const info: SessionInfo[] = sessions
-      .filter((summary) => summary.header.deviceId === deviceId)
+      // Opened-but-unused chats (no prompt) are not worth listing.
+      .filter((summary) => summary.header.deviceId === deviceId && !summary.empty)
       .map((summary) => this.sessionInfo(summary));
     return { sessions: info };
   }
@@ -388,6 +390,26 @@ export class HostBridge implements RelayBridge {
       });
       throw err;
     }
+  }
+
+  /** Extension `_obsidian-chat/session/rename`: a user-chosen name, stored as
+   *  a `meta` entry (source "user") and echoed as `session_info_update`. */
+  async renameSession(deviceId: string, request: { sessionId: string; title: string }): Promise<{ title: string }> {
+    const title = cleanTitle(String(request?.title ?? ""));
+    if (!title) throw new RequestError(-32602, "title must not be empty");
+    const store = this.opts.store();
+    const live = this.sessions.get(request.sessionId);
+    const owner = live ? live.deviceId : (await store.read(request.sessionId)).header.deviceId;
+    if (owner !== deviceId) throw new RequestError(POLICY_ERROR, "policy: session is not owned by this device");
+    await store.setTitle(request.sessionId, title, "user");
+    const context = this.devices.get(deviceId);
+    await context
+      ?.notify(methods.client.session.update, {
+        sessionId: request.sessionId,
+        update: { sessionUpdate: "session_info_update", title } as SessionUpdate,
+      })
+      .catch(() => undefined);
+    return { title };
   }
 
   async cancel(deviceId: string, request: { sessionId: string }): Promise<void> {

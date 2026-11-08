@@ -11,6 +11,7 @@
  *  `sessionId` getter is the client's *primary* session (the local UI's chat);
  *  session-scoped methods (`promptIn`, `setModeIn`, …) are used by the relay.
  */
+import { RENAME_METHOD } from "../session/title.ts";
 import {
   PROTOCOL_VERSION,
   RequestError,
@@ -696,6 +697,13 @@ export class AcpShellClient implements AcpChatClient {
 
   async setMode(modeId: string): Promise<void> {
     await this.setModeIn(this.requirePrimary(), modeId);
+  }
+
+  /** Extension `_obsidian-chat/session/rename` (host-implemented). */
+  async renameSessionIn(sessionId: string, title: string): Promise<string> {
+    const conn = this.requireConn();
+    const response = await conn.agent.request<{ title?: string }>(RENAME_METHOD, { sessionId, title });
+    return response?.title ?? title;
   }
 
   async setModeIn(sessionId: string, modeId: string): Promise<void> {

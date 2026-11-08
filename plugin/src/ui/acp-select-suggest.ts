@@ -8,12 +8,12 @@ export class AcpSelectSuggestModal extends FuzzySuggestModal<SelectChoice> {
   private current: string;
   private onChoose: (value: string) => void;
 
-  constructor(app: App, choices: SelectChoice[], current: string, onChoose: (value: string) => void) {
+  constructor(app: App, choices: SelectChoice[], current: string, onChoose: (value: string) => void, heading?: string) {
     super(app);
     this.choices = choices;
     this.current = current;
     this.onChoose = onChoose;
-    this.setPlaceholder("Select…");
+    this.setPlaceholder(heading ? `Search ${heading}…` : "Search…");
   }
 
   getItems(): SelectChoice[] {

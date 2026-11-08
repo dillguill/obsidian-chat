@@ -154,6 +154,8 @@ export interface ResumeEntry extends BaseEntry {
 export interface MetaEntry extends BaseEntry {
   kind: "meta";
   title?: string;
+  /** "user" for an explicit rename; a user name beats harness titles. */
+  source?: "user" | "harness";
   updatedAt?: string | null;
 }
 

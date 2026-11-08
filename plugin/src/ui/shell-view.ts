@@ -14,6 +14,9 @@ import { mapSessionUpdate } from "../acp/session-update.ts";
 import type { RecordEntry } from "../session/record.ts";
 import { renderPermissionCard } from "./approval.ts";
 import { SessionListModal } from "./session-list.ts";
+import { RenameModal } from "./rename-modal.ts";
+import { titleFromText } from "../chat/session-title.ts";
+import { effectiveTitle, isPlaceholderTitle } from "../session/title.ts";
 import { ConnectionInfoModal } from "./connection-info.ts";
 import { composerControlModel, renderComposerControls } from "./controls.ts";
 import { AcpSelectSuggestModal } from "./acp-select-suggest.ts";
@@ -21,7 +24,8 @@ import { activityPresentation, formatTokens, promptDisplay } from "./renderer.ts
 import { fillPlan, renderRawUpdate, renderToolCard, type ToolCardHandle } from "./transcript.ts";
 import type { RawRecordEntry } from "./raw-view.ts";
 import { renderMarkdown } from "./markdown.ts";
-import { NoteMentionModal, type MentionItem } from "./mention.ts";
+import { openVaultFilePicker } from "./vault-picker.ts";
+import { isBlacklisted } from "../vault/path-policy.ts";
 import { IMAGE_EXT, vaultFileDataUrl } from "./image-picker.ts";
 import type { ContinuityChoice, ContinuityInfo } from "../shell/runtime.ts";
 import { HISTORY_RENDER_LIMIT } from "../session/limits.ts";
@@ -88,6 +92,8 @@ export class ShellChatView extends ItemView {
   private chipsEl!: HTMLElement;
   private controlsEl!: HTMLElement;
   private titleEl!: HTMLElement;
+  /** Set after a user rename: later harness titles do not replace it. */
+  private titleLocked = false;
   private statusEl!: HTMLElement;
   private statusDot!: HTMLElement;
   private statusText!: HTMLElement;
@@ -131,7 +137,8 @@ export class ShellChatView extends ItemView {
 
     // ----- header -----
     const header = root.createDiv({ cls: "oc-chat-header" });
-    this.titleEl = header.createDiv({ cls: "oc-chat-title", text: "New chat" });
+    this.titleEl = header.createDiv({ cls: "oc-chat-title", text: "New chat", attr: { role: "button", "aria-label": "Rename conversation" } });
+    this.titleEl.addEventListener("click", () => this.renameCurrent());
     const right = header.createDiv({ cls: "oc-chat-header-right" });
     this.usageEl = right.createSpan({ cls: "oc-chat-usage oc-hidden" });
     this.statusEl = right.createDiv({ cls: "oc-chat-status", attr: { role: "button", "aria-label": "Connection info" } });
@@ -197,12 +204,7 @@ export class ShellChatView extends ItemView {
         void this.cancel();
       }
     });
-    if (Platform.isMobile) {
-      // The bottom navbar spacing is dead space while the keyboard is up
-      // (iOS may resize the webview without reporting --keyboard-height).
-      this.inputEl.addEventListener("focus", () => root.addClass("oc-keyboard"));
-      this.inputEl.addEventListener("blur", () => root.removeClass("oc-keyboard"));
-    }
+    if (Platform.isMobile) this.watchKeyboard(root);
     this.inputEl.addEventListener("input", () => {
       this.autosize();
       this.updateSendState();
@@ -237,6 +239,66 @@ export class ShellChatView extends ItemView {
   async onClose(): Promise<void> {
     for (const off of this.unsubscribers) off();
     this.unsubscribers = [];
+  }
+
+  /** Mobile: drop the navbar spacing while the on-screen keyboard is up.
+   *  Obsidian makes room for the keyboard by shrinking the app container
+   *  (via --keyboard-height, or the webview/body resizing natively), so the
+   *  container's own size is the signal: a ResizeObserver fires in the same
+   *  frame as that layout change, so the padding neither lags nor jumps ahead
+   *  of the keyboard. If no shrink is seen shortly after the input gains
+   *  focus, fall back to focus alone. */
+  private watchKeyboard(root: HTMLElement): void {
+    const container = (document.querySelector(".app-container") as HTMLElement | null) ?? document.body;
+    let tallest = 0;
+    let fallback = 0;
+    let detected = false;
+    const keyboardHeight = () => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--keyboard-height")) || 0;
+    const set = (open: boolean) => {
+      if (open === root.hasClass("oc-keyboard")) return;
+      root.toggleClass("oc-keyboard", open);
+      if (this.stick) this.scroll(true);
+    };
+    const check = () => {
+      const height = Math.min(container.getBoundingClientRect().height, window.visualViewport?.height ?? Infinity);
+      tallest = Math.max(tallest, height);
+      const shrunk = tallest - height > 120;
+      const open = shrunk || keyboardHeight() > 0;
+      if (open) detected = true;
+      set(open || (fallback === -1 && document.activeElement === this.inputEl));
+    };
+    const observer = new ResizeObserver(check);
+    observer.observe(container);
+    const styleWatch = new MutationObserver(check);
+    styleWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
+    const onFocus = () => {
+      window.clearTimeout(fallback);
+      fallback = window.setTimeout(() => {
+        if (!detected && document.activeElement === this.inputEl) {
+          fallback = -1;
+          check();
+        }
+      }, 350);
+    };
+    const onBlur = () => {
+      window.clearTimeout(fallback);
+      fallback = 0;
+      window.setTimeout(check, 0);
+    };
+    const onRotate = () => {
+      tallest = 0;
+      window.setTimeout(check, 300);
+    };
+    this.inputEl.addEventListener("focus", onFocus);
+    this.inputEl.addEventListener("blur", onBlur);
+    window.addEventListener("orientationchange", onRotate);
+    this.unsubscribers.push(() => {
+      observer.disconnect();
+      styleWatch.disconnect();
+      window.clearTimeout(fallback);
+      window.removeEventListener("orientationchange", onRotate);
+    });
+    check();
   }
 
   private iconButton(parent: HTMLElement, icon: string, label: string, onClick: () => void): HTMLElement {
@@ -330,8 +392,8 @@ export class ShellChatView extends ItemView {
         void runtime.setConfigOption(configId, value).then(() => this.renderControls()).catch((err) => this.showError(`Could not change that setting: ${String((err as Error).message ?? err)}`));
       },
       icon: Platform.isMobile ? (el) => setIcon(el, "sliders-horizontal") : undefined,
-      openPicker: (_heading, choices, current, onChoose) => {
-        new AcpSelectSuggestModal(this.plugin.app, choices, current, onChoose).open();
+      openPicker: (heading, choices, current, onChoose) => {
+        new AcpSelectSuggestModal(this.plugin.app, choices, current, onChoose, heading).open();
       },
       onCommand: (name) => {
         this.inputEl.value = `/${name} `;
@@ -402,37 +464,39 @@ export class ShellChatView extends ItemView {
     });
   }
 
+  /** `@` typed at a word start (at the cursor, not only at the end) opens the
+   *  note picker; the `@` itself is removed. */
   private maybeOpenMention(): void {
-    const value = this.inputEl.value;
-    if (!/(?:^|\s)@[^\s]*$/.test(value)) return;
-    this.inputEl.value = value.replace(/@[^\s]*$/, "");
+    const input = this.inputEl;
+    const caret = input.selectionStart ?? input.value.length;
+    const before = input.value.slice(0, caret);
+    if (!/(?:^|\s)@$/.test(before)) return;
+    input.value = before.slice(0, -1) + input.value.slice(caret);
+    input.setSelectionRange(caret - 1, caret - 1);
+    this.autosize();
+    this.updateSendState();
     this.openMentionPicker();
   }
 
+  /** Lists this device's own vault copy (synced on mobile too), minus the
+   *  blacklisted folders the agent is not allowed to read. */
   private openMentionPicker(): void {
-    if (this.plugin.shellRuntime().mode === "remote") {
-      new Notice("Mention search runs on the host; it isn't available from a remote shell yet.");
-      return;
-    }
-    const items: MentionItem[] = [];
-    for (const file of this.plugin.app.vault.getMarkdownFiles()) {
-      items.push({ path: file.path, link: file.path.replace(/\.md$/, ""), kind: "note", mtime: file.stat.mtime });
-    }
-    for (const file of this.plugin.app.vault.getFiles()) {
-      if (IMAGE_EXT.has(file.extension)) items.push({ path: file.path, link: file.path, kind: "image", mtime: file.stat.mtime });
-    }
-    items.sort((a, b) => (b.mtime ?? 0) - (a.mtime ?? 0));
-    new NoteMentionModal(this.plugin.app, items, (item) => {
-      if (item.kind === "image") {
-        void this.attachVaultImage(item.path);
-        return;
-      }
-      const abstract = this.plugin.app.vault.getAbstractFileByPath(item.path);
-      if (!abstract) return;
-      void this.plugin.app.vault.read(abstract as never).then((text) => {
-        this.addContextChip({ id: `note:${item.path}`, label: item.link.split("/").pop() ?? item.link, path: item.path, text });
-      });
-    }).open();
+    const blacklist = this.plugin.settings.blacklistFolders;
+    const isImage = (ext: string) => IMAGE_EXT.has(ext.toLowerCase());
+    openVaultFilePicker(this.plugin.app, {
+      // Notes and images only; never a blacklisted folder.
+      include: (file) => (file.extension === "md" || isImage(file.extension)) && !isBlacklisted(file.path, blacklist),
+      placeholder: "Attach a note or image…",
+      onPick: (file) => {
+        if (isImage(file.extension)) {
+          void this.attachVaultImage(file.path);
+          return;
+        }
+        void this.plugin.app.vault.read(file).then((text) => {
+          this.addContextChip({ id: `note:${file.path}`, label: file.basename, path: file.path, text });
+        });
+      },
+    });
   }
 
   private async attachVaultImage(path: string): Promise<void> {
@@ -504,6 +568,7 @@ export class ShellChatView extends ItemView {
     this.renderChips();
     this.stick = true;
     this.beginTurn(typed, chips.map((chip) => chip.label), images.length, true);
+    if (!this.titleLocked && isPlaceholderTitle(this.titleEl.getText()) && typed) this.setTitle(titleFromText(typed));
     try {
       const context = await this.buildContext(chips);
       const runtime = this.plugin.shellRuntime();
@@ -549,7 +614,7 @@ export class ShellChatView extends ItemView {
     this.allRaw = [];
     this.currentTurn = 0;
     this.turn = null;
-    this.titleEl.setText("New chat");
+    this.setTitle("New chat", false);
     this.usageEl.addClass("oc-hidden");
   }
 
@@ -768,7 +833,7 @@ export class ShellChatView extends ItemView {
         this.setUsage(update.usage);
         return;
       case "session_info":
-        if (update.title) this.titleEl.setText(update.title);
+        if (update.title && !this.titleLocked) this.setTitle(update.title);
         return;
       case "raw": {
         // Host-internal replay kinds (continuity, truncation) live in the raw
@@ -914,6 +979,8 @@ export class ShellChatView extends ItemView {
     const runtime = this.plugin.shellRuntime();
     const history = await runtime.history();
     if (history) {
+      const title = effectiveTitle(history.header, history.entries);
+      if (title) this.setTitle(title, history.entries.some((e) => e.kind === "meta" && (e as { source?: string }).source === "user"));
       const total = history.entries.length;
       for (const entry of history.entries) this.collectHistoryRaw(entry);
       const visible = total > HISTORY_RENDER_LIMIT ? history.entries.slice(-HISTORY_RENDER_LIMIT) : history.entries;
@@ -938,6 +1005,7 @@ export class ShellChatView extends ItemView {
       if (!sessions.length || (continuity && !continuity.attached && empty)) {
         await runtime.newSession();
       } else {
+        this.setTitle(sessions[0].title, false);
         this.renderContinuity(continuity);
       }
       this.renderControls();
@@ -986,6 +1054,25 @@ export class ShellChatView extends ItemView {
     }
   }
 
+  private setTitle(title: string, locked = this.titleLocked): void {
+    this.titleEl.setText(title);
+    this.titleLocked = locked;
+  }
+
+  private renameCurrent(): void {
+    const runtime = this.plugin.shellRuntime();
+    if (!runtime.clientDebugInfo?.sessionId) {
+      new Notice("Send a message first; then the conversation can be renamed.");
+      return;
+    }
+    new RenameModal(this.plugin.app, this.titleEl.getText(), (title) => {
+      void runtime
+        .renameSession(title)
+        .then((saved) => this.setTitle(saved, true))
+        .catch((err) => this.showError(`Could not rename: ${String((err as Error).message ?? err)}`));
+    }).open();
+  }
+
   private async openHistory(): Promise<void> {
     const runtime = this.plugin.shellRuntime();
     try {
@@ -995,7 +1082,12 @@ export class ShellChatView extends ItemView {
         await this.plugin.importLegacyHistory({ silent: true });
         sessions = await runtime.listSessions();
       }
-      new SessionListModal(this.plugin.app, sessions, (sessionId) => {
+      const onRename = async (sessionId: string, title: string): Promise<string> => {
+        const saved = await runtime.renameSession(title, sessionId);
+        if (sessionId === runtime.clientDebugInfo?.sessionId) this.setTitle(saved, true);
+        return saved;
+      };
+      new SessionListModal(this.plugin.app, sessions, onRename, (sessionId) => {
         void (async () => {
           this.clearTranscript();
           this.setBusy(false);
@@ -1004,7 +1096,7 @@ export class ShellChatView extends ItemView {
             const continuity = await runtime.loadSession(sessionId);
             // Replay carries no turn markers: close the last replayed turn.
             if (this.turn) this.endTurn(undefined);
-            if (chosen?.title) this.titleEl.setText(chosen.title);
+            this.setTitle(chosen?.title || "New chat", false);
             this.renderControls();
             const history = await runtime.history();
             if (history && !this.threadEl.querySelector(".oc-user, .oc-agent")) {

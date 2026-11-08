@@ -368,6 +368,16 @@ export class ShellRuntime {
     return { header: read.header, entries: read.entries };
   }
 
+  /** Renames a stored conversation (current one when no id is given). */
+  async renameSession(title: string, sessionId?: string): Promise<string> {
+    if (!this.client) await this.connect();
+    const client = this.client;
+    if (!client) throw new Error("not connected");
+    const id = sessionId ?? client.getSessionId();
+    if (!id) throw new Error("no conversation to rename yet");
+    return client.renameSessionIn(id, title);
+  }
+
   /** Standard `session/list` over the attach (host-scoped on the host side). */
   async listSessions(): Promise<SessionListEntry[]> {
     if (!this.client) return [];
@@ -376,7 +386,7 @@ export class ShellRuntime {
       const meta = (session._meta ?? {}) as Record<string, unknown>;
       return {
         sessionId: session.sessionId,
-        title: session.title?.trim() || "Untitled conversation",
+        title: session.title?.trim() || "New chat",
         updatedAt: session.updatedAt ?? "",
         resume: String(meta["obsidian-chat/resume"] ?? "unknown"),
         degraded: meta["obsidian-chat/degraded"] === true,
