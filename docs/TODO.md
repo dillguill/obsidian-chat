@@ -11,6 +11,7 @@
 | 5 | Skills folder | M | plugin + host | 4 helps (same list on every device), not required |
 | 6 | Web search/fetch toggle (parked) | S–M | dsh profile (A) or plugin host (B) | see §6 options |
 | 7 | Voice input (stt.example) | M | plugin settings + composer | your whisper.cpp server |
+| 10 | Strip agent co-author trailers from history | S | git history | do with the move to Gitea (force-push) |
 
 Why this order: 1–3 are small, plugin-only and hit on every phone use. 4 is
 the largest change and the one that makes the phone a real second client;
@@ -210,3 +211,26 @@ built and removed after phone testing:
 
 - [ ] Check mic permission and the `.internal` certificate on iOS (Caddy's
       internal CA must be trusted on the phone).
+
+---
+
+## 10. Strip agent co-author trailers from history
+
+(Numbered 10 because §8 and §9 are on the `design/acp-receiver` branch.)
+
+Two commits already on GitHub `main` carry agent attribution trailers:
+
+- `bddcf13` Implement ACP/MCP standards migration: `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`
+- `3109568` keep conversations alive across view teardown: `Co-authored-by: Copilot <...>`
+
+- [ ] Rewrite those two messages to drop the trailers (`git filter-repo
+      --message-callback`, or an interactive rebase from `bddcf13^`). Every
+      later commit gets a new hash, including `design/acp-receiver`: rebase it
+      onto the rewritten `main`.
+- [ ] Do it when Gitea becomes `origin`, so the rewritten history is what
+      gets pushed. Force-push GitHub `main` once, then delete the merged
+      `origin/architecture-rework`.
+- [ ] Prevent new ones: agents commit without attribution trailers. Turn it
+      off in each agent's settings, and optionally add a `commit-msg` hook
+      that rejects `Co-authored-by:` lines naming an agent.
+
