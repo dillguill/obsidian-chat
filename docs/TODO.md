@@ -188,26 +188,25 @@ https://stt.example, `/v1/audio/transcriptions`), with a Test button. The
 mic sits left of send; recordings are converted to 16 kHz mono WAV in memory
 and the transcript is inserted at the cursor.
 
-Engine dropdown (per device, not synced): Automatic / System speech
-recognition / Whisper server / Off. System uses the platform's live Web
-Speech recognizer (mobile only; Electron's is non-functional) and streams the
-transcript into the input; Automatic picks it where available, else Whisper.
-Obsidian 1.15's iOS voice capture is a Quick Capture feature with no plugin
-API, so it can't be called from the chat.
+Engine dropdown (per device, not synced): Whisper server / Off.
 
-- [ ] Verify on the phone: is the system recognizer exposed in the iOS app
-      (the dropdown says "unavailable" if not)? Mic permission prompt.
+### Parked: system speech recognition (removed)
 
-- [x] Settings: a speech-to-text server URL (your whisper.cpp instance,
-      e.g. `https://stt.example`), with a connection test. Off when
-      empty.
-- [x] Composer: a microphone button to the left of send (desktop and
-      mobile), shown only when a server is set. Tap to record, tap again to
-      stop; the transcript is inserted into the input for editing, not sent
-      automatically.
-- [x] Recording state is obvious (pulsing mic, elapsed time); cancel with Esc
-      or a second tap target.
-- [x] Audio goes only to the configured server; nothing is stored in the
-      vault or the session record.
+An "Automatic" / "System speech recognition" engine (Web Speech API,
+`webkitSpeechRecognition`, live transcript streaming into the input) was
+built and removed after phone testing:
+
+- On the phone, pressing the mic to end a recording just reverted the
+  button to its idle state (no text kept); same with System chosen
+  explicitly. Automatic also made it unclear which engine was in use.
+- Likely causes to investigate: the recognizer ends early / never delivers
+  results in Obsidian's iOS web view, or iOS never fires `onend` (the button
+  waits for it). Desktop Electron exposes the API but has no working
+  service.
+- Obsidian 1.15's own iOS voice capture is a Quick Capture feature with no
+  plugin API, so it can't be called from the chat.
+- If revisited: confirm on the phone that results arrive, finalize the UI
+  on tap instead of waiting for `onend`, and keep Whisper the default.
+
 - [ ] Check mic permission and the `.internal` certificate on iOS (Caddy's
       internal CA must be trusted on the phone).

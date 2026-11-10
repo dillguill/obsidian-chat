@@ -25,7 +25,7 @@ import { fillPlan, renderRawUpdate, renderToolCard, type ToolCardHandle } from "
 import type { RawRecordEntry } from "./raw-view.ts";
 import { renderMarkdown } from "./markdown.ts";
 import { openVaultFilePicker } from "./vault-picker.ts";
-import { SystemDictation, VoiceRecorder, systemDictationAvailable, transcribe } from "./voice.ts";
+import { VoiceRecorder, transcribe } from "./voice.ts";
 import { insertTranscript, resolveVoiceProvider } from "../voice/stt.ts";
 import { SlashPickerModal, type SlashItem } from "./slash-picker.ts";
 import { catalogText, normalizeFolder, skillBody, skillsIn, type Skill } from "../skills/catalog.ts";
@@ -99,9 +99,6 @@ export class ShellChatView extends ItemView {
   private micBtn!: HTMLButtonElement;
   private micTime!: HTMLElement;
   private voice: VoiceRecorder | null = null;
-  private dictation: SystemDictation | null = null;
-  /** Input text and caret before live dictation started (Esc restores it). */
-  private dictationBase: { value: string; caret: number } | null = null;
   private voiceTimer = 0;
   private voiceState: "idle" | "recording" | "transcribing" = "idle";
   private titleEl!: HTMLElement;
@@ -350,11 +347,8 @@ export class ShellChatView extends ItemView {
   }
 
   /** The engine the mic uses on this device, or null (mic hidden). */
-  private voiceEngine(): "system" | "whisper" | null {
-    return resolveVoiceProvider(this.plugin.voiceProvider(), {
-      systemAvailable: systemDictationAvailable(Platform.isDesktopApp),
-      whisperUrl: this.plugin.settings.sttUrl,
-    });
+  private voiceEngine(): "whisper" | null {
+    return resolveVoiceProvider(this.plugin.voiceProvider(), this.plugin.settings.sttUrl);
   }
 
   /** Re-applies settings that affect the composer (called after settings change). */
@@ -365,17 +359,12 @@ export class ShellChatView extends ItemView {
   private async toggleVoice(): Promise<void> {
     if (this.voiceState === "transcribing") return;
     if (this.voiceState === "recording") {
-      if (this.dictation) this.dictation.stop();
-      else await this.finishVoice();
+      await this.finishVoice();
       return;
     }
     const engine = this.voiceEngine();
     if (!engine) {
       new Notice("Choose a voice input engine in settings first.");
-      return;
-    }
-    if (engine === "system") {
-      this.startDictation();
       return;
     }
     const recorder = new VoiceRecorder();
@@ -422,58 +411,7 @@ export class ShellChatView extends ItemView {
     }
   }
 
-  /** Live system dictation: the transcript streams into the input. */
-  private startDictation(): void {
-    const dictation = new SystemDictation();
-    const caret = this.inputEl.selectionStart ?? this.inputEl.value.length;
-    this.dictationBase = { value: this.inputEl.value, caret };
-    try {
-      dictation.start(
-        (text) => {
-          const base = this.dictationBase;
-          if (!base) return;
-          const next = insertTranscript(base.value, base.caret, text);
-          this.inputEl.value = text ? next.value : base.value;
-          this.autosize();
-          this.updateSendState();
-        },
-        (error) => {
-          this.dictation = null;
-          this.dictationBase = null;
-          this.setVoiceState("idle");
-          if (error) this.showError(`Speech recognition stopped: ${error}`);
-          else this.inputEl.focus();
-        },
-      );
-    } catch (err) {
-      this.dictationBase = null;
-      this.showError(String((err as Error).message ?? err));
-      return;
-    }
-    this.dictation = dictation;
-    this.setVoiceState("recording");
-    const started = Date.now();
-    this.voiceTimer = window.setInterval(() => {
-      const seconds = Math.floor((Date.now() - started) / 1000);
-      this.micTime.setText(`${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`);
-      if (Date.now() - started >= ShellChatView.VOICE_MAX_MS) dictation.stop();
-    }, 250);
-  }
-
   private cancelVoice(): void {
-    if (this.dictation) {
-      const base = this.dictationBase;
-      this.dictation.cancel();
-      this.dictation = null;
-      this.dictationBase = null;
-      if (base) {
-        this.inputEl.value = base.value;
-        this.autosize();
-        this.updateSendState();
-      }
-      this.setVoiceState("idle");
-      return;
-    }
     if (!this.voice) return;
     this.voice.cancel();
     this.voice = null;

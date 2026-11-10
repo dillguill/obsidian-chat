@@ -710,7 +710,17 @@
 .oc-mic-time:empty { display: none; }
 .oc-mic.is-recording { color: var(--color-red) !important; background: rgba(var(--color-red-rgb), 0.12) !important; }
 .oc-mic.is-recording .oc-mic-icon { animation: oc-pulse 1.2s ease-in-out infinite; }
-.oc-mic.is-transcribing { cursor: progress; }
-.oc-mic.is-transcribing .oc-mic-icon { animation: oc-pulse 0.8s ease-in-out infinite; opacity: 0.6; }
+/* Transcribing: a spinning ring around the mic while waiting for the text. */
+.oc-mic.is-transcribing { position: relative; cursor: progress; color: var(--text-normal) !important; }
+.oc-mic.is-transcribing::after {
+  content: "";
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  border: 2px solid var(--background-modifier-border);
+  border-top-color: var(--interactive-accent);
+  animation: oc-spin 0.8s linear infinite;
+  pointer-events: none;
+}
 .oc-chat-mobile .oc-mic { min-width: 40px; height: 40px; }
 .oc-chat-mobile .oc-mic-icon svg { width: 20px; height: 20px; }

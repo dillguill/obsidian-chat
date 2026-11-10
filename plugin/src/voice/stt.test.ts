@@ -40,17 +40,12 @@ test("transcript text is trimmed and inserted at the caret with spacing", () => 
   assert.deepEqual(insertTranscript("a b", 1, "x"), { value: "a x b", caret: 3 });
 });
 
-test("voice provider: automatic prefers the system recognizer, then whisper; explicit choices are honoured", async () => {
+test("voice provider: whisper when a server is set, unless turned off on this device", async () => {
   const { parseVoiceProvider, resolveVoiceProvider } = await import("./stt.ts");
-  const both = { systemAvailable: true, whisperUrl: "https://w" };
-  const desktop = { systemAvailable: false, whisperUrl: "https://w" };
-  const none = { systemAvailable: false, whisperUrl: "" };
-  assert.equal(resolveVoiceProvider("auto", both), "system");
-  assert.equal(resolveVoiceProvider("auto", desktop), "whisper");
-  assert.equal(resolveVoiceProvider("auto", none), null);
-  assert.equal(resolveVoiceProvider("whisper", both), "whisper");
-  assert.equal(resolveVoiceProvider("system", desktop), null);
-  assert.equal(resolveVoiceProvider("off", both), null);
-  assert.equal(parseVoiceProvider("bogus"), "auto");
-  assert.equal(parseVoiceProvider("system"), "system");
+  assert.equal(resolveVoiceProvider("whisper", "https://w"), "whisper");
+  assert.equal(resolveVoiceProvider("whisper", ""), null);
+  assert.equal(resolveVoiceProvider("off", "https://w"), null);
+  assert.equal(parseVoiceProvider("off"), "off");
+  assert.equal(parseVoiceProvider("auto"), "whisper");
+  assert.equal(parseVoiceProvider("system"), "whisper");
 });

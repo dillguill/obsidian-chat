@@ -91,28 +91,14 @@ export function insertTranscript(value: string, caret: number, transcript: strin
 }
 
 /** Per-device voice input choice. */
-export type VoiceProvider = "auto" | "system" | "whisper" | "off";
+export type VoiceProvider = "whisper" | "off";
 
+/** Older saved values ("auto", "system") fall back to whisper. */
 export function parseVoiceProvider(raw: unknown): VoiceProvider {
-  return raw === "system" || raw === "whisper" || raw === "off" ? raw : "auto";
+  return raw === "off" ? "off" : "whisper";
 }
 
-/** Which engine the mic uses on this device, or null for no mic.
- *  Automatic prefers the system recognizer where it works (mobile), then a
- *  configured whisper server. */
-export function resolveVoiceProvider(
-  choice: VoiceProvider,
-  env: { systemAvailable: boolean; whisperUrl: string },
-): "system" | "whisper" | null {
-  const whisper = env.whisperUrl.trim() ? "whisper" : null;
-  switch (choice) {
-    case "off":
-      return null;
-    case "system":
-      return env.systemAvailable ? "system" : null;
-    case "whisper":
-      return whisper;
-    default:
-      return env.systemAvailable ? "system" : whisper;
-  }
+/** Whether the mic is shown on this device: Whisper chosen and a server set. */
+export function resolveVoiceProvider(choice: VoiceProvider, whisperUrl: string): "whisper" | null {
+  return choice !== "off" && whisperUrl.trim() ? "whisper" : null;
 }

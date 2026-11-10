@@ -3,7 +3,7 @@
  *  (Constitution Principle II). There is deliberately no note-folder,
  *  session-folder, gateway, or fixed model/thinking control here.
  */
-import { silentWav, systemDictationAvailable, transcribe } from "./ui/voice.ts";
+import { silentWav, transcribe } from "./ui/voice.ts";
 import { parseVoiceProvider } from "./voice/stt.ts";
 import { App, Platform, PluginSettingTab, Setting, setIcon, TextComponent } from "obsidian";
 import type ObsidianChatPlugin from "./main";
@@ -182,16 +182,11 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
     }
 
     containerEl.createEl("h4", { text: "Voice input" });
-    const systemOk = systemDictationAvailable(Platform.isDesktopApp);
     new Setting(containerEl)
       .setName("Voice input")
-      .setDesc(
-        `Engine for the microphone button on this device (not synced). System uses the device's own live speech recognition${systemOk ? "" : " (not available on this device)"}; Whisper sends the recording to the server below. Automatic picks System where it works, otherwise Whisper. The keyboard's own dictation key always works too.`,
-      )
+      .setDesc("Show the microphone on this device (not synced). It sends recordings to the speech-to-text server below. The keyboard's own dictation key always works too.")
       .addDropdown((dropdown) =>
         dropdown
-          .addOption("auto", "Automatic")
-          .addOption("system", systemOk ? "System speech recognition" : "System speech recognition (unavailable)")
           .addOption("whisper", "Whisper server")
           .addOption("off", "Off")
           .setValue(this.plugin.voiceProvider())
