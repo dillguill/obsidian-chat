@@ -12,6 +12,7 @@
 | 6 | Web search/fetch toggle (parked) | S–M | dsh profile (A) or plugin host (B) | see §6 options |
 | 7 | Voice input (stt.example) | M | plugin settings + composer | your whisper.cpp server |
 | 10 | Strip agent co-author trailers from history | S | git history | do with the move to Gitea (force-push) |
+| 11 | Redesign: settings, host, reachability, records, vault access | L | plugin + dsh | see [REDESIGN.md](REDESIGN.md) |
 
 Why this order: 1–3 are small, plugin-only and hit on every phone use. 4 is
 the largest change and the one that makes the phone a real second client;
@@ -234,3 +235,18 @@ Two commits already on GitHub `main` carry agent attribution trailers:
       off in each agent's settings, and optionally add a `commit-msg` hook
       that rejects `Co-authored-by:` lines naming an agent.
 
+
+---
+
+## 11. Redesign (settings, host, reachability, records, vault access)
+
+Why and details: [REDESIGN.md](REDESIGN.md). One Gitea issue per item.
+
+- [ ] 1. Settings split by device (synced prefs / local role / secretStorage); reload on external change
+- [ ] 2. Host listener starts on plugin load, not on chat view open
+- [ ] 3. Loopback-only listener behind Tailscale Serve; identity headers replace device codes; drop bind/port settings
+- [ ] 4. Remote liveness + reconnect on resume/online; no permanent give-up
+- [ ] 5. Conversation records move to the host's app-data folder (`~/Library/Application Support/obsidian-chat/sessions/`); one-time migration from `.chat/sessions/`
+- [ ] 6. Vault tool server gains approved write tools; dsh `obsidian` profile drops its own fs tools
+- [ ] 7. Harness setting accepts a command or a `ws(s)://` URL
+- [ ] 8. Plugin waits ~10 s before SIGKILL on harness stop (dsh-side changes: dsh repo `plans/08-obsidian-acp.md`)
