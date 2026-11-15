@@ -23,8 +23,8 @@ Phone / other desktop ── ACP over WebSocket ──┐
 
 - **One host, one harness.** Shell mode → Local starts the configured harness command as a child of
   the plugin. There is no bridge, daemon, launchd job, or second process.
-- **Remote devices attach to the host.** Pair a device on the host, then enter the host's WebSocket
-  endpoint and the device code on that device. A remote never spawns a process, opens a listener,
+- **Remote devices attach to the host** by its tailnet name (Tailscale Serve), authenticated by
+  their Tailscale identity — no device codes, no IPs. A remote never spawns a process, opens a listener,
   reads the vault, or keeps local history.
 - **Native vault access.** Reads and writes go through Obsidian's own vault API via ACP filesystem
   capabilities; open editors refresh, parent folders are created, and a best-effort snapshot enables
@@ -55,16 +55,15 @@ stored.
 
 ## Setup
 
-1. **Host:** Settings → Obsidian Chat → mode **Local**, set the harness command (e.g. `opencode acp`),
-   listen port (default 8765) and bind address (loopback by default).
-2. **Pair devices** under *Paired devices*. Each gets its own code; revoking one closes its live
-   connection immediately.
-3. **Remote:** on the other device set mode **Remote**, the host endpoint
-   (`ws://<host>:8765/acp`, e.g. over Tailscale) and the device code.
-4. Open the **ACP Shell** view.
+1. **Host** (desktop): Settings → Obsidian Chat → role **Host**, set the harness command (e.g.
+   `opencode acp`). The listener starts with the plugin on loopback (port 8765 by default).
+2. Publish it on your tailnet once: `tailscale serve --bg 8765`. Optionally list the Tailscale
+   accounts allowed to attach (empty = anyone on your tailnet).
+3. **Other devices:** role **Remote**, host address `https://<host>.<tailnet>.ts.net`, and a device
+   name (shown in History, routes approvals).
+4. Open the chat view.
 
-The host binds loopback by default. Choosing a wider bind is deliberate; the VPN/private network is
-yours to provide and secure.
+Role, address, port and device name stay on each device; only shared preferences sync with the vault.
 
 ## Build & install
 

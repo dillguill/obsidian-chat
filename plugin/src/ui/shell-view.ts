@@ -1142,7 +1142,7 @@ export class ShellChatView extends ItemView {
       hint("The local listener could not start. On the computer that runs the harness, set Settings → Obsidian Chat → Mode to Local and check the harness command.");
     }
     if (/unreachable|timed out|closed before|401|403|device code|host address/i.test(message)) {
-      hint("The host Obsidian must be running and reachable over the VPN (or loopback). Check the host address and device code in settings.");
+      hint("The host Obsidian must be running, with its listener published by Tailscale Serve. Check the host address (its tailnet name) in settings.");
     }
     if (/approval.*(cancelled|timed out)|timed out.*cancell/i.test(message)) {
       hint("The request was cancelled, not approved. The harness will ask again if it still needs permission.");

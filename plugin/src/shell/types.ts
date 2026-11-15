@@ -8,15 +8,14 @@ export interface ShellAttachConfig {
   command: string;
   /** Local mode: optional working directory override (defaults to vault root). */
   cwd?: string;
-  /** Remote mode: ws:// or wss:// host endpoint. */
+  /** Remote mode: the host's address (its tailnet name through Tailscale
+   *  Serve), https:// or wss://. */
   remoteUrl?: string;
-  /** Remote mode: per-device transport token (never logged or stored). */
-  remoteToken?: string;
-  /** Local host mode: listener port (default 8765). */
+  /** Local host mode: loopback listener port (default 8765). The listener
+   *  never binds beyond loopback; Tailscale Serve publishes it. */
   port?: number;
-  /** Local host mode: bind address (loopback by default; a wider bind needs
-   *  explicit confirmation before the listener starts). */
-  bindAddress?: string;
+  /** This device's display name, sent to the host on attach. */
+  deviceName?: string;
 }
 
 export interface ShellPaths {
@@ -50,9 +49,4 @@ export interface AttachStatus {
 export function isLoopbackBind(address: string): boolean {
   const value = address.trim().toLowerCase();
   return value === "127.0.0.1" || value === "::1" || value === "localhost" || value === "::ffff:127.0.0.1";
-}
-
-/** A wider bind is only allowed after explicit confirmation in settings. */
-export function bindAllowed(address: string | undefined, allowWiderBind: boolean): boolean {
-  return isLoopbackBind(address ?? "127.0.0.1") || allowWiderBind;
 }

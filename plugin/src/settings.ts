@@ -7,8 +7,8 @@ import { silentWav, transcribe } from "./ui/voice.ts";
 import { parseVoiceProvider } from "./voice/stt.ts";
 import { App, Platform, PluginSettingTab, Setting, setIcon, TextComponent } from "obsidian";
 import type ObsidianChatPlugin from "./main";
-import { mintToken } from "./shell/device-auth.ts";
 import {
+  DEFAULT_PORT,
   DEFAULT_SETTINGS,
   type ObsidianChatSettings,
 } from "./settings-model.ts";
@@ -30,27 +30,77 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h3", { text: "Obsidian Chat" });
 
-    containerEl.createEl("h4", { text: "Shell" });
+    containerEl.createEl("h4", { text: "This device" });
     containerEl.createEl("p", {
-      text: "One harness per install. Local mode spawns the harness and serves paired devices; remote mode attaches to a host over the VPN. Modes and config options come from the harness itself.",
+      text: "Role, address, port and name are kept on this device only; they are not synced with the vault.",
       cls: "setting-item-description",
     });
+    // Only a desktop install can host (it spawns the harness and listens).
     new Setting(containerEl)
-      .setName("Mode")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("local", "Local (this device hosts)")
-          .addOption("remote", "Remote (attach to a host)")
-          .setValue(this.plugin.settings.shell.mode)
+      .setName("Role")
+      .addDropdown((dropdown) => {
+        if (Platform.isDesktopApp) dropdown.addOption("local", "Host (runs the harness, serves other devices)");
+        return dropdown
+          .addOption("remote", "Remote (attaches to the host)")
+          .setValue(Platform.isDesktopApp ? this.plugin.settings.shell.mode : "remote")
           .onChange(async (value) => {
             this.plugin.settings.shell.mode = value === "remote" ? "remote" : "local";
             await this.plugin.saveSettings();
+            await this.plugin.restartHost();
             this.display();
-          }),
-      );
+          });
+      });
+    new Setting(containerEl)
+      .setName("Device name")
+      .setDesc("Shown in History and used to send approvals to the right device.")
+      .addText((text) => {
+        text.setValue(this.plugin.settings.shell.deviceName ?? "");
+        text.inputEl.addEventListener("change", async () => {
+          const name = text.getValue().trim();
+          if (!name) return;
+          this.plugin.settings.shell.deviceName = name;
+          await this.plugin.saveSettings();
+        });
+      });
+    if (Platform.isDesktopApp && this.plugin.settings.shell.mode === "local") {
+      const port = this.plugin.settings.shell.port ?? DEFAULT_PORT;
+      new Setting(containerEl)
+        .setName("Listener port")
+        .setDesc(
+          `Loopback only. Publish it on your tailnet once with: tailscale serve --bg ${port}. Other devices then use https://<this-machine>.<tailnet>.ts.net.`,
+        )
+        .addText((text) => {
+          text.setValue(String(port));
+          text.inputEl.addEventListener("change", async () => {
+            const value = Number(text.getValue());
+            if (!Number.isInteger(value) || value < 1024 || value > 65535) return;
+            this.plugin.settings.shell.port = value;
+            await this.plugin.saveSettings();
+            await this.plugin.restartHost();
+            this.display();
+          });
+        });
+    } else {
+      new Setting(containerEl)
+        .setName("Host address")
+        .setDesc("The host's tailnet name, as published by Tailscale Serve.")
+        .addText((text) => {
+          text.setPlaceholder("https://<host>.<tailnet>.ts.net").setValue(this.plugin.settings.shell.remoteUrl ?? "");
+          text.inputEl.addEventListener("change", async () => {
+            this.plugin.settings.shell.remoteUrl = text.getValue().trim();
+            await this.plugin.saveSettings();
+          });
+        });
+    }
+
+    containerEl.createEl("h4", { text: "Harness" });
+    containerEl.createEl("p", {
+      text: "Shared by all devices; only the host runs it. Modes and config options come from the harness itself.",
+      cls: "setting-item-description",
+    });
     new Setting(containerEl)
       .setName("Harness command")
-      .setDesc("Any ACP-speaking harness, e.g. `opencode acp`. Applied on the next shell session.")
+      .setDesc("Any ACP-speaking harness, e.g. `opencode acp`. Applied on the next harness start.")
       .addText((text) => {
         text.setPlaceholder("opencode acp").setValue(this.plugin.settings.shell.command);
         text.inputEl.addEventListener("change", async () => {
@@ -58,73 +108,29 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         });
       });
-    if (this.plugin.settings.shell.mode === "local") {
-      new Setting(containerEl)
-        .setName("Listen port")
-        .setDesc("Paired devices connect to this port on the host.")
-        .addText((text) => {
-          text.setValue(String(this.plugin.settings.shell.port ?? 8765));
-          text.inputEl.addEventListener("change", async () => {
-            const port = Number(text.getValue());
-            if (!Number.isInteger(port) || port < 1024 || port > 65535) return;
-            this.plugin.settings.shell.port = port;
-            await this.plugin.saveSettings();
-          });
+    new Setting(containerEl)
+      .setName("Allowed Tailscale accounts")
+      .setDesc("Logins that may attach through Tailscale Serve, comma-separated. Empty: any user on your tailnet.")
+      .addText((text) => {
+        text.setPlaceholder("you@example.com").setValue(this.plugin.settings.allowedTailscaleUsers.join(", "));
+        text.inputEl.addEventListener("change", async () => {
+          this.plugin.settings.allowedTailscaleUsers = text
+            .getValue()
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+          await this.plugin.saveSettings();
         });
-      new Setting(containerEl)
-        .setName("Bind address")
-        .setDesc("Loopback by default. Only expose a VPN/private address deliberately.")
-        .addText((text) => {
-          text.setValue(this.plugin.settings.shell.bindAddress ?? "127.0.0.1");
-          text.inputEl.addEventListener("change", async () => {
-            this.plugin.settings.shell.bindAddress = text.getValue().trim() || "127.0.0.1";
-            await this.plugin.saveSettings();
-          });
-        });
-      new Setting(containerEl)
-        .setName("Allow wider bind")
-        .setDesc("Required before binding beyond loopback. Only do this on a trusted VPN/private network.")
-        .addToggle((toggle) =>
-          toggle.setValue(this.plugin.settings.allowWiderBind).onChange(async (value) => {
-            this.plugin.settings.allowWiderBind = value;
-            await this.plugin.saveSettings();
-          }),
-        );
+      });
+    if (Platform.isDesktopApp && this.plugin.settings.shell.mode === "local") {
       new Setting(containerEl)
         .setName("Restart harness")
         .setDesc("Reload the harness so it picks up new credentials.")
         .addButton((button) => button.setButtonText("Restart").onClick(() => void this.plugin.restartHarness()));
-    } else {
-      new Setting(containerEl)
-        .setName("Host endpoint")
-        .setDesc("ws:// or wss:// host address (the host's listen port, e.g. ws://100.x.y.z:8765/acp).")
-        .addText((text) => {
-          text.setPlaceholder("ws://100.x.y.z:8765/acp").setValue(this.plugin.settings.shell.remoteUrl ?? "");
-          text.inputEl.addEventListener("change", async () => {
-            this.plugin.settings.shell.remoteUrl = text.getValue().trim();
-            await this.plugin.saveSettings();
-          });
-        });
-      new Setting(containerEl)
-        .setName("Device code")
-        .setDesc("Created on the host under Paired devices.")
-        .addText((text) => {
-          text.inputEl.type = "password";
-          text.setValue(this.plugin.settings.shell.remoteToken ?? "");
-          text.inputEl.addEventListener("change", async () => {
-            this.plugin.settings.shell.remoteToken = text.getValue().trim();
-            await this.plugin.saveSettings();
-          });
-        });
     }
     new Setting(containerEl)
       .setName("Open the shell")
       .addButton((button) => button.setButtonText("Open shell").onClick(() => void this.plugin.activateShellView()));
-
-    if (Platform.isDesktopApp && this.plugin.settings.shell.mode === "local") {
-      containerEl.createEl("h4", { text: "Paired devices" });
-      this.renderDevices(containerEl);
-    }
 
     containerEl.createEl("h4", { text: "Vault access" });
     new Setting(containerEl)
@@ -241,37 +247,6 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
       text: "Conversations are stored in the vault's hidden .chat/sessions folder as JSONL. Old Markdown conversations are found and imported automatically — there is no folder setting.",
       cls: "setting-item-description",
     });
-  }
-
-  private renderDevices(containerEl: HTMLElement): void {
-    let name = "";
-    new Setting(containerEl)
-      .setName("Add a device")
-      .setDesc("The code is shown on the host; enter it on the device's own settings.")
-      .addText((text) => text.setPlaceholder("e.g. phone").onChange((value) => (name = value.trim())))
-      .addButton((button) =>
-        button.setButtonText("Add").onClick(async () => {
-          if (!name || this.plugin.settings.pairedDevices[name]) return;
-          this.plugin.settings.pairedDevices[name] = mintToken();
-          await this.plugin.saveSettings();
-          this.display();
-        }),
-      );
-    for (const [device, code] of Object.entries(this.plugin.settings.pairedDevices)) {
-      new Setting(containerEl)
-        .setName(device)
-        .setDesc(code)
-        .addExtraButton((button) =>
-          button.setIcon("copy").setTooltip("Copy code").onClick(() => void navigator.clipboard.writeText(code)),
-        )
-        .addExtraButton((button) =>
-          button.setIcon("trash-2").setTooltip("Revoke").onClick(async () => {
-            delete this.plugin.settings.pairedDevices[device];
-            await this.plugin.saveSettings();
-            this.display();
-          }),
-        );
-    }
   }
 
   private save(): void {

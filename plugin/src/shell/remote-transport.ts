@@ -17,6 +17,8 @@ export interface RemoteTransportOptions {
   timeoutMs?: number;
   /** Injectable constructor (tests / explicit ws). */
   WebSocketImpl?: WebSocketCtor;
+  /** This device's display name, sent as `?device=`. */
+  device?: string;
 }
 
 interface WebSocketLike {
@@ -63,9 +65,9 @@ export function isAuthRejection(error: unknown): boolean {
   return /\b(401|403)\b|unauthori[sz]ed|forbidden/i.test(text);
 }
 
-/** Adds the bearer token to a ws:// or wss:// URL (http/https normalized,
- *  bare host:port defaults to /acp). */
-export function remoteUrlWithToken(rawUrl: string, token: string): string {
+/** Builds the attach URL: ws:// or wss:// (http/https normalized, a bare host
+ *  defaults to /acp), with the optional token and this device's name. */
+export function remoteUrlWithToken(rawUrl: string, token: string, device?: string): string {
   const trimmed = rawUrl.trim();
   if (!trimmed) throw new Error("no host address is configured");
   const normalized = trimmed.replace(/^http:\/\//i, "ws://").replace(/^https:\/\//i, "wss://");
@@ -81,6 +83,7 @@ export function remoteUrlWithToken(rawUrl: string, token: string): string {
   // The host serves ACP only at /acp; a bare "ws://host:port" means that.
   if (url.pathname === "/" || url.pathname === "") url.pathname = "/acp";
   if (token) url.searchParams.set("token", token);
+  if (device?.trim()) url.searchParams.set("device", device.trim());
   return url.toString();
 }
 
@@ -133,7 +136,7 @@ export class RemoteTransport implements ShellTransport {
   }
 
   static async connect(rawUrl: string, token: string, options: RemoteTransportOptions = {}): Promise<RemoteTransport> {
-    const url = remoteUrlWithToken(rawUrl, token);
+    const url = remoteUrlWithToken(rawUrl, token, options.device);
     const Ctor = await resolveWebSocket(options.WebSocketImpl);
     let socket: WebSocketLike | null = null;
     // Capture the instance the SDK's transport constructs so we can attach
@@ -150,7 +153,7 @@ export class RemoteTransport implements ShellTransport {
     let label = "remote";
     try {
       const parsed = new URL(url);
-      label = `remote ${parsed.host}${parsed.pathname}`;
+      label = `remote ${parsed.host}${parsed.pathname}`; // no query: never shows a token
     } catch {
       // label stays generic
     }
@@ -212,6 +215,7 @@ export class RemoteTransportConnector implements TransportConnector {
     baseMs?: number;
     timeoutMs?: number;
     WebSocketImpl?: WebSocketCtor;
+    device?: string;
   };
 
   constructor(options: {
@@ -221,6 +225,7 @@ export class RemoteTransportConnector implements TransportConnector {
     baseMs?: number;
     timeoutMs?: number;
     WebSocketImpl?: WebSocketCtor;
+    device?: string;
   }) {
     this.options = options;
   }
@@ -234,6 +239,7 @@ export class RemoteTransportConnector implements TransportConnector {
         return await RemoteTransport.connect(this.options.url, this.options.token, {
           timeoutMs: this.options.timeoutMs,
           WebSocketImpl: this.options.WebSocketImpl,
+          device: this.options.device,
         });
       } catch (err) {
         lastError = err;

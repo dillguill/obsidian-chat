@@ -1,5 +1,8 @@
 # Architecture (ACP shell)
 
+> **Redesign agreed (2026-11):** see [REDESIGN.md](REDESIGN.md). This file describes the current
+> build; sections change as each redesign item lands.
+
 The plugin is a **thin shell around an ACP harness**. It owns no model, no provider credentials and
 no custom chat protocol. Everything between the harness and the vault is ACP or MCP.
 
@@ -10,8 +13,10 @@ amendment.
 
 1. **ACP client + host transport** (`src/shell/`)
    - Local: spawns exactly one configured harness child over stdio (`ndJsonStream`).
-   - Remote: paired devices attach over ACP-over-WebSocket using the SDK's WebSocket stream.
-   - One listener serves `/acp` (paired devices) and `/mcp` (loopback-only vault tools).
+   - Remote: other devices attach over ACP-over-WebSocket using the SDK's WebSocket stream, through
+     Tailscale Serve (the host's tailnet name), with a client-side liveness ping.
+   - One loopback-only listener serves `/acp` (devices) and `/mcp` (vault tools). It starts when the
+     plugin loads on the host; the harness is still spawned lazily.
    - A relay bridge maps each device session onto a harness session, forwards updates with
      `_meta { "obsidian-chat/seq" }`, and routes approvals to the owning device only.
 2. **In-process read-only MCP vault server** (`src/vault/mcp-server.ts`)
@@ -32,7 +37,7 @@ amendment.
 ## A turn
 
 1. The view sends `session/prompt` over the attach (loopback WebSocket for the host's own UI,
-   VPN WebSocket for a paired device).
+   Tailscale Serve → loopback WebSocket for another device).
 2. The relay forwards the prompt to the harness session and streams every harness
    `session/update` back as the host's own notification, recording it first with a monotonic
    sequence.
@@ -59,9 +64,14 @@ amendment.
 
 ## Trust boundaries
 
-- The host listener defaults to loopback; paired devices authenticate with a per-device bearer token
-  before the WebSocket upgrade (401 otherwise). Tokens are compared in constant time and never
-  logged or stored in records.
+- The host listener binds loopback only. Tailscale Serve publishes it on the tailnet and sets
+  `Tailscale-User-Login` (stripping any client-supplied value); an upgrade is accepted with an
+  allowed login (Settings → Allowed Tailscale accounts, empty = any tailnet user) or the host view's
+  per-run token, 401 otherwise. The device name sent with `?device=` is a routing label, not a
+  credential. No device codes exist; nothing secret is stored in settings.
+- Settings: data.json (synced) holds shared preferences only; role, host address, port and device
+  name are per-device local storage. Saving merges only the keys this device changed, and the plugin
+  reloads on an external change.
 - The MCP endpoint is loopback-only and additionally requires the per-session token.
 - Vault writes only happen through ACP fs + approval; MCP exposes no write path.
 - The shell holds no provider credentials. Provider/model configuration lives entirely in the

@@ -6,15 +6,20 @@
  */
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import type { WebSocket, WebSocketServer as WebSocketServerType } from "ws";
-import { DeviceRegistry, tokenFromUrl } from "./device-auth.ts";
+import { DeviceRegistry, TAILSCALE_LOGIN_HEADER, deviceNameFromUrl, loginAllowed, tokenFromUrl } from "./device-auth.ts";
 import type { VaultMcpServer } from "../vault/mcp-server.ts";
 
 export interface HostServerOptions {
   port: number;
-  /** Bind address; defaults to loopback. A wider bind needs explicit user consent. */
+  /** Bind address; defaults to loopback. The plugin always binds loopback and
+   *  relies on Tailscale Serve to publish the listener on the tailnet. */
   host?: string;
-  devices: () => Record<string, string>;
+  /** Optional static device tokens (tests); the plugin passes none. */
+  devices?: () => Record<string, string>;
   localToken: string;
+  /** Tailscale Serve identity: when set, an upgrade arriving on loopback with
+   *  an allowed `Tailscale-User-Login` header is accepted. */
+  identity?: { allowedUsers: () => readonly string[] };
   /** Handles `/mcp`; returns true when it wrote a response. */
   mcpHandler: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   /** Called for an authenticated `/acp` WebSocket; the relay attaches ACP. */
@@ -258,7 +263,7 @@ export class HostServer {
       socket.destroy();
       return;
     }
-    const deviceId = this.registry.deviceForToken(tokenFromUrl(req.url));
+    const deviceId = this.authenticate(req);
     if (!deviceId) {
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
@@ -283,7 +288,23 @@ export class HostServer {
     });
   }
 
-  /** Closes only a revoked device's live sockets (FR-017). */
+  /** Device id for an upgrade request, or null (401). A token wins (the host's
+   *  own view); otherwise a Tailscale Serve identity on a loopback connection.
+   *  Serve strips client-supplied identity headers, and the listener is
+   *  loopback-only, so the header can only come from Serve (or a local process,
+   *  which already runs as the user). */
+  private authenticate(req: IncomingMessage): string | null {
+    const byToken = this.registry.deviceForToken(tokenFromUrl(req.url));
+    if (byToken) return byToken;
+    const identity = this.options.identity;
+    if (!identity || !isLoopbackAddress(req.socket.remoteAddress)) return null;
+    const header = req.headers[TAILSCALE_LOGIN_HEADER];
+    const login = Array.isArray(header) ? header[0] : header;
+    if (!loginAllowed(login, identity.allowedUsers())) return null;
+    return deviceNameFromUrl(req.url) ?? "remote";
+  }
+
+  /** Closes one device's live sockets. */
   closeDevice(deviceId: string): void {
     for (const [ws, state] of [...this.sockets]) {
       if (state.deviceId !== deviceId) continue;

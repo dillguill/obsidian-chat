@@ -11,7 +11,7 @@ import {
   SESSION_SIZE_WARN_BYTES,
 } from "../session/limits.ts";
 import { backoffDelay } from "./transport.ts";
-import { bindAllowed, isLoopbackBind } from "./types.ts";
+import { isLoopbackBind } from "./types.ts";
 import { sanitizeForRecord } from "../session/record.ts";
 
 test("the contract bounds are the ones the code uses", () => {
@@ -32,14 +32,12 @@ test("reconnect backoff is 1 s → 15 s over the bounded attempts", () => {
   assert.equal(backoffDelay(20), 15_000, "never unbounded");
 });
 
-test("loopback binds are allowed by default; wider binds need explicit confirmation", () => {
+test("only loopback addresses count as loopback binds", () => {
   for (const address of ["127.0.0.1", "::1", "localhost", "::ffff:127.0.0.1"]) {
     assert.equal(isLoopbackBind(address), true);
-    assert.equal(bindAllowed(address, false), true);
   }
-  assert.equal(bindAllowed("0.0.0.0", false), false);
-  assert.equal(bindAllowed("100.64.0.2", false), false);
-  assert.equal(bindAllowed("0.0.0.0", true), true);
+  assert.equal(isLoopbackBind("0.0.0.0"), false);
+  assert.equal(isLoopbackBind("100.64.0.2"), false);
 });
 
 test("record sanitization strips image/audio bytes and auth header values", () => {

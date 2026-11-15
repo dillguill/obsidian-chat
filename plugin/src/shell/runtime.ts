@@ -26,8 +26,7 @@ export interface ShellRuntimeSettings {
   shell: ShellAttachConfig;
   sessionStoreFolder: string;
   blacklistFolders: string[];
-  pairedDevices: Record<string, string>;
-  allowWiderBind: boolean;
+  allowedTailscaleUsers: string[];
 }
 
 export interface ShellRuntimeOptions {
@@ -206,10 +205,11 @@ export class ShellRuntime {
   async startHost(): Promise<void> {
     if (this.host) return;
     if (!Platform.isDesktopApp) throw new Error("host mode is desktop-only");
-    const settings = this.getSettings();
     const host = new HostCore({
       app: this.app,
-      settings: () => settings,
+      // Live settings: a synced change (blacklist, allowed users, harness
+      // command) applies without restarting the listener.
+      settings: () => this.getSettings(),
       store: this.getStore,
       stopLegacy: async () => {
         if (this.legacyStopped) return;
@@ -260,10 +260,10 @@ export class ShellRuntime {
       cwd = this.vaultRoot();
     } else {
       const url = shell.remoteUrl?.trim();
-      const token = shell.remoteToken?.trim();
       if (!url) throw new Error("no host address is configured for remote attach");
-      if (!token) throw new Error("no device code is configured for remote attach");
-      connector = new RemoteTransportConnector({ url, token, attempts: 3, baseMs: 250 });
+      // No device code: the host trusts the Tailscale identity that Tailscale
+      // Serve attaches; the device name is a label for routing approvals.
+      connector = new RemoteTransportConnector({ url, token: "", device: shell.deviceName, attempts: 3, baseMs: 250 });
       mode = "remote";
       cwd = "/";
     }
@@ -278,6 +278,9 @@ export class ShellRuntime {
       // A remote opens/selections a stored session explicitly (session/list +
       // session/load); a local host view starts a fresh conversation.
       autoSession: shell.mode === "local",
+      // Client-side liveness: a silently dead link (VPN switch, phone resumed
+      // from the background) is detected instead of looking connected.
+      heartbeatMs: HEARTBEAT_MS,
       onLog: this.log,
       onTransportLost: (reason) => {
         this.log(`attach lost: ${reason}`);
@@ -427,24 +430,30 @@ export class ShellRuntime {
     };
   }
 
-  /** Bounded reconnect after transport loss (contracts/host-transport.md §5:
-   *  1 s → 15 s, 8 attempts). Reattachment uses session/load with `sinceSeq`, so
-   *  no already-rendered notification is duplicated and no prompt is resent. */
+  /** Reconnect after transport loss: 1 s → 15 s backoff, then keep retrying
+   *  every 15 s while the app is visible (never a permanent give-up). While the
+   *  app is hidden, retries pause; `wake()` resumes them at once. Reattachment
+   *  uses session/load with `sinceSeq`, so no already-rendered notification is
+   *  duplicated and no prompt is resent. */
   private scheduleReconnect(reason: string): void {
     if (this.closed || !this.client) return;
-    if (this.reconnectAttempts >= RECONNECT_ATTEMPTS) {
+    if (this.reconnectAttempts === RECONNECT_ATTEMPTS) {
       this.emit({
         sessionId: this.client.getSessionId() ?? "unknown",
         error: {
-          message: `Could not reconnect to the host after ${RECONNECT_ATTEMPTS} attempts (${reason}). The turn is interrupted; history is preserved.`,
+          message: `Still can't reach the host (${reason}). Retrying every 15 s while Obsidian is open; history is preserved.`,
           scope: "transport",
         },
       });
+    }
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+    if (isHidden()) {
+      this.reconnectPaused = true;
       return;
     }
     const delay = backoffDelay(this.reconnectAttempts);
     this.reconnectAttempts += 1;
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       void this.attemptReconnect();
@@ -452,9 +461,13 @@ export class ShellRuntime {
     this.reconnectTimer.unref?.();
   }
 
+  private reconnecting = false;
+  private reconnectPaused = false;
+
   private async attemptReconnect(): Promise<void> {
     const client = this.client;
-    if (!client || this.closed) return;
+    if (!client || this.closed || this.reconnecting) return;
+    this.reconnecting = true;
     const sessionId = client.getSessionId();
     const sinceSeq = sessionId ? this.lastSeq.get(sessionId) : undefined;
     try {
@@ -462,20 +475,39 @@ export class ShellRuntime {
       this.reconnectAttempts = 0;
       this.emitState();
     } catch (err) {
-      this.emit({
-        sessionId: sessionId ?? "unknown",
-        error: {
-          message: `Reconnect attempt ${this.reconnectAttempts}/${RECONNECT_ATTEMPTS} failed: ${String((err as Error).message ?? err)}`,
-          scope: "transport",
-        },
-      });
+      if (this.reconnectAttempts < RECONNECT_ATTEMPTS) {
+        this.emit({
+          sessionId: sessionId ?? "unknown",
+          error: {
+            message: `Reconnect attempt ${this.reconnectAttempts}/${RECONNECT_ATTEMPTS} failed: ${String((err as Error).message ?? err)}`,
+            scope: "transport",
+          },
+        });
+      }
+      this.reconnecting = false;
       this.scheduleReconnect("retry");
+      return;
     }
+    this.reconnecting = false;
   }
 
-  /** Revoking a paired device closes its live sockets immediately (host only). */
-  revokeDevice(deviceId: string): void {
-    this.host?.revokeDevice(deviceId);
+  /** The app became visible again or the network came back: check a link
+   *  that looks connected right away, and retry a lost one immediately. */
+  wake(reason: string): void {
+    const client = this.client;
+    if (!client || this.closed) return;
+    const state = client.getState();
+    if (state === "connected") {
+      void client.checkAlive();
+      return;
+    }
+    if (state === "reconnecting" || state === "unreachable" || this.reconnectPaused) {
+      this.reconnectPaused = false;
+      if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      this.log(`reconnecting now (${reason})`);
+      void this.attemptReconnect();
+    }
   }
 
   /** The user's explicit continuity choice for a detached conversation. No
@@ -533,6 +565,13 @@ export class ShellRuntime {
     this.host = null;
     this.emitState();
   }
+}
+
+/** Interval of the client-side liveness check (application ping). */
+const HEARTBEAT_MS = 20_000;
+
+function isHidden(): boolean {
+  return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
 
 export { redactLabel, fingerprint };

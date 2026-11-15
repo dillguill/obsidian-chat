@@ -151,6 +151,8 @@ export interface TestHost {
 export async function startTestHost(options?: {
   devices?: Record<string, string>;
   localToken?: string;
+  /** Enables Tailscale Serve identity auth with this allow-list. */
+  allowedUsers?: string[];
 }): Promise<TestHost> {
   const devices = options?.devices ?? { phone: "phone-token" };
   const localToken = options?.localToken ?? "local-token";
@@ -160,6 +162,7 @@ export async function startTestHost(options?: {
     port: 0,
     devices: () => devices,
     localToken,
+    ...(options?.allowedUsers ? { identity: { allowedUsers: () => options.allowedUsers ?? [] } } : {}),
     mcpHandler: async (_req, res) => {
       res.writeHead(204);
       res.end();

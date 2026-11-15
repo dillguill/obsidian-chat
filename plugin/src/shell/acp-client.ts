@@ -11,7 +11,7 @@
  *  `sessionId` getter is the client's *primary* session (the local UI's chat);
  *  session-scoped methods (`promptIn`, `setModeIn`, …) are used by the relay.
  */
-import { RENAME_METHOD } from "../session/title.ts";
+import { PING_METHOD, RENAME_METHOD } from "../session/title.ts";
 import {
   PROTOCOL_VERSION,
   RequestError,
@@ -77,6 +77,11 @@ export interface ShellClientOptions {
   autoSession?: boolean;
   /** Operational approval timeout (contract §6: 10 minutes). 0 disables it. */
   approvalTimeoutMs?: number;
+  /** Client-side liveness check interval (ms); 0/undefined disables it. A
+   *  ping that gets no answer within `heartbeatTimeoutMs` (default 10 s)
+   *  closes the transport and reports it lost. */
+  heartbeatMs?: number;
+  heartbeatTimeoutMs?: number;
   onLog?: (message: string) => void;
   onTransportLost?: (reason: string) => void;
 }
@@ -337,6 +342,7 @@ export class AcpShellClient implements AcpChatClient {
       }
       this.setState("connected", undefined);
       this.retries = 0;
+      this.startHeartbeat();
     } catch (err) {
       this.lastError = errorText(err);
       // The transport may still be alive; close it so a retry starts cleanly.
@@ -748,7 +754,60 @@ export class AcpShellClient implements AcpChatClient {
     return option ? flattenSelectOptions(option).map((c: { value: string; name: string }) => ({ value: c.value, name: c.name })) : [];
   }
 
+  private heartbeat: ReturnType<typeof setInterval> | null = null;
+  private checking: Promise<boolean> | null = null;
+
+  private startHeartbeat(): void {
+    this.stopHeartbeat();
+    const every = this.opts.heartbeatMs ?? 0;
+    if (!every || every <= 0) return;
+    this.heartbeat = setInterval(() => void this.checkAlive(), every);
+    (this.heartbeat as { unref?: () => void }).unref?.();
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.heartbeat = null;
+  }
+
+  /** Pings the host now. Any answer — including an error response from a host
+   *  without the ping extension — proves the link is alive; only silence
+   *  until the timeout counts as dead, which closes the transport and reports
+   *  it lost (the owner's reconnect policy takes over). */
+  checkAlive(): Promise<boolean> {
+    if (this.checking) return this.checking;
+    const conn = this.conn;
+    if (!conn || this.state !== "connected") return Promise.resolve(false);
+    const timeoutMs = this.opts.heartbeatTimeoutMs ?? 10_000;
+    const run = (async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const answered = await Promise.race([
+        conn.agent.request(PING_METHOD, {}).then(
+          () => true,
+          (err: unknown) => !(err instanceof Error && /closed|lost|not connected/i.test(err.message)),
+        ),
+        new Promise<false>((resolve) => {
+          timer = setTimeout(() => resolve(false), timeoutMs);
+        }),
+      ]);
+      if (timer) clearTimeout(timer);
+      if (!answered && this.conn === conn && !this.closed) {
+        const reason = "the host stopped answering";
+        this.stopHeartbeat();
+        this.lost?.reject(new Error(reason));
+        await this.closeTransport();
+        this.transportLost(reason);
+      }
+      return answered;
+    })().finally(() => {
+      this.checking = null;
+    });
+    this.checking = run;
+    return run;
+  }
+
   private transportLost(reason: string): void {
+    this.stopHeartbeat();
     if (this.closed) return;
     this.lastError = reason;
     const cancelled = this.parked.size;
@@ -836,6 +895,7 @@ export class AcpShellClient implements AcpChatClient {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.stopHeartbeat();
     this.cancelParkedPermissions();
     try {
       this.conn?.close();

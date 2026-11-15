@@ -10,6 +10,10 @@ import { promptDisplay } from "../ui/renderer.ts";
 const PLACEHOLDERS = new Set(["", "acp session", "new chat", "untitled conversation"]);
 
 export const RENAME_METHOD = "_obsidian-chat/session/rename";
+
+/** Extension request a client uses to check that the host still answers
+ *  (application-level ping; browser WebSockets can't send protocol pings). */
+export const PING_METHOD = "_obsidian-chat/ping";
 export const MAX_TITLE_CHARS = 120;
 
 export function isPlaceholderTitle(title: string | null | undefined): boolean {

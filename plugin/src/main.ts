@@ -9,12 +9,14 @@ import { parseVoiceProvider, type VoiceProvider } from "./voice/stt.ts";
 import { Notice, Platform, Plugin, WorkspaceLeaf } from "obsidian";
 import { ObsidianChatSettingTab } from "./settings";
 import {
+  DEFAULT_PORT,
   DEFAULT_SETTINGS,
   deviceShellOf,
+  mergeShared,
   migrateSettings,
   parseDeviceShell,
   pointsAtSelf,
-  syncedSettings,
+  sharedSettings,
   withDeviceShell,
   type DeviceShell,
   type ObsidianChatSettings,
@@ -37,8 +39,6 @@ export default class ObsidianChatPlugin extends Plugin {
   private lastLegacyImport: LegacyImportDiagnostics | null = null;
   /** In-flight vault discovery, so view opens and commands share one scan. */
   private legacyImportRun: Promise<MigrationReport | null> | null = null;
-  /** Paired devices at load time, so a saved removal can close live sockets. */
-  private devicesSnapshot: Record<string, string> = {};
 
   /** The host's JSONL session store, created on first use from the vault adapter. */
   store(): SessionStore {
@@ -59,9 +59,8 @@ export default class ObsidianChatPlugin extends Plugin {
       command: shell.command,
       cwd: shell.cwd,
       remoteUrl: shell.remoteUrl,
-      remoteToken: shell.remoteToken,
-      port: shell.port,
-      bindAddress: shell.bindAddress,
+      port: shell.port ?? DEFAULT_PORT,
+      deviceName: shell.deviceName,
     };
   }
 
@@ -73,8 +72,7 @@ export default class ObsidianChatPlugin extends Plugin {
           shell: this.shellAttachConfig(),
           sessionStoreFolder: this.settings.sessionStoreFolder || ".chat/sessions",
           blacklistFolders: this.settings.blacklistFolders,
-          pairedDevices: this.settings.pairedDevices,
-          allowWiderBind: this.settings.allowWiderBind,
+          allowedTailscaleUsers: this.settings.allowedTailscaleUsers,
         }),
         store: () => this.store(),
         log: (message) => console.log(`[obsidian-chat shell] ${message}`),
@@ -99,7 +97,11 @@ export default class ObsidianChatPlugin extends Plugin {
     // One-time, idempotent, folder-free discovery of pre-JSONL conversations
     // (T108). After layout is ready so plugin load stays fast; History triggers
     // it on demand if this has not finished yet.
-    this.app.workspace.onLayoutReady(() => void this.importLegacyHistory());
+    this.app.workspace.onLayoutReady(() => {
+      void this.importLegacyHistory();
+      // The host serves other devices whether or not a chat pane is open here.
+      void this.startHostIfLocal();
+    });
 
     this.registerView(SHELL_VIEW_TYPE, (leaf) => new ShellChatView(leaf, this));
     this.addRibbonIcon("message-square", "Open chat", () => void this.activateShellView());
@@ -130,6 +132,25 @@ export default class ObsidianChatPlugin extends Plugin {
 
     this.addSettingTab(new ObsidianChatSettingTab(this.app, this));
     this.registerDomEvent(window, "beforeunload", () => void this.runtime?.close());
+    // A phone coming back from the background or a network change: check the
+    // link at once instead of waiting for the next heartbeat or backoff step.
+    this.registerDomEvent(document, "visibilitychange", () => {
+      if (document.visibilityState === "visible") this.runtime?.wake("visible");
+    });
+    this.registerDomEvent(window, "online", () => this.runtime?.wake("online"));
+  }
+
+  /** Host device: start the listener at load (FR: redesign item 2). The
+   *  harness itself is still spawned lazily on the first session. */
+  private async startHostIfLocal(): Promise<void> {
+    if (!Platform.isDesktopApp || this.settings.shell.mode !== "local" || !this.settings.shell.command.trim()) return;
+    try {
+      await this.shellRuntime().startHost();
+    } catch (err) {
+      const message = String((err as Error).message ?? err);
+      console.log(`[obsidian-chat] host listener did not start: ${message}`);
+      new Notice(`Obsidian Chat: the host listener did not start — ${message}`);
+    }
   }
 
   onunload() {
@@ -138,7 +159,11 @@ export default class ObsidianChatPlugin extends Plugin {
 
   /** Settings-tab hook: restart the host/harness after connection changes. */
   async restartHost(): Promise<void> {
-    if (this.settings.shell.mode !== "local") return;
+    if (this.settings.shell.mode !== "local") {
+      await this.runtime?.close();
+      this.runtime = null;
+      return;
+    }
     await this.restartHarness();
   }
 
@@ -266,16 +291,15 @@ export default class ObsidianChatPlugin extends Plugin {
 
   // ---------- settings ----------
 
-  /** The role fields (mode/remote URL/device code) as the synced data.json
-   *  holds them; written back unchanged so devices never overwrite each other. */
-  private fileDeviceShell: DeviceShell = {};
+  /** The shared settings as this device last loaded or saved them: the base
+   *  of the three-way merge in `saveSettings`. */
+  private lastShared: Record<string, unknown> = {};
 
   async loadSettings() {
     const data = (await this.loadData()) ?? {};
     const migration = migrateSettings(data, { isMobile: Platform.isMobile });
-    this.fileDeviceShell = deviceShellOf(migration.settings.shell);
     // This device's role lives in per-device local storage; the first run
-    // seeds it from data.json.
+    // seeds it from what data.json held.
     let device = parseDeviceShell(this.app.loadLocalStorage(DEVICE_SHELL_KEY));
     if (!device) {
       device = deviceShellOf(migration.settings.shell);
@@ -285,13 +309,26 @@ export default class ObsidianChatPlugin extends Plugin {
       console.log("[obsidian-chat] remote URL points at this machine; this device is the host (Local mode)");
       device = { ...device, mode: "local" };
     }
+    device.port ??= DEFAULT_PORT;
+    device.deviceName ??= defaultDeviceName();
     this.app.saveLocalStorage(DEVICE_SHELL_KEY, JSON.stringify(device));
     this.settings = withDeviceShell(migration.settings, device);
-    this.devicesSnapshot = { ...this.settings.pairedDevices };
+    this.lastShared = sharedSettings(migration.settings);
     if (migration.changed) {
       console.log(`[obsidian-chat] settings upgraded: ${migration.notes.join("; ") || "legacy keys dropped"}`);
-      await this.saveSettings();
+      // Rewrites data.json without per-device fields or retired secrets.
+      await this.saveData(this.lastShared);
     }
+  }
+
+  /** Another device changed data.json (through the vault's sync): reload the
+   *  shared part, keep this device's own fields. */
+  async onExternalSettingsChange() {
+    const data = (await this.loadData()) ?? {};
+    const migration = migrateSettings(data, { isMobile: Platform.isMobile });
+    this.settings = withDeviceShell(migration.settings, deviceShellOf(this.settings.shell));
+    this.lastShared = sharedSettings(migration.settings);
+    this.refreshViews();
   }
 
   /** Re-applies composer-affecting settings in open chat views. */
@@ -312,20 +349,30 @@ export default class ObsidianChatPlugin extends Plugin {
 
   async saveSettings() {
     this.app.saveLocalStorage(DEVICE_SHELL_KEY, JSON.stringify(deviceShellOf(this.settings.shell)));
-    await this.saveData(syncedSettings(this.settings, this.fileDeviceShell));
-    // Revoking a paired device takes effect immediately: close its live
-    // sockets (the relay cancels its parked approvals) without a restart.
-    const current = this.settings.pairedDevices;
-    for (const name of Object.keys(this.devicesSnapshot)) {
-      if (!(name in current)) this.runtime?.revokeDevice(name);
-    }
-    this.devicesSnapshot = { ...current };
+    const mine = sharedSettings(this.settings);
+    // Merge against the file as it is now, so only keys this device changed
+    // are written and a concurrent change from another device survives.
+    const current = migrateSettings((await this.loadData()) ?? {}, { isMobile: Platform.isMobile });
+    const merged = mergeShared(sharedSettings(current.settings), this.lastShared, mine);
+    await this.saveData(merged);
+    this.lastShared = merged;
+    // Pick up any other device's change that the merge kept.
+    const synced = migrateSettings(merged, { isMobile: Platform.isMobile }).settings;
+    this.settings = withDeviceShell(synced, deviceShellOf(this.settings.shell));
   }
 }
 
 /** Per-device (not synced) storage key for this device's shell role. */
 const DEVICE_SHELL_KEY = "obsidian-chat:device-shell";
 const VOICE_PROVIDER_KEY = "obsidian-chat:voice-provider";
+
+/** A readable default name for this device (shown in History, routes approvals). */
+function defaultDeviceName(): string {
+  if (Platform.isMobile) return Platform.isTablet ? "tablet" : "phone";
+  const os = requireNodeModule<{ hostname(): string }>("os");
+  const host = os?.hostname?.().split(".")[0]?.trim();
+  return host || "desktop";
+}
 
 /** This machine's own IP addresses (desktop only). */
 function ownAddresses(): string[] {

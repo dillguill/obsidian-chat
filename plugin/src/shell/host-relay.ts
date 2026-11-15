@@ -6,7 +6,7 @@
  *  then `accept(ws)`. Session/update/permission forwarding is delegated to a
  *  `RelayBridge` implemented by the host runtime (filled in US3).
  */
-import { RENAME_METHOD } from "../session/title.ts";
+import { PING_METHOD, RENAME_METHOD } from "../session/title.ts";
 import {
   PROTOCOL_VERSION,
   agent,
@@ -112,6 +112,11 @@ export class HostRelay {
           if (!bridge.renameSession) throw new Error("rename is not supported by this host");
           return bridge.renameSession(deviceId, ctx.params);
         },
+      )
+      .onRequest(
+        PING_METHOD,
+        (params: unknown) => (params ?? {}) as Record<string, unknown>,
+        () => ({}),
       )
       .onNotification(methods.agent.session.cancel, (ctx) => bridge.cancel(deviceId, ctx.params));
   }

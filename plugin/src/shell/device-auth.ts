@@ -1,13 +1,17 @@
-/** Paired-device credentials (FR-009/FR-010/FR-016/FR-017).
+/** Attach credentials.
  *
- *  Tokens live in host settings (`devices: name → token`); the local UI uses a
- *  per-run token that is never persisted. Comparison is constant-time and no
- *  token is ever logged, rendered, or stored in a session record.
+ *  - The host's own chat view uses a per-run token that is never persisted.
+ *  - Remote devices authenticate with their Tailscale identity: Tailscale
+ *    Serve proxies the tailnet name to the loopback listener and sets
+ *    `Tailscale-User-Login` (it strips any client-supplied value). The device
+ *    name is a self-declared label for routing/UX, not a credential.
+ *  - `devices` (name → token) remains for tests and embedders; the plugin
+ *    passes none. Comparison is constant-time and no token is ever logged.
  */
 
 export interface DeviceRegistryOptions {
-  /** Read the current pairing table (name → token). */
-  devices: () => Record<string, string>;
+  /** Optional static token table (name → token); the plugin passes none. */
+  devices?: () => Record<string, string>;
   /** Per-host-run token for the host's own chat view; never persisted. */
   localToken: string;
 }
@@ -37,7 +41,7 @@ export class DeviceRegistry {
   deviceForToken(token: string | null): string | null {
     if (!token) return null;
     if (constantTimeEqual(token, this.opts.localToken)) return "__local__";
-    for (const [name, value] of Object.entries(this.opts.devices())) {
+    for (const [name, value] of Object.entries(this.opts.devices?.() ?? {})) {
       if (constantTimeEqual(token, value)) return name;
     }
     return null;
@@ -46,7 +50,7 @@ export class DeviceRegistry {
   /** Revocation is reflected on the next lookup; callers close live sockets. */
   isRevoked(deviceId: string): boolean {
     if (deviceId === "__local__") return false;
-    return !(deviceId in this.opts.devices());
+    return !(deviceId in (this.opts.devices?.() ?? {}));
   }
 }
 
@@ -60,4 +64,30 @@ export function tokenFromUrl(url: string | undefined): string | null {
   } catch {
     return null;
   }
+}
+
+/** Tailscale Serve's identity header (lower-case, as Node exposes headers). */
+export const TAILSCALE_LOGIN_HEADER = "tailscale-user-login";
+
+/** True when a Tailscale login may attach: an empty allow-list means any
+ *  user Tailscale Serve vouches for. Comparison is case-insensitive. */
+export function loginAllowed(login: string | null | undefined, allowed: readonly string[]): boolean {
+  const value = login?.trim().toLowerCase();
+  if (!value) return false;
+  const list = allowed.map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  return list.length === 0 || list.includes(value);
+}
+
+/** The self-declared device label from `?device=` (sanitized). */
+export function deviceNameFromUrl(url: string | undefined): string | null {
+  if (!url) return null;
+  let raw: string | null;
+  try {
+    raw = new URL(url, "http://localhost").searchParams.get("device");
+  } catch {
+    return null;
+  }
+  const name = raw?.trim().replace(/[^\p{L}\p{N} ._-]/gu, "").slice(0, 40).trim();
+  if (!name || name.startsWith("__")) return null;
+  return name;
 }

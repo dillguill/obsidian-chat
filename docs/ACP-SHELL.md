@@ -2,26 +2,30 @@
 
 ## Which mode?
 
-- **Local (this device hosts)** — desktop Obsidian. Spawns exactly one harness child, owns the
-  conversation record and serves paired devices.
-- **Remote (attach to a host)** — phone or second desktop. Spawns nothing, opens no listener, keeps
+- **Host** — desktop Obsidian. Spawns exactly one harness child, owns the conversation record and
+  serves other devices. Its loopback listener starts when the plugin loads.
+- **Remote** — phone or second desktop. Spawns nothing, opens no listener, keeps
   no local history; it only renders the host's sessions.
 
 Mobile Obsidian never hosts. There is no bridge, daemon or launchd job in either mode.
 
 ## First run on the host
 
-1. Settings → Obsidian Chat → mode **Local**.
+1. Settings → Obsidian Chat → role **Host**.
 2. Harness command: any ACP-speaking command, e.g. `opencode acp`. The plugin passes the vault root
    as the session cwd and adds its loopback MCP tools when the harness supports HTTP MCP.
-3. Listen port (default 8765) and bind address (loopback by default).
-4. Open **ACP Shell** (ribbon or command palette).
+3. Listener port (default 8765, loopback only). Publish it once: `tailscale serve --bg 8765`.
+4. Optional: Allowed Tailscale accounts (empty = any user on your tailnet).
+5. Open the chat view (ribbon or command palette).
 
-## Pair a device (host)
+## Add a device
 
-Settings → Paired devices → add a name, copy the generated code. Enter the host endpoint
-(`ws://<host>:8765/acp`) and that code under the device's **Remote** mode. Removing a device closes
-its live connection and cancels its pending approvals immediately.
+On the device: role **Remote**, host address `https://<host>.<tailnet>.ts.net`, and a device name.
+There is no pairing step and no code: the host trusts the Tailscale identity Serve attaches. To
+remove a device, remove it from your tailnet (or from the allowed accounts).
+
+Settings that describe a device (role, host address, port, device name) stay on that device; shared
+preferences sync with the vault, and a device only writes the keys it changed.
 
 ## History and continuity
 
@@ -54,8 +58,8 @@ its live connection and cancels its pending approvals immediately.
 | Symptom | Check |
 |---|---|
 | “No stored conversations” | Run **Reimport legacy chats (diagnostics)**; it reports the vault scan and import result. The store is `.chat/sessions/`. |
-| Remote shows “unreachable” | Host Obsidian must be running with hosting enabled, and the VPN address/device code must match. There is no fallback path. |
-| Auth rejected | The device was revoked or the code is wrong; re-pair. Auth errors are never retried as network failures. |
+| Remote shows “unreachable” | Host Obsidian must be running (role Host) and `tailscale serve status` on the host must show the listener port. The remote retries every 15 s while open and immediately when the app returns to the foreground or the network comes back. |
+| Auth rejected (401) | Use the host's tailnet name, not its IP (only Serve attaches the identity), and check Allowed Tailscale accounts. Tagged devices get no identity. Auth errors are never retried as network failures. |
 | Harness commands fail | Missing credentials/configuration live in the harness, not the plugin; fix them in the harness and use **Restart harness**. |
 
 ## What the plugin never does

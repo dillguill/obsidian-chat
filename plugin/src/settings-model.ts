@@ -11,20 +11,22 @@
 export type ActivityDensity = "chronological" | "grouped";
 export const DEFAULT_ACTIVITY_DENSITY: ActivityDensity = "grouped";
 
+/** In-memory shell settings. `command`/`cwd` are shared (synced in data.json);
+ *  `mode`, `remoteUrl`, `port` and `deviceName` belong to this device and live
+ *  in per-device local storage (see `DeviceShell`). */
 export interface ShellSettings {
+  /** This device's role. */
   mode: "local" | "remote";
-  /** Local mode: any ACP-speaking harness command. */
+  /** Host: any ACP-speaking harness command. Shared. */
   command: string;
-  /** Local mode: optional working directory override (defaults to vault root). */
+  /** Host: optional working directory override (defaults to vault root). Shared. */
   cwd?: string;
-  /** Remote mode: ws:// or wss:// host endpoint. */
+  /** Remote: the host's address, e.g. its tailnet name (https:// or wss://). */
   remoteUrl?: string;
-  /** Remote mode: per-device transport token (never logged). */
-  remoteToken?: string;
-  /** Local host mode: listener port. */
+  /** Host: loopback listener port that Tailscale Serve publishes. */
   port?: number;
-  /** Local host mode: bind address (loopback by default). */
-  bindAddress?: string;
+  /** This device's display name (routes approvals, shown in History). */
+  deviceName?: string;
 }
 
 export interface LegacyImportMarker {
@@ -35,8 +37,9 @@ export interface LegacyImportMarker {
 
 export interface ObsidianChatSettings {
   shell: ShellSettings;
-  /** Paired devices: display name → bearer token (host-owned, never rendered remotely). */
-  pairedDevices: Record<string, string>;
+  /** Tailscale logins allowed to attach through Tailscale Serve ([] = any
+   *  user on the tailnet). Not secret, so it is synced. */
+  allowedTailscaleUsers: string[];
   blacklistFolders: string[];
   injectVaultRules: boolean;
   /** Vault folder holding skills ("" = off). Vault-level, so it syncs. */
@@ -46,23 +49,22 @@ export interface ObsidianChatSettings {
   /** Fixed internal store location; not a user-facing folder setting. */
   sessionStoreFolder: string;
   activityDensity: ActivityDensity;
-  /** Explicit confirmation for binding the host beyond loopback (FR-006). */
-  allowWiderBind: boolean;
   /** One-time transcript-default upgrade marker (v2 = readable chat default). */
   transcriptVersion?: number;
   legacyImport?: LegacyImportMarker;
 }
 
+export const DEFAULT_PORT = 8765;
+
 export const DEFAULT_SETTINGS: ObsidianChatSettings = {
-  shell: { mode: "local", command: "opencode acp", port: 8765, bindAddress: "127.0.0.1" },
-  pairedDevices: {},
+  shell: { mode: "local", command: "opencode acp", port: DEFAULT_PORT },
+  allowedTailscaleUsers: [],
   blacklistFolders: ["Journals/", "_attachments/", ".trash/"],
   injectVaultRules: true,
   skillsFolder: "",
   sttUrl: "",
   sessionStoreFolder: ".chat/sessions",
   activityDensity: DEFAULT_ACTIVITY_DENSITY,
-  allowWiderBind: false,
   transcriptVersion: 2,
 };
 
@@ -83,7 +85,7 @@ export function migrateSettings(raw: unknown, context: MigrationContext): Settin
   delete (shell as unknown as { pairedDevices?: unknown }).pairedDevices;
   const rawShell = isRecord(data.shell) ? data.shell : {};
   const explicitShell = Object.keys(rawShell).length > 0;
-  copyString(rawShell, shell, "command", "cwd", "remoteUrl", "remoteToken", "bindAddress");
+  copyString(rawShell, shell, "command", "cwd", "remoteUrl");
   if (rawShell.mode === "local" || rawShell.mode === "remote") shell.mode = rawShell.mode;
   copyPort(rawShell, shell);
 
@@ -123,25 +125,20 @@ export function migrateSettings(raw: unknown, context: MigrationContext): Settin
   }
   if (shell.mode === "remote" && (!explicitShell || rawShell.remoteUrl === undefined)) {
     if (gatewayLooksRemote) shell.remoteUrl = gatewayUrl;
-    if (typeof gateway.token === "string" && gateway.token.trim()) {
-      shell.remoteToken = gateway.token.trim();
-      notes.push("gateway.token → shell.remoteToken");
-    }
   }
 
   // 3) Repair a previously mis-migrated install: remote mode pointing at this
   //    machine with no device code can only be the local host.
-  if (shell.mode === "remote" && shell.remoteUrl && isLoopbackUrl(shell.remoteUrl) && !shell.remoteToken) {
+  if (shell.mode === "remote" && shell.remoteUrl && isLoopbackUrl(shell.remoteUrl)) {
     shell.mode = "local";
     notes.push("repaired loopback remote → local host");
   }
 
-  // 3) Paired devices move to their own top-level map.
-  const pairedDevices = deviceMap(
-    isRecord(data.pairedDevices) ? data.pairedDevices : isRecord(legacyHost.devices) ? legacyHost.devices : {},
-  );
-  if (isRecord(legacyHost.devices)) notes.push("host.devices → pairedDevices");
-  if (isRecord(data.pairedDevices)) notes.push("pairedDevices preserved");
+  // Paired-device codes, device tokens and bind settings are retired: remote
+  // devices authenticate through Tailscale Serve identity and the listener is
+  // loopback-only. Dropping them also removes secrets from the synced file.
+  for (const key of ["pairedDevices", "allowWiderBind"]) if (key in data) notes.push(`${key} retired`);
+  if ("remoteToken" in rawShell || "bindAddress" in rawShell) notes.push("device code / bind address retired");
 
   // 4) A fresh mobile install can only be a remote shell.
   if (context.isMobile && !explicitShell && legacyHost.enabled !== true) {
@@ -151,7 +148,7 @@ export function migrateSettings(raw: unknown, context: MigrationContext): Settin
 
   const settings: ObsidianChatSettings = {
     shell,
-    pairedDevices,
+    allowedTailscaleUsers: (stringArray(data.allowedTailscaleUsers) ?? []).map((v) => v.trim()).filter(Boolean),
     blacklistFolders: stringArray(data.blacklistFolders) ?? [...DEFAULT_SETTINGS.blacklistFolders],
     injectVaultRules: typeof data.injectVaultRules === "boolean" ? data.injectVaultRules : DEFAULT_SETTINGS.injectVaultRules,
     skillsFolder: typeof data.skillsFolder === "string" ? data.skillsFolder.trim().replace(/^\/+|\/+$/g, "") : "",
@@ -167,10 +164,9 @@ export function migrateSettings(raw: unknown, context: MigrationContext): Settin
           : "grouped"
         : DEFAULT_ACTIVITY_DENSITY,
     transcriptVersion: 2,
-    allowWiderBind: data.allowWiderBind === true,
     ...(isLegacyMarker(data.legacyImport) ? { legacyImport: data.legacyImport as LegacyImportMarker } : {}),
   };
-  return { settings, changed: stableStringify(settings) !== stableStringify(data), notes };
+  return { settings, changed: stableStringify(sharedSettings(settings)) !== stableStringify(data), notes };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -202,14 +198,6 @@ function validPort(value: unknown): boolean {
   return typeof value === "number" ? Number.isInteger(value) && value >= 1024 && value <= 65535 : false;
 }
 
-function deviceMap(value: Record<string, unknown>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [name, token] of Object.entries(value)) {
-    if (typeof token === "string" && token) out[name] = token;
-  }
-  return out;
-}
-
 function stringArray(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null;
   return value.filter((entry): entry is string => typeof entry === "string");
@@ -221,7 +209,7 @@ function isLegacyMarker(value: unknown): boolean {
 
 /** Key-order-independent comparison, so migrating an already-migrated object
  *  reports `changed: false`. */
-function stableStringify(value: unknown): string {
+export function stableStringify(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
   if (isRecord(value)) {
     return `{${Object.keys(value)
@@ -233,22 +221,24 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
-// ---------- per-device shell fields ----------
+// ---------- shared vs per-device ----------
 
-/** Fields that describe THIS device's role. The vault (and its data.json) is
- *  synced between devices, so these must not live in data.json: a phone or
- *  second desktop in Remote mode would otherwise flip the host into Remote
- *  mode attaching to itself. They are kept in per-device local storage. */
+/** Fields that describe THIS device. The vault (and its data.json) is synced
+ *  between devices, so these never go into data.json: they live in per-device
+ *  local storage. Nothing secret is stored anywhere: remote devices
+ *  authenticate with their Tailscale identity. */
 export interface DeviceShell {
   mode?: ShellSettings["mode"];
   remoteUrl?: string;
-  remoteToken?: string;
+  port?: number;
+  deviceName?: string;
 }
 
 export function deviceShellOf(shell: ShellSettings): DeviceShell {
   const out: DeviceShell = { mode: shell.mode };
   if (shell.remoteUrl !== undefined) out.remoteUrl = shell.remoteUrl;
-  if (shell.remoteToken !== undefined) out.remoteToken = shell.remoteToken;
+  if (shell.port !== undefined) out.port = shell.port;
+  if (shell.deviceName !== undefined) out.deviceName = shell.deviceName;
   return out;
 }
 
@@ -265,31 +255,47 @@ export function parseDeviceShell(raw: unknown): DeviceShell | null {
   const out: DeviceShell = {};
   if (value.mode === "local" || value.mode === "remote") out.mode = value.mode;
   if (typeof value.remoteUrl === "string") out.remoteUrl = value.remoteUrl;
-  if (typeof value.remoteToken === "string") out.remoteToken = value.remoteToken;
+  if (validPort(value.port)) out.port = Number(value.port);
+  if (typeof value.deviceName === "string" && value.deviceName.trim()) out.deviceName = value.deviceName.trim();
   return out.mode ? out : null;
 }
 
-/** Overlays this device's role onto the synced settings. */
+/** Overlays this device's fields onto the shared settings. */
 export function withDeviceShell(settings: ObsidianChatSettings, device: DeviceShell | null): ObsidianChatSettings {
   if (!device) return settings;
   const shell: ShellSettings = { ...settings.shell };
   if (device.mode) shell.mode = device.mode;
   if ("remoteUrl" in device) shell.remoteUrl = device.remoteUrl;
-  if ("remoteToken" in device) shell.remoteToken = device.remoteToken;
+  if (device.port !== undefined) shell.port = device.port;
+  if (device.deviceName !== undefined) shell.deviceName = device.deviceName;
   return { ...settings, shell };
 }
 
-/** What gets written to the synced data.json: this device's role fields are
- *  replaced by whatever the file already held, so saving here never
- *  overwrites another device's role. */
-export function syncedSettings(settings: ObsidianChatSettings, fileShell: DeviceShell): ObsidianChatSettings {
-  const shell: ShellSettings = { ...settings.shell };
-  delete shell.remoteUrl;
-  delete shell.remoteToken;
-  shell.mode = fileShell.mode ?? shell.mode;
-  if (fileShell.remoteUrl !== undefined) shell.remoteUrl = fileShell.remoteUrl;
-  if (fileShell.remoteToken !== undefined) shell.remoteToken = fileShell.remoteToken;
-  return { ...settings, shell };
+/** The shared (synced) part of the settings: what data.json holds. */
+export function sharedSettings(settings: ObsidianChatSettings): Record<string, unknown> {
+  const shell: Record<string, unknown> = { command: settings.shell.command };
+  if (settings.shell.cwd) shell.cwd = settings.shell.cwd;
+  const out: Record<string, unknown> = { ...settings, shell };
+  return JSON.parse(JSON.stringify(out)) as Record<string, unknown>;
+}
+
+/** Three-way merge for saving: only top-level keys this device changed since
+ *  it last loaded (`base` → `mine`) are written; every other key keeps what the
+ *  file holds now, so a device never reverts another device's change. */
+export function mergeShared(
+  file: Record<string, unknown>,
+  base: Record<string, unknown>,
+  mine: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...file };
+  for (const key of Object.keys(mine)) {
+    if (stableStringify(mine[key]) !== stableStringify(base[key])) out[key] = mine[key];
+    else if (!(key in file)) out[key] = mine[key];
+  }
+  for (const key of Object.keys(base)) {
+    if (!(key in mine)) delete out[key];
+  }
+  return out;
 }
 
 /** A Remote URL that points at this machine itself is never a real remote:

@@ -56,10 +56,12 @@ for (const [name, marker] of [
 ]) {
   if (!read(name).includes(marker)) problems.push(`${name}: missing ${marker} gate`);
 }
-// A paired-device/host UI must not appear on mobile.
-if (!/Platform\.isDesktopApp/.test(read("settings.ts"))) problems.push("settings.ts: paired-device UI is not desktop-gated");
-// The plugin must not auto-start a host process at load (single lazy spawn path).
-if (/this\.startHost\s*\(/.test(read("main.ts"))) problems.push("main.ts: host started eagerly at load");
+// Host settings (role, listener port, harness restart) must not appear on mobile.
+if (!/Platform\.isDesktopApp/.test(read("settings.ts"))) problems.push("settings.ts: host UI is not desktop-gated");
+// The host's loopback listener starts at load (redesign item 2), desktop-gated;
+// the harness itself is never spawned eagerly (single lazy spawn path).
+if (/this\.startHost\s*\(|ensureHarness\s*\(/.test(read("main.ts"))) problems.push("main.ts: harness started eagerly at load");
+if (!/startHostIfLocal[\s\S]*Platform\.isDesktopApp/.test(read("main.ts"))) problems.push("main.ts: host listener start is not desktop-gated");
 
 if (problems.length) {
   console.error("Mobile check failed:");

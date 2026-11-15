@@ -21,7 +21,6 @@ import { fingerprint, redactLabel } from "./identity.ts";
 import { LocalTransportConnector } from "./local-transport.ts";
 import { backoffDelay } from "./transport.ts";
 import { HARNESS_RESTART_ATTEMPTS } from "../session/limits.ts";
-import { bindAllowed } from "./types.ts";
 import { ObsidianShellEnvironment } from "./environment.ts";
 import type { ShellAttachConfig } from "./types.ts";
 
@@ -29,9 +28,8 @@ export interface HostCoreSettings {
   shell: ShellAttachConfig;
   sessionStoreFolder: string;
   blacklistFolders: string[];
-  /** Paired device credentials (name → token). */
-  pairedDevices: Record<string, string>;
-  allowWiderBind: boolean;
+  /** Tailscale logins allowed through Serve ([] = any tailnet user). */
+  allowedTailscaleUsers: string[];
 }
 
 export interface HostCoreOptions {
@@ -125,12 +123,6 @@ export class HostCore {
     if (this.server) return;
     if (!Platform.isDesktopApp) throw new Error("host mode is desktop-only");
     const settings = this.settings();
-    const bindAddress = settings.shell.bindAddress ?? "127.0.0.1";
-    if (!bindAllowed(bindAddress, settings.allowWiderBind)) {
-      throw new Error(
-        `refusing to bind ${bindAddress}: binding beyond loopback requires explicit confirmation (Settings → Shell → Allow wider bind)`,
-      );
-    }
     this.stopping = false;
     if (this.opts.stopLegacy && !this.legacyStopped) {
       this.legacyStopped = true;
@@ -167,16 +159,16 @@ export class HostCore {
     this.relay = relay;
     const server = new HostServer({
       port: settings.shell.port ?? 8765,
-      host: bindAddress,
-      devices: () => this.settings().pairedDevices,
+      host: "127.0.0.1",
       localToken: this.localTokenValue,
+      identity: { allowedUsers: () => this.settings().allowedTailscaleUsers ?? [] },
       mcpHandler: createVaultMcpHandler({ server: mcp, token: () => this.mcpTokenValue }),
       onAcpConnection: (socket, deviceId) => relay.attach(socket, deviceId),
       log: this.log,
     });
     await server.start();
     this.server = server;
-    this.log(`host core listening on ${settings.shell.bindAddress ?? "127.0.0.1"}:${server.boundPort}`);
+    this.log(`host core listening on 127.0.0.1:${server.boundPort} (publish with: tailscale serve --bg ${server.boundPort})`);
   }
 
   /** Lazily connects the single harness child and wires the relay bridge. */
@@ -224,12 +216,6 @@ export class HostCore {
     this.bridge?.attachHarness(client);
     this.log("harness attached");
     return client;
-  }
-
-  /** Revocation closes the device's live sockets; its pending approvals are
-   *  cancelled by the relay's unbind path (FR-017). */
-  revokeDevice(deviceId: string): void {
-    this.server?.closeDevice(deviceId);
   }
 
   /** Restart the single harness child with bounded backoff after an unexpected
