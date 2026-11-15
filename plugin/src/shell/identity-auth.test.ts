@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { WebSocket } from "ws";
 import { deviceNameFromUrl, loginAllowed } from "./device-auth.ts";
 import { remoteUrlWithToken } from "./remote-transport.ts";
+import { originAllowed } from "./host-server.ts";
 import { startTestHost } from "../../test/fixtures/fake-relay.ts";
 
 function attach(url: string, headers: Record<string, string> = {}): Promise<number | "open"> {
@@ -88,4 +89,22 @@ test("the attach URL carries the device name and no token when there is none", (
   assert.equal(url.pathname, "/acp");
   assert.equal(url.searchParams.get("device"), "phone");
   assert.equal(url.searchParams.has("token"), false);
+});
+
+test("a web page's origin is refused even with a valid identity (no cross-site WebSocket hijacking)", async () => {
+  const host = await startTestHost({ devices: {}, allowedUsers: [] });
+  try {
+    const login = { "Tailscale-User-Login": "me@example.com" };
+    assert.equal(await attach(host.url, { ...login, Origin: "https://evil.example" }), 403);
+    assert.equal(await attach(host.url, { ...login, Origin: "app://obsidian.md" }), "open");
+    assert.equal(await attach(host.url, { ...login, Origin: "capacitor://localhost" }), "open");
+  } finally {
+    await host.close();
+  }
+});
+
+test("origin allow-list", () => {
+  assert.equal(originAllowed(undefined), true, "native clients send no Origin");
+  assert.equal(originAllowed("app://obsidian.md"), true);
+  assert.equal(originAllowed("https://device-01.example.ts.net"), false);
 });

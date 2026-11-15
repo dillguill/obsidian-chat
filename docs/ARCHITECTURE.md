@@ -69,6 +69,9 @@ amendment.
   allowed login (Settings → Allowed Tailscale accounts, empty = any tailnet user) or the host view's
   per-run token, 401 otherwise. The device name sent with `?device=` is a routing label, not a
   credential. No device codes exist; nothing secret is stored in settings.
+- `/acp` upgrades must come from an Obsidian app origin (`app://obsidian.md`, `capacitor://localhost`,
+  `http(s)://localhost`) or carry no Origin (native clients); any other origin gets 403. Serve vouches
+  for the device, not the page, so this stops a web page on a tailnet device from attaching.
 - Settings: data.json (synced) holds shared preferences only; role, host address, port and device
   name are per-device local storage. Saving merges only the keys this device changed, and the plugin
   reloads on an external change.

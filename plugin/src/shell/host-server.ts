@@ -20,6 +20,9 @@ export interface HostServerOptions {
   /** Tailscale Serve identity: when set, an upgrade arriving on loopback with
    *  an allowed `Tailscale-User-Login` header is accepted. */
   identity?: { allowedUsers: () => readonly string[] };
+  /** Origins allowed to open `/acp` (default: the Obsidian apps). A request
+   *  without an Origin header (native clients, tests) is allowed. */
+  allowedOrigins?: readonly string[];
   /** Handles `/mcp`; returns true when it wrote a response. */
   mcpHandler: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   /** Called for an authenticated `/acp` WebSocket; the relay attaches ACP. */
@@ -35,6 +38,18 @@ export interface HostServerOptions {
 const MAX_MCP_BODY = 1024 * 1024;
 
 import { loadNodeModule } from "./node.ts";
+
+/** Origins of the Obsidian apps: desktop (Electron), iOS (Capacitor) and
+ *  Android. Any web page a tailnet device visits would carry its own origin,
+ *  so this blocks cross-site WebSocket hijacking: Tailscale Serve attaches
+ *  the user's identity to every request from that device, including ones a
+ *  malicious page makes. */
+export const OBSIDIAN_ORIGINS: readonly string[] = ["app://obsidian.md", "capacitor://localhost", "http://localhost", "https://localhost"];
+
+export function originAllowed(origin: string | undefined, allowed: readonly string[] = OBSIDIAN_ORIGINS): boolean {
+  if (!origin) return true;
+  return allowed.includes(origin.trim().toLowerCase());
+}
 
 /** Loopback check for `/mcp` (contract `vault-mcp.md` §2). */
 export function isLoopbackAddress(address: string | undefined): boolean {
@@ -260,6 +275,12 @@ export class HostServer {
   ): void {
     const path = new URL(req.url ?? "/", "http://host").pathname;
     if (path !== "/acp") {
+      socket.destroy();
+      return;
+    }
+    const origin = req.headers.origin;
+    if (!originAllowed(Array.isArray(origin) ? origin[0] : origin, this.options.allowedOrigins)) {
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
       socket.destroy();
       return;
     }
