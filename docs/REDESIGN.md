@@ -56,6 +56,28 @@ whether or not the chat pane is open on the Mac.
   Serve strips client-supplied identity headers, and loopback-only binding
   means nothing can reach the listener around Serve. Note: tagged devices get
   no identity headers.
+- `/acp` only accepts the Obsidian app origins (or no Origin); web pages get
+  403. Serve vouches for the device, not the page that opened the socket.
+
+**Decided 2026-11-15 (built):**
+
+- Publish with `tailscale serve --bg <port>`. This is persistent tailscaled
+  configuration, not a background process: `tailscale serve status` shows it,
+  `tailscale serve --https=443 off` removes it, it survives reboots.
+- **Not Caddy.** Caddy would strip the reason for using Serve: requests would
+  arrive without a Tailscale identity, so the host would need a custom Caddy
+  build (`caddy-tailscale`), a separate auth helper, or device tokens again.
+  The Caddy CA on each device authenticates the server to the device, not the
+  device to the server, so it adds no client check; Serve's certificate is
+  publicly trusted.
+- **No Tailscale access rules.** ACLs are allow-only: with the default
+  allow-all policy a narrower rule changes nothing, and replacing allow-all
+  means listing every other path (NAS, SSH, Gitea) — more parts, lockout risk.
+  Tagged devices (servers, containers) already get no identity and are
+  refused; to refuse other users' devices, set *Allowed Tailscale accounts* to
+  your own login.
+- Client certificates (mTLS) were ruled out: the Obsidian apps can't present
+  them.
 
 ### 4. Remote connections that keep themselves alive
 

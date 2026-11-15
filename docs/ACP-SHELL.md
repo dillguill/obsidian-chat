@@ -27,6 +27,21 @@ remove a device, remove it from your tailnet (or from the allowed accounts).
 Settings that describe a device (role, host address, port, device name) stay on that device; shared
 preferences sync with the vault, and a device only writes the keys it changed.
 
+## Check the listener (host)
+
+```sh
+H=https://<host>.<tailnet>.ts.net
+tailscale serve status                       # shows / proxy http://127.0.0.1:8765
+curl -s --noproxy '*' "$H/"                  # {"error":"not found"}: Serve reaches the listener
+U=(-s --noproxy '*' --http1.1 -m 3 -o /dev/null -D - -H "Connection: Upgrade" -H "Upgrade: websocket" \
+   -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==")
+curl "${U[@]}" "$H/acp?device=check" | head -1                               # 101: your identity is accepted
+curl "${U[@]}" -H "Origin: https://evil.example" "$H/acp" | head -1          # 403: web pages are refused
+```
+
+`--noproxy '*'` matters: with an HTTP(S) proxy in the environment, curl prints the proxy's
+`HTTP/1.1 200` CONNECT reply instead of the host's answer.
+
 ## History and continuity
 
 - Conversations live in `.chat/sessions/*.jsonl` (host-owned, append-only). There is **no folder
