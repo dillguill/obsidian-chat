@@ -333,16 +333,15 @@ test("a stored conversation loads with an explicit continuity state and no re-pe
   assert.equal((await store.read(sessionId)).entries.length, before, "replayed history is not appended");
 });
 
-test("a detached conversation refuses to start a new harness session without an explicit choice", async () => {
+test("a detached conversation without an explicit choice continues with the digest", async () => {
   const store = new SessionStore(new MemoryAdapter(), ".chat/sessions");
   const harness = new StubHarness();
   const bridge = bridgeFor(store, harness);
   const sessionId = await importedSession(store);
-  await assert.rejects(
-    bridge.prompt("__local__", { sessionId, prompt: [{ type: "text", text: "continue" }] } as never),
-    /continuity choice required/,
-  );
-  assert.equal(harness.promptCalls.length, 0);
+  const response = await bridge.prompt("__local__", { sessionId, prompt: [{ type: "text", text: "continue" }] } as never);
+  assert.equal(response.stopReason, "end_turn");
+  assert.equal(harness.promptCalls.length, 1);
+  assert.ok(String(harness.promptCalls[0][0].text).startsWith(DIGEST_FIRST_LINE), "the digest is seeded by default");
 });
 
 test("choosing digest seeds one labelled block, records the decision, and continues the same record", async () => {

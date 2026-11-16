@@ -36,6 +36,10 @@ export interface HostCoreOptions {
   app: App;
   settings: () => HostCoreSettings;
   store: () => SessionStore;
+  /** Where the store keeps its files (the registry lives beside the records). */
+  storage?: () => { adapter: StoreAdapter; folder: string };
+  /** Runs before the listener starts (moves old records out of the vault). */
+  beforeStart?: () => Promise<void>;
   /** Stops the legacy host/client before the one harness child is spawned. */
   stopLegacy?: () => Promise<void>;
   log?: (message: string) => void;
@@ -158,10 +162,12 @@ export class HostCore {
       token: () => this.mcpTokenValue,
     });
     this.mcp = mcp;
-    const registry = new ResumeRegistry(
-      this.opts.app.vault.adapter as unknown as StoreAdapter,
-      settings.sessionStoreFolder || ".chat/sessions",
-    );
+    await this.opts.beforeStart?.();
+    const storage = this.opts.storage?.() ?? {
+      adapter: this.opts.app.vault.adapter as unknown as StoreAdapter,
+      folder: settings.sessionStoreFolder || ".chat/sessions",
+    };
+    const registry = new ResumeRegistry(storage.adapter, storage.folder);
     await registry.load();
     this.registry = registry;
     const bridge = new HostBridge({

@@ -31,7 +31,9 @@ amendment.
      protection, reads (including open-editor text), writes, editor refresh, search index and
      metadata queries. The ACP fs handlers, the MCP tools and the shell's mention search all call it.
 4. **Host-owned session store** (`src/session/`)
-   - Append-only JSONL, one record per conversation in the hidden `.chat/sessions/` folder.
+   - Append-only JSONL, one record per conversation, on the host outside the vault:
+     `~/Library/Application Support/obsidian-chat/vaults/<vault>-<hash>/sessions/` (`NodeStoreAdapter`, desktop only). The resume
+     registry sits beside the records. Old in-vault records are copied once (`session/relocate.ts`).
    - A header carries resume identity (harness session id, cwd, command fingerprint, protocol
      version, capability snapshot, last sequence, last selected modes/config); entries cover prompts,
      ACP updates, permissions, turn boundaries, resume decisions, metadata and errors.
@@ -58,9 +60,11 @@ amendment.
 
 - Stored state is recomputed on open from the capability snapshot, command/cwd/protocol identity and
   the record: `resume-capable`, `load-only`, `digest-only`, `fresh-only`.
-- Order is mandatory: `session/resume` → `session/load` (replay reconciled, never re-persisted) →
-  explicit digest/fresh choice. A changed command/cwd/protocol refuses resume with a named reason; an
-  agent name/version change only warns. A host-side `registry.json` reattaches sessions after a
+- Order: `session/resume` → `session/load` (replay reconciled, never re-persisted) → digest. A
+  changed cwd/protocol skips reattach with a named reason; a changed command or agent version only
+  warns (reattach is tried, a failure falls back). Without an explicit choice the next prompt
+  continues with the digest (or fresh when there is no transcript); the user can pick full replay or
+  fresh instead. A host-side `registry.json` reattaches sessions after a
   reload/respawn and marks them detached on stop.
 - The digest is deterministic and model-free: last six complete turns, bounded field sizes, files and
   errors, 8 000-character cap, labelled as a digest and prepended to the first prompt (not shown as a

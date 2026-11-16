@@ -33,6 +33,10 @@ export interface ShellRuntimeOptions {
   app: App;
   settings: () => ShellRuntimeSettings;
   store: () => SessionStore;
+  /** Where the host store keeps its files (registry beside the records). */
+  storage?: () => { adapter: import("../session/store.ts").StoreAdapter; folder: string };
+  /** Runs before the host listener starts. */
+  beforeHostStart?: () => Promise<void>;
   /** Called before spawning, to stop the legacy host/client and avoid a second child. */
   stopLegacy?: () => Promise<void>;
   log?: (message: string) => void;
@@ -72,6 +76,8 @@ export class ShellRuntime {
   private app: App;
   private getSettings: () => ShellRuntimeSettings;
   private getStore: () => SessionStore;
+  private storage?: ShellRuntimeOptions["storage"];
+  private beforeHostStart?: () => Promise<void>;
   private stopLegacy?: () => Promise<void>;
   private log: (message: string) => void;
   private host: HostCore | null = null;
@@ -92,6 +98,8 @@ export class ShellRuntime {
     this.app = options.app;
     this.getSettings = options.settings;
     this.getStore = options.store;
+    this.storage = options.storage;
+    this.beforeHostStart = options.beforeHostStart;
     this.stopLegacy = options.stopLegacy;
     this.log = options.log ?? (() => undefined);
   }
@@ -211,6 +219,8 @@ export class ShellRuntime {
       // command) applies without restarting the listener.
       settings: () => this.getSettings(),
       store: this.getStore,
+      storage: this.storage,
+      beforeStart: this.beforeHostStart,
       stopLegacy: async () => {
         if (this.legacyStopped) return;
         this.legacyStopped = true;

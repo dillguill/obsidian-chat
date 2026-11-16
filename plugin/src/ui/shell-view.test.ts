@@ -22,11 +22,9 @@ test("a healthy resumable conversation has no status tag", () => {
   assert.equal(conversationStatusLabel("some-future-state"), null, "raw enums never leak into the UI");
 });
 
-test("non-resumable conversations get plain language, not internal enum words", () => {
-  for (const state of ["fresh-only", "digest-only"]) {
-    const label = conversationStatusLabel(state);
-    assert.ok(label, "an exception is labelled");
-    assert.ok(!/fresh-only|digest-only|imported|load-only|resume-capable/i.test(label!), "no internal single-word state is shown");
+test("conversations that can't reattach still continue, so History shows no warning tag", () => {
+  for (const state of ["fresh-only", "digest-only", "resume-capable", "load-only", "something-new"]) {
+    assert.equal(conversationStatusLabel(state), null, state);
   }
 });
 

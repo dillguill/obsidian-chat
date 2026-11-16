@@ -51,10 +51,10 @@ test("neither capability offers an explicit digest", () => {
   assert.equal(decision.digestAvailable, true);
 });
 
-test("a changed command refuses resume and names the mismatch", () => {
+test("a changed command still tries to reattach, with a warning (failure falls back to the digest)", () => {
   const decision = decideContinuity(stored, { ...current, command: "other-harness acp" }, record);
-  assert.equal(decision.state, "digest-only");
-  assert.equal(decision.reason, "fingerprint_mismatch");
+  assert.ok(decision.state === "resume-capable" || decision.state === "load-only");
+  assert.equal(decision.warning, "harness_changed");
 });
 
 test("a changed working directory refuses resume", () => {

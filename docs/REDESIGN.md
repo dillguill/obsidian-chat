@@ -105,7 +105,8 @@ whether or not the chat pane is open on the Mac.
 ### 5. Conversation records outside the vault
 
 - Location: the host's app-data folder, derived from the OS home directory,
-  default `~/Library/Application Support/obsidian-chat/sessions/` on macOS
+  one folder per vault: `~/Library/Application Support/obsidian-chat/vaults/<vault>-<hash8>/sessions/`
+  on macOS (the hash is of the vault path, so two vaults never share records)
   (`$XDG_DATA_HOME/obsidian-chat/sessions` on Linux). No path is hardcoded in
   synced config; a host-local override is allowed.
 - Only the host reads or writes it. Remote devices already read history
@@ -118,6 +119,19 @@ whether or not the chat pane is open on the Mac.
   every streamed update and syncs them to every device for no benefit.
 - If dsh and the host move to the NAS later, the records move with them;
   clients never read the folder directly.
+
+**Built 2026-11-16:** `NodeStoreAdapter` (atomic writes, 0600 files), one-time
+verified copy with a marker (`relocated-from-vault.json`, retried until every
+record copies), and the command *Delete old in-vault conversation copies*
+(removes only originals the host holds byte-for-byte).
+
+**Continuity, same change:** old conversations no longer stall. The view
+cleared the user's continuity choice right before sending, so the host
+rejected the prompt ("continuity choice required"). Now the choice survives
+the send, the host defaults to the digest when none is given, a changed
+harness command still tries resume/load (falls back to the digest), and
+History shows no "can't reattach" tag. The blocking choice card is now a quiet
+note with *Summary / Full transcript / Start fresh*.
 
 ### 6. The plugin is the only way the harness reaches the vault
 

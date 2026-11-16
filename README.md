@@ -39,14 +39,15 @@ Phone / other desktop ── ACP over WebSocket ──┐
   payloads are rendered generically from ACP's own fields — no tool-name dictionary — with per-turn
   and session-wide raw views. Composer controls are generated from the harness's declared modes and
   config options.
-- **Continuity without silent resets.** Reopening a conversation tries the harness's resume/load
-  capabilities; when it cannot reattach, you get an explicit choice: continue with a bounded,
-  deterministic digest (default), start fresh, or replay the full transcript. No new session is
-  created until you choose.
+- **Old conversations always continue.** Reopening a conversation tries the harness's resume/load
+  capabilities; when it can't reattach, your next message carries a bounded, deterministic summary
+  of it (default). A quiet note offers the full transcript or a fresh start instead.
 
 ## Conversations and history
 
-Conversations are host-owned **JSONL records** in the hidden `.chat/sessions/` folder. The ACP Shell
+Conversations are host-owned **JSONL records** stored on the host, outside the vault and its sync
+(`~/Library/Application Support/obsidian-chat/vaults/<vault>-<hash>/sessions/` on macOS). Records from the old in-vault `.chat/sessions/` folder are copied there once;
+**Delete old in-vault conversation copies** removes the originals that have a matching copy. The ACP Shell
 is the only viewer; no Markdown session notes are written, and **there is no note-folder setting**.
 On first upgrade, old Markdown conversations are discovered vault-wide by their content and imported
 once (idempotent, originals untouched). If History looks wrong, run **“Reimport legacy chats

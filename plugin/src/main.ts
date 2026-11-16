@@ -6,7 +6,7 @@
  *  gone; conversations live in JSONL and are viewed in the shell.
  */
 import { parseVoiceProvider, type VoiceProvider } from "./voice/stt.ts";
-import { Notice, Platform, Plugin, WorkspaceLeaf } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin, WorkspaceLeaf } from "obsidian";
 import { ObsidianChatSettingTab } from "./settings";
 import {
   DEFAULT_PORT,
@@ -23,6 +23,8 @@ import {
 } from "./settings-model.ts";
 import { requireNodeModule } from "./shell/node.ts";
 import { SessionStore, type StoreAdapter } from "./session/store";
+import { relocateRecords, type RelocationReport } from "./session/relocate.ts";
+import { NodeStoreAdapter, hostDataDir } from "./shell/node-store.ts";
 import { importLegacySessions, looksLikeLegacyConversation, type LegacyNote, type MigrationReport } from "./session/migrate";
 import { ShellChatView, SHELL_VIEW_TYPE } from "./ui/shell-view";
 import { LegacyImportInfoModal, type LegacyImportDiagnostics } from "./ui/legacy-import-info";
@@ -40,15 +42,97 @@ export default class ObsidianChatPlugin extends Plugin {
   /** In-flight vault discovery, so view opens and commands share one scan. */
   private legacyImportRun: Promise<MigrationReport | null> | null = null;
 
-  /** The host's JSONL session store, created on first use from the vault adapter. */
+  /** Where conversation records live. On desktop: the OS app-data folder,
+   *  outside the vault and its sync (redesign item 5). Mobile never hosts and
+   *  keeps the old in-vault location only as a fallback. */
+  storage(): { adapter: StoreAdapter; folder: string; location: string } {
+    if (!this.storageInfo) {
+      const adapter = this.app.vault.adapter;
+      if (Platform.isDesktopApp && adapter instanceof FileSystemAdapter) {
+        const base = hostDataDir(this.app.vault.getName(), adapter.getBasePath());
+        this.storageInfo = { adapter: new NodeStoreAdapter(base), folder: "sessions", location: `${base}/sessions` };
+      } else {
+        const folder = this.settings.sessionStoreFolder || ".chat/sessions";
+        this.storageInfo = { adapter: adapter as unknown as StoreAdapter, folder, location: folder };
+      }
+    }
+    return this.storageInfo;
+  }
+  private storageInfo: { adapter: StoreAdapter; folder: string; location: string } | null = null;
+
+  /** The host's JSONL session store. */
   store(): SessionStore {
     if (!this.sessionStore) {
-      this.sessionStore = new SessionStore(
-        this.app.vault.adapter as unknown as StoreAdapter,
-        this.settings.sessionStoreFolder || ".chat/sessions",
-      );
+      const { adapter, folder } = this.storage();
+      this.sessionStore = new SessionStore(adapter, folder);
     }
     return this.sessionStore;
+  }
+
+  /** One-time, idempotent copy of records from the old in-vault folder
+   *  (`.chat/sessions`) to the host store. Originals stay until the user runs
+   *  "Delete old in-vault conversation copies". */
+  async relocateRecords(): Promise<RelocationReport | null> {
+    if (!Platform.isDesktopApp) return null;
+    if (this.relocation) return this.relocation;
+    this.relocation = (async () => {
+      const target = this.storage();
+      if (target.folder === (this.settings.sessionStoreFolder || ".chat/sessions")) return null;
+      const report = await relocateRecords({
+        from: this.app.vault.adapter as unknown as StoreAdapter,
+        fromFolder: this.settings.sessionStoreFolder || ".chat/sessions",
+        to: target.adapter,
+        toFolder: target.folder,
+      });
+      if (report.failed.length) {
+        console.log(`[obsidian-chat] record move: ${report.failed.length} failed`, report.failed);
+        new Notice(`Obsidian Chat: ${report.failed.length} conversation(s) could not be moved out of the vault; they stay readable there and will be retried.`);
+      } else if (report.copied.length) {
+        const count = report.copied.filter((name) => name.endsWith(".jsonl")).length;
+        new Notice(`Obsidian Chat: moved ${count} conversation(s) out of the vault. Old copies in .chat/sessions can be removed with "Delete old in-vault conversation copies".`);
+      }
+      return report;
+    })().catch((err) => {
+      this.relocation = null;
+      throw err;
+    });
+    return this.relocation;
+  }
+  private relocation: Promise<RelocationReport | null> | null = null;
+
+  /** Deletes the old in-vault records, but only those the host store holds
+   *  byte-for-byte; anything else is kept and reported. */
+  async deleteOldVaultRecords(): Promise<void> {
+    const fromFolder = this.settings.sessionStoreFolder || ".chat/sessions";
+    const vault = this.app.vault.adapter;
+    const target = this.storage();
+    if (target.folder === fromFolder || !(await vault.exists(fromFolder))) {
+      new Notice("Obsidian Chat: there are no old in-vault conversation copies.");
+      return;
+    }
+    let removed = 0;
+    let kept = 0;
+    const listing = await vault.list(fromFolder);
+    for (const path of listing.files) {
+      const name = path.split("/").pop() ?? "";
+      const copy = `${target.folder}/${name}`;
+      try {
+        // A record is only ever appended to, so the host copy must start with
+        // the old one; the registry is rewritten, so its presence is enough.
+        const same =
+          (await target.adapter.exists(copy)) &&
+          (name === "registry.json" || (await target.adapter.read(copy)).startsWith(await vault.read(path)));
+        if (same) {
+          await vault.remove(path);
+          removed += 1;
+        } else {
+          kept += 1;
+        }
+      } catch {
+        kept += 1;
+      }
+    }
+    new Notice(`Obsidian Chat: removed ${removed} old in-vault copies${kept ? `; kept ${kept} without a matching copy` : ""}.`);
   }
 
   /** The shell attach configuration (local spawn or remote host). */
@@ -75,6 +159,10 @@ export default class ObsidianChatPlugin extends Plugin {
           allowedTailscaleUsers: this.settings.allowedTailscaleUsers,
         }),
         store: () => this.store(),
+        storage: () => this.storage(),
+        beforeHostStart: async () => {
+          await this.relocateRecords().catch((err) => console.log(`[obsidian-chat] record move failed: ${String(err)}`));
+        },
         log: (message) => console.log(`[obsidian-chat shell] ${message}`),
       });
     }
@@ -97,7 +185,8 @@ export default class ObsidianChatPlugin extends Plugin {
     // One-time, idempotent, folder-free discovery of pre-JSONL conversations
     // (T108). After layout is ready so plugin load stays fast; History triggers
     // it on demand if this has not finished yet.
-    this.app.workspace.onLayoutReady(() => {
+    this.app.workspace.onLayoutReady(async () => {
+      await this.relocateRecords().catch((err) => console.log(`[obsidian-chat] record move failed: ${String(err)}`));
       void this.importLegacyHistory();
       // The host serves other devices whether or not a chat pane is open here.
       void this.startHostIfLocal();
@@ -123,6 +212,11 @@ export default class ObsidianChatPlugin extends Plugin {
       id: "reimport-legacy-chats",
       name: "Reimport legacy chats (diagnostics)",
       callback: () => void this.reimportLegacyHistory(),
+    });
+    this.addCommand({
+      id: "delete-old-vault-records",
+      name: "Delete old in-vault conversation copies",
+      callback: () => void this.deleteOldVaultRecords(),
     });
     this.addCommand({
       id: "restart-harness",
@@ -258,7 +352,7 @@ export default class ObsidianChatPlugin extends Plugin {
     const storeCount = await this.store().list().then((sessions) => sessions.length).catch(() => 0);
     this.lastLegacyImport = {
       scannedMarkdown: markdown.length,
-      storeFolder: this.settings.sessionStoreFolder || ".chat/sessions",
+      storeFolder: this.storage().location,
       candidates: notes.length,
       candidatesFromFrontmatter: fromFrontmatter,
       candidatesFromScan: fromScan,

@@ -15,11 +15,10 @@ export function conversationStatusLabel(state: ResumeStateName | string | null |
     case null:
     case "":
       return null;
-    // Not resumable; the stored transcript is still readable.
+    // Not reattachable, but it still continues (from a summary): no tag.
     case "digest-only":
-      return "Old conversation — digest only";
     case "fresh-only":
-      return "Old conversation — can’t reattach";
+      return null;
     default:
       // An unknown/new state must not leak a raw enum token.
       return null;

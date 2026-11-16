@@ -744,7 +744,9 @@ export class ShellChatView extends ItemView {
     try {
       const context = await this.buildContext(chips);
       const runtime = this.plugin.shellRuntime();
-      this.clearContinuityBar();
+      // Remove the note but keep the chosen continuity for this send (clearing
+      // it here used to drop the choice, so old conversations couldn't continue).
+      this.clearContinuityBar(false);
       await runtime.send(typed, { images: images.map(({ mimeType, data }) => ({ mimeType, data })), context });
       this.rulesSentFor = runtime.clientDebugInfo?.sessionId ?? this.rulesSentFor;
       if (this.skills().length) this.skillsSentFor = runtime.clientDebugInfo?.sessionId ?? this.skillsSentFor;
@@ -1325,57 +1327,64 @@ export class ShellChatView extends ItemView {
     }
   }
 
-  /** Explicit continuity choice for a conversation that cannot be resumed:
-   *  digest (default), Start fresh, or full-transcript replay. No new session is
-   *  created until the user picks one. */
+  /** A conversation the harness can't reattach still continues: the next
+   *  message carries a summary of it (default). A quiet note says so, with the
+   *  alternatives one click away; nothing blocks the composer. */
   private renderContinuity(info: ContinuityInfo | null): void {
     this.clearContinuityBar();
     if (!info || info.state === "resume-capable" || info.state === "load-only") return;
+    const runtime = this.plugin.shellRuntime();
+    const initial: ContinuityChoice = info.digestAvailable ? "digest" : "fresh";
+    runtime.setContinuityChoice(initial);
     this.hideEmpty();
     const bar = this.threadEl.createDiv({ cls: "oc-callout oc-continuity" });
     this.continuityBar = bar;
-    bar.createDiv({ cls: "oc-callout-head", text: "This conversation isn't attached to the harness yet" });
-    bar.createDiv({ cls: "oc-callout-hint", text: this.continuityExplanation(info) });
-    const buttons = bar.createDiv({ cls: "oc-continuity-actions" });
-    const choose = (choice: ContinuityChoice, label: string, primary = false) => {
-      const button = buttons.createEl("button", { cls: primary ? "mod-cta" : "", text: label, attr: { type: "button" } });
+    const hint = bar.createDiv({ cls: "oc-callout-hint", text: this.continuityExplanation(info, initial) });
+    if (!info.digestAvailable) return;
+    const actions = bar.createDiv({ cls: "oc-continuity-actions" });
+    const option = (choice: ContinuityChoice, label: string) => {
+      const button = actions.createEl("button", { text: label, attr: { type: "button" } });
       button.addEventListener("click", () => {
-        this.plugin.shellRuntime().setContinuityChoice(choice);
-        for (const child of Array.from(buttons.children)) (child as HTMLButtonElement).disabled = true;
-        bar.createDiv({ cls: "oc-callout-hint", text: `${label} — send a message to continue.` });
+        runtime.setContinuityChoice(choice);
+        hint.setText(this.continuityExplanation(info, choice));
         this.inputEl.focus();
       });
     };
-    if (info.digestAvailable) choose("digest", "Continue with summary", true);
-    choose("fresh", "Start fresh");
-    if (info.digestAvailable) choose("full_replay", "Replay full transcript");
+    option("digest", "Summary");
+    option("full_replay", "Full transcript");
+    option("fresh", "Start fresh");
     this.scroll(true);
   }
 
-  private continuityExplanation(info: ContinuityInfo): string {
+  private continuityExplanation(info: ContinuityInfo, choice: ContinuityChoice): string {
     const reasons: Record<string, string> = {
       fingerprint_mismatch: "the harness command changed",
       cwd_mismatch: "the vault folder changed",
       protocol_mismatch: "the harness protocol changed",
       reattach_failed: "the harness no longer has this session",
       no_capability: "the harness can't restore sessions",
-      no_harness_session: "this is an older conversation from before the current harness",
+      no_harness_session: "it's from before the current harness",
       harness_unreachable: "the harness isn't running right now",
-      no_content: "the stored conversation is empty",
-      record_unreadable: "the stored record couldn't be read",
+      no_content: "it has no messages yet",
+      record_unreadable: "its record couldn't be read",
     };
-    const reason = info.reason ? reasons[info.reason] ?? "" : info.warning ? "the harness was updated" : "";
-    const suffix = reason ? ` (${reason})` : "";
-    if (info.state === "fresh-only") {
-      return `Start a fresh harness session on this conversation${suffix}. Its history stays visible.`;
+    const why = info.reason && reasons[info.reason] ? ` (${reasons[info.reason]})` : "";
+    switch (choice) {
+      case "full_replay":
+        return `Your next message will include the full earlier transcript${why}.`;
+      case "fresh":
+        return `Your next message starts the harness fresh; the history above stays${why}.`;
+      default:
+        return `Your next message will include a summary of this conversation${why}.`;
     }
-    return `Continue from the stored conversation, or start fresh${suffix}. Nothing is sent until you choose and write a message.`;
   }
 
-  private clearContinuityBar(): void {
+  /** Removes the continuity note; `resetChoice` false keeps the pending choice
+   *  (used right before sending). */
+  private clearContinuityBar(resetChoice = true): void {
     this.continuityBar?.remove();
     this.continuityBar = null;
-    this.plugin.shellRuntime().setContinuityChoice(null);
+    if (resetChoice) this.plugin.shellRuntime().setContinuityChoice(null);
   }
 
   openConnectionInfo(): void {
@@ -1392,7 +1401,7 @@ export class ShellChatView extends ItemView {
       state: info?.state ?? "idle",
       label: info?.label,
       listener: host ? host.wsUrl : null,
-      storePath: runtime.mode === "local" ? this.plugin.settings.sessionStoreFolder : null,
+      storePath: runtime.mode === "local" ? this.plugin.storage().location : null,
       sessionCount: undefined as number | undefined,
       context: this.usageText,
       rawEntries: [...this.allRaw],

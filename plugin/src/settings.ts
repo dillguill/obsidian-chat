@@ -244,7 +244,7 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
       );
 
     containerEl.createEl("p", {
-      text: "Conversations are stored in the vault's hidden .chat/sessions folder as JSONL. Old Markdown conversations are found and imported automatically — there is no folder setting.",
+      text: "Conversations are stored on the host, outside the vault (Application Support/obsidian-chat), as JSONL. Old Markdown conversations are found and imported automatically — there is no folder setting.",
       cls: "setting-item-description",
     });
   }

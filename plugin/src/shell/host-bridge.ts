@@ -313,20 +313,16 @@ export class HostBridge implements RelayBridge {
     return this.runPrompt(session, harness, request.prompt);
   }
 
-  /** A detached conversation continues only via an explicit continuity choice:
-   *  digest (default), fresh, or full replay. The host then creates a new
-   *  harness session on the SAME conversation record. */
+  /** A detached conversation continues with the user's choice — digest
+   *  (default when none is given), fresh, or full replay. The host creates a
+   *  new harness session on the SAME conversation record. */
   private async promptWithContinuity(deviceId: string, request: PromptRequest): Promise<PromptResponse> {
     const read = await this.opts.store().read(request.sessionId);
     const header = read.header;
     const decision = this.decideFor(header, read.entries);
-    const choice = this.choiceOf(request);
-    if (!choice) {
-      throw new RequestError(
-        -32602,
-        `continuity choice required (${decision.state}): choose ${CONTINUITY_CHOICES.join(", ")} before continuing this conversation`,
-      );
-    }
+    // No explicit choice: continue with the digest when there is a
+    // transcript, else start fresh. The record is the same either way.
+    const choice = this.choiceOf(request) ?? (decision.digestAvailable ? "digest" : "fresh");
     if ((choice === "digest" || choice === "full_replay") && !decision.digestAvailable) {
       throw new RequestError(-32602, "this conversation has no transcript to seed from; choose fresh");
     }

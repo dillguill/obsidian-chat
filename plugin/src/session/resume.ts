@@ -62,10 +62,11 @@ export function decideContinuity(
   if (stored.protocolVersion !== current.protocolVersion) {
     return { state: "digest-only", action: "digest", reason: "protocol_mismatch", digestAvailable };
   }
-  if (stored.commandFingerprint !== fingerprint(current.command, current.cwd)) {
-    return { state: "digest-only", action: "digest", reason: "fingerprint_mismatch", digestAvailable };
-  }
-  const warning = agentChanged(stored, current) ? "harness_updated" : undefined;
+  // A changed command line (a moved binary, a wrapper script) no longer blocks
+  // reattaching: the host tries resume/load and falls back to the digest if
+  // the harness doesn't know the session. Only cwd/protocol changes are hard.
+  const commandChanged = stored.commandFingerprint !== fingerprint(current.command, current.cwd);
+  const warning = commandChanged ? "harness_changed" : agentChanged(stored, current) ? "harness_updated" : undefined;
   if (current.resume) return { state: "resume-capable", action: "resume", warning, digestAvailable };
   if (current.loadSession) return { state: "load-only", action: "load", warning, digestAvailable };
   return { state: "digest-only", action: "digest", reason: "no_capability", warning, digestAvailable };

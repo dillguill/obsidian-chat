@@ -59,17 +59,20 @@ curl -s --noproxy '*' --http1.1 -m 3 -o /dev/null -D - -H "Connection: Upgrade" 
 
 ## History and continuity
 
-- Conversations live in `.chat/sessions/*.jsonl` (host-owned, append-only). There is **no folder
-  setting**.
+- Conversations live on the host, outside the vault: `~/Library/Application Support/obsidian-chat/vaults/<vault>-<hash>/sessions/` (macOS;
+  `$XDG_DATA_HOME/obsidian-chat/…` on Linux). Host-owned, append-only JSONL; no folder setting.
+  Info shows the exact path.
+- Records from the old in-vault `.chat/sessions/` are copied there once, verified, and marked
+  (`relocated-from-vault.json`); originals stay until you run **Delete old in-vault conversation
+  copies**, which removes only those the host holds byte-for-byte.
 - Old Markdown chats are found vault-wide by their content/frontmatter on first upgrade and imported
   once; originals are untouched. Command: **Reimport legacy chats (diagnostics)** shows scanned notes,
   candidates, skipped reasons and store count.
-- Opening a stored conversation: the host tries the harness's resume/load capability. If it cannot
-  reattach, an inline choice appears — **Continue with digest** (default), **Start fresh**, or
-  **Replay full transcript**. Nothing is created until you choose; the conversation record is the
-  same either way.
-- A healthy resumable conversation has no status tag. Non-resumable ones show plain language (e.g.
-  “Old conversation — can’t reattach”), never internal state names.
+- Opening a stored conversation: the host tries the harness's resume/load capability (also after the
+  harness command changed). If it can't reattach, a quiet note says your next message will include a
+  summary; **Full transcript** and **Start fresh** switch that. Nothing blocks the composer, and the
+  conversation record is the same either way.
+- History shows no warning tag for conversations that can't reattach: they all continue.
 
 ## Transcript, controls, approvals
 
@@ -87,7 +90,7 @@ curl -s --noproxy '*' --http1.1 -m 3 -o /dev/null -D - -H "Connection: Upgrade" 
 
 | Symptom | Check |
 |---|---|
-| “No stored conversations” | Run **Reimport legacy chats (diagnostics)**; it reports the vault scan and import result. The store is `.chat/sessions/`. |
+| “No stored conversations” | Run **Reimport legacy chats (diagnostics)**; it reports the vault scan and import result. The store path is in Info (Application Support, not the vault); `.chat/sessions/`. |
 | Remote shows “unreachable” | Host Obsidian must be running (role Host) and `tailscale serve status` on the host must show the listener port. The remote retries every 15 s while open and immediately when the app returns to the foreground or the network comes back. |
 | Auth rejected (401) | Use the host's tailnet name, not its IP (only Serve attaches the identity), and check Allowed Tailscale accounts. Tagged devices get no identity. Auth errors are never retried as network failures. |
 | Harness commands fail | Missing credentials/configuration live in the harness, not the plugin; fix them in the harness and use **Restart harness**. |
