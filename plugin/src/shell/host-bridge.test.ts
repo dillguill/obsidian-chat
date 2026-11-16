@@ -173,8 +173,25 @@ test("only the device in control flips web access; fetch approvals show the URL"
   assert.equal(await bridge.approveWebFetch(keys[0], "https://example.com/x"), true);
   const toolCall = asked[0].toolCall as { title: string };
   assert.equal(toolCall.title, "Fetch https://example.com/x");
-  const options = asked[0].options as Array<{ kind: string }>;
-  assert.ok(!options.some((o) => o.kind === "allow_always"), "never allow-always");
+  const options = asked[0].options as Array<{ optionId: string; kind: string }>;
+  assert.deepEqual(options.map((o) => o.optionId), ["allow", "allow-conversation", "reject"]);
   await bridge.setWeb("phone", { sessionId, enabled: false });
   assert.equal(bridge.webEnabledForKey(keys[0]), false);
+});
+
+test("'Allow in this conversation' skips later cards for that conversation only, until web is turned off", async () => {
+  const { bridge, keys, asked } = bridgeWithHarness("allow-conversation");
+  const a = await bridge.newSession("phone", { cwd: "/vault", mcpServers: [] } as never);
+  const b = await bridge.newSession("phone", { cwd: "/vault", mcpServers: [] } as never);
+  await bridge.setWeb("phone", { sessionId: a.sessionId, enabled: true });
+  assert.equal(await bridge.approveWebFetch(keys[0], "https://example.com/1"), true);
+  assert.equal(await bridge.approveWebFetch(keys[0], "https://example.com/2"), true);
+  assert.equal(asked.length, 1, "asked once for conversation A");
+  await bridge.approveWebFetch(keys[1], "https://example.com/3");
+  assert.equal(asked.length, 2, "conversation B still asks");
+  await bridge.setWeb("phone", { sessionId: a.sessionId, enabled: false });
+  await bridge.setWeb("phone", { sessionId: a.sessionId, enabled: true });
+  await bridge.approveWebFetch(keys[0], "https://example.com/4");
+  assert.equal(asked.length, 3, "turning web off resets the allowance");
+  void b;
 });

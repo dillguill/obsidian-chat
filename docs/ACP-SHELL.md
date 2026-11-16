@@ -79,11 +79,16 @@ curl -s --noproxy '*' --http1.1 -m 3 -o /dev/null -D - -H "Connection: Upgrade" 
 Settings → Web: **Off** (default), **Search only**, or **Search and fetch**, plus your SearXNG
 address (e.g. `https://search.example`, JSON output enabled). When allowed, each conversation
 still starts with web off; the **globe** in the composer turns it on for that conversation only.
-Every fetch asks you first with the full URL. Local, LAN and tailnet addresses are never fetched.
+Every fetch asks you first with the full URL (**Allow once**, **Allow in this conversation**, or
+**Reject**; the conversation-wide allowance ends when you turn web off). Local, LAN and tailnet addresses are never fetched.
 Turning web off doesn't remove what was already fetched from the conversation: start a new one for
 a clean slate.
 
 ## Transcript, controls, approvals
+
+- The composer adapts to its width: narrow shows icons only (session settings collapse to a
+  sliders icon), medium shows the model, wide also shows the other values and short labels.
+  A tinted icon is on: web for this conversation, or something of that kind attached.
 
 - Every ACP update is rendered in arrival order and expanded by default; grouping is opt-in under
   Settings → Transcript. Tool cards show the harness's title/kind/status/content/locations with raw

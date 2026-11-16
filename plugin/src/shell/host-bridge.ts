@@ -120,6 +120,10 @@ export class HostBridge implements RelayBridge {
   /** Conversations with web access turned on (globe). In memory: a host
    *  restart turns web off again, which is the safe default. */
   private webOn = new Set<string>();
+  /** Conversations where the user chose "Allow fetches in this conversation".
+   *  Never wider than one conversation; cleared when web is turned off and on
+   *  host restart. */
+  private fetchAllowed = new Set<string>();
   /** MCP session key → host session id (and back). */
   private mcpKeys = new Map<string, string>();
   private mcpKeyOf = new Map<string, string>();
@@ -690,7 +694,10 @@ export class HostBridge implements RelayBridge {
     if (!session) throw new RequestError(-32602, "open the conversation before changing web access");
     if (session.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, movedMessage(session.deviceId));
     if (request.enabled === true) this.webOn.add(session.hostId);
-    else this.webOn.delete(session.hostId);
+    else {
+      this.webOn.delete(session.hostId);
+      this.fetchAllowed.delete(session.hostId);
+    }
     this.log(`web access ${request.enabled === true ? "on" : "off"} for ${session.hostId}`);
     return { enabled: this.webOn.has(session.hostId) };
   }
@@ -701,12 +708,17 @@ export class HostBridge implements RelayBridge {
     return !!hostId && this.webOn.has(hostId);
   }
 
-  /** Approval card for one web fetch: the full URL, allow once or reject,
-   *  never "always". */
+  /** Approval card for one web fetch: the full URL; allow once, allow for the
+   *  rest of this conversation, or reject. "Always" never reaches beyond the
+   *  one conversation. */
   async approveWebFetch(sessionKey: string, url: string): Promise<boolean> {
     const hostId = this.mcpKeys.get(sessionKey);
     const session = hostId ? this.sessions.get(hostId) : undefined;
     if (!session) return false;
+    if (this.fetchAllowed.has(session.hostId)) {
+      this.log(`fetch allowed for this conversation: ${url}`);
+      return true;
+    }
     const requestId = `web-${mintToken(6)}`;
     const toolCall = {
       toolCallId: requestId,
@@ -718,10 +730,16 @@ export class HostBridge implements RelayBridge {
     };
     const options = [
       { optionId: "allow", name: "Allow once", kind: "allow_once" },
+      { optionId: "allow-conversation", name: "Allow in this conversation", kind: "allow_always" },
       { optionId: "reject", name: "Reject", kind: "reject_once" },
     ];
     const response = await this.askDevice(session, requestId, toolCall, options);
-    return response.outcome.outcome === "selected" && response.outcome.optionId === "allow";
+    if (response.outcome.outcome !== "selected") return false;
+    if (response.outcome.optionId === "allow-conversation") {
+      this.fetchAllowed.add(session.hostId);
+      return true;
+    }
+    return response.outcome.optionId === "allow";
   }
 
   /** Asks the device that owns the calling chat session to approve a vault

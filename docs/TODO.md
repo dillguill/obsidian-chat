@@ -110,7 +110,8 @@ Status: **built** (option B, `feat/web-tools`): Settings → Web (Off / Search o
 fetch) and a SearXNG URL; a per-conversation globe in the composer (off by default, in host memory,
 so a host restart turns it off); `web_search` and `web_fetch` in the plugin's tool server. Tools
 beyond the setting don't exist; with the globe off they refuse. Every fetch is an approval card with
-the full URL (Allow once / Reject). Fetches use a plain Node request (no cookies), refuse local, LAN,
+the full URL: Allow once / Allow in this conversation / Reject. "Allow in this conversation" never
+reaches another conversation and is cleared when web is turned off or the host restarts. Fetches use a plain Node request (no cookies), refuse local, LAN,
 tailnet and `.internal`/`.ts.net` names and any name resolving to a private address (checked at
 connect time and on every redirect), and cap size/time/redirects. Results are labelled untrusted.
 Not done: `tools/list_changed` push (the harness sees a setting change on its next conversation).

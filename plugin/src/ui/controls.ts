@@ -21,8 +21,9 @@ export interface ComposerControlHandlers {
   onSetConfig(optionId: string, value: string | boolean): void;
   openPicker(heading: string, choices: SelectChoice[], current: string, onChoose: (value: string) => void): void;
   onCommand?(name: string): void;
-  /** When set, the trigger is a single icon (filled by the view) and the
-   *  current values appear only in the popover. Used on narrow screens. */
+  /** Icon for the trigger (filled by the view). The trigger carries both the
+   *  icon and the text summary; the stylesheet shows the icon alone when the
+   *  composer is narrow and the text when there is room. */
   icon?: (el: HTMLElement) => void;
 }
 
@@ -130,14 +131,10 @@ export function renderComposerControls(
 
   const summary = controlSummary(model);
   const trigger = container.createEl("button", {
-    cls: `oc-control-trigger${handlers.icon ? " is-icon" : ""}`,
+    cls: `oc-control-trigger${handlers.icon ? " has-icon" : ""}`,
     attr: { type: "button", "aria-haspopup": "menu", "aria-label": summary.length ? `Session settings: ${summary.join(", ")}` : "Session settings" },
   });
-  if (handlers.icon) {
-    handlers.icon(trigger.createSpan({ cls: "oc-control-icon" }));
-    trigger.addEventListener("click", (event) => togglePopover(event));
-    return;
-  }
+  if (handlers.icon) handlers.icon(trigger.createSpan({ cls: "oc-control-icon" }));
   const text = trigger.createSpan({ cls: "oc-control-summary" });
   if (summary.length) {
     summary.forEach((part, index) => text.createSpan({ cls: index === 0 ? "oc-control-primary" : "oc-control-secondary", text: part }));

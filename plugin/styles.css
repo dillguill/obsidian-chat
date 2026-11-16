@@ -551,8 +551,8 @@
 .oc-chat-mobile .oc-composer-bar .oc-icon-btn svg { width: 20px; height: 20px; }
 .oc-chat-mobile .oc-send { width: 36px; height: 36px; }
 .oc-chat-mobile .oc-send svg { width: 18px; height: 18px; }
-.oc-control-trigger.is-icon { width: 40px; height: 40px; padding: 0 !important; justify-content: center; border-radius: 50% !important; }
-.oc-control-icon { display: inline-flex; color: var(--text-muted); }
+/* (icon-only trigger now comes from the composer container query below) */
+.oc-control-icon { display: none; color: var(--text-muted); }
 .oc-control-icon svg { width: 20px; height: 20px; }
 .oc-chat-mobile .oc-input { min-height: 28px; line-height: 1.45; }
 /* Mobile popover: anchored to the composer (full width, always on screen),
@@ -725,5 +725,38 @@
 .oc-chat-mobile .oc-mic { min-width: 40px; height: 40px; }
 .oc-chat-mobile .oc-mic-icon svg { width: 20px; height: 20px; }
 
-/* The globe (web access for this conversation). */
-.oc-web.is-active { color: var(--interactive-accent) !important; background: rgba(var(--interactive-accent-rgb, 124, 92, 255), 0.12) !important; }
+
+/* ---- Composer: icons or labels by available width ----
+   The composer is a size container. Narrow: icons only, and the session
+   control collapses to its sliders icon. Medium: the control shows its first
+   value. Wide: buttons also show short labels. */
+.oc-composer { container-type: inline-size; container-name: oc-composer; }
+.oc-btn-label { display: none; white-space: nowrap; font-size: var(--font-ui-smaller, 12px); }
+.oc-icon-btn { display: inline-flex; align-items: center; gap: 4px; }
+
+@container oc-composer (max-width: 600px) {
+  .oc-control-secondary { display: none; }
+}
+@container oc-composer (max-width: 440px) {
+  .oc-control-trigger.has-icon .oc-control-summary,
+  .oc-control-trigger.has-icon .oc-control-chevron { display: none; }
+  .oc-control-trigger.has-icon .oc-control-icon { display: inline-flex; }
+  .oc-control-trigger.has-icon { width: 30px; padding: 0 !important; justify-content: center; border-radius: 50% !important; }
+  .oc-chat-mobile .oc-control-trigger.has-icon { width: 40px; height: 40px; }
+}
+@container oc-composer (min-width: 900px) {
+  .oc-composer-left .oc-btn-label,
+  .oc-composer-right .oc-mic .oc-btn-label { display: inline; }
+  .oc-composer-left .oc-icon-btn { padding: 4px 6px; }
+  .oc-composer-right .oc-mic { padding: 0 8px !important; }
+}
+
+/* ---- On state: a toggle that is on is tinted, so it is clear what is active
+   (dictation keeps its own red recording state). ---- */
+.oc-icon-btn.is-active,
+.oc-mic.oc-web.is-active {
+  color: var(--interactive-accent) !important;
+  background: rgba(var(--interactive-accent-rgb, 124, 92, 255), 0.14) !important;
+}
+.oc-icon-btn.is-active:hover,
+.oc-mic.oc-web.is-active:hover { background: rgba(var(--interactive-accent-rgb, 124, 92, 255), 0.22) !important; }

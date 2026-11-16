@@ -122,6 +122,8 @@ export class ShellChatView extends ItemView {
   private allRaw: RawRecordEntry[] = [];
   private currentTurn = 0;
   private contextChips: ContextChip[] = [];
+  /** Attach buttons, tinted while something of their kind is attached. */
+  private attachButtons: { image?: HTMLElement; note?: HTMLElement; current?: HTMLElement; selection?: HTMLElement } = {};
   private pendingImages: PendingImage[] = [];
   private continuityBar: HTMLElement | null = null;
   private handoffBar: HTMLElement | null = null;
@@ -192,21 +194,23 @@ export class ShellChatView extends ItemView {
     this.inputEl.rows = 1;
     const bar = composer.createDiv({ cls: "oc-composer-bar" });
     const left = bar.createDiv({ cls: "oc-composer-left" });
-    this.iconButton(left, "paperclip", "Attach an image", () => this.pickImage());
-    this.iconButton(left, "at-sign", "Attach a note", () => this.openMentionPicker());
+    this.attachButtons.image = this.iconButton(left, "paperclip", "Attach an image", () => this.pickImage(), "Image");
+    this.attachButtons.note = this.iconButton(left, "at-sign", "Attach a note", () => this.openMentionPicker(), "Note");
     // "Current note" and "selection" need an editor beside the chat; on mobile
     // the chat fills the screen, so they have nothing to act on.
     if (!Platform.isMobile) {
-      this.iconButton(left, "file-plus", "Attach the current note", () => void this.addActiveNoteContext());
-      this.iconButton(left, "text-select", "Attach the editor selection", () => this.addSelectionContext());
+      this.attachButtons.current = this.iconButton(left, "file-plus", "Attach the current note", () => void this.addActiveNoteContext(), "Current note");
+      this.attachButtons.selection = this.iconButton(left, "text-select", "Attach the editor selection", () => this.addSelectionContext(), "Selection");
     }
     const actions = bar.createDiv({ cls: "oc-composer-right" });
     this.controlsEl = actions.createDiv({ cls: "oc-controls" });
     this.webBtn = actions.createEl("button", { cls: "oc-mic oc-web oc-hidden", attr: { type: "button", "aria-label": "Web access", "aria-pressed": "false" } });
     setIcon(this.webBtn.createSpan({ cls: "oc-mic-icon" }), "globe");
+    this.webBtn.createSpan({ cls: "oc-btn-label", text: "Web" });
     this.webBtn.addEventListener("click", () => void this.toggleWeb());
     this.micBtn = actions.createEl("button", { cls: "oc-mic oc-hidden", attr: { type: "button", "aria-label": "Dictate" } });
     setIcon(this.micBtn.createSpan({ cls: "oc-mic-icon" }), "mic");
+    this.micBtn.createSpan({ cls: "oc-btn-label", text: "Dictate" });
     this.micTime = this.micBtn.createSpan({ cls: "oc-mic-time" });
     this.micBtn.addEventListener("click", () => void this.toggleVoice());
     this.stopBtn = actions.createEl("button", { cls: "oc-send oc-stop oc-hidden", attr: { "aria-label": "Stop", title: "Stop (Esc)" } });
@@ -423,9 +427,12 @@ export class ShellChatView extends ItemView {
     this.setVoiceState("idle");
   }
 
-  private iconButton(parent: HTMLElement, icon: string, label: string, onClick: () => void): HTMLElement {
+  /** An icon button with a short text label; the label shows only when the
+   *  composer is wide enough (container query in styles.css). */
+  private iconButton(parent: HTMLElement, icon: string, label: string, onClick: () => void, short?: string): HTMLElement {
     const button = parent.createDiv({ cls: "clickable-icon oc-icon-btn", attr: { "aria-label": label, role: "button" } });
     setIcon(button, icon);
+    if (short) button.createSpan({ cls: "oc-btn-label", text: short });
     button.addEventListener("click", onClick);
     return button;
   }
@@ -529,7 +536,7 @@ export class ShellChatView extends ItemView {
       onSetConfig: (configId, value) => {
         void runtime.setConfigOption(configId, value).then(() => this.renderControls()).catch((err) => this.showError(`Could not change that setting: ${String((err as Error).message ?? err)}`));
       },
-      icon: Platform.isMobile ? (el) => setIcon(el, "sliders-horizontal") : undefined,
+      icon: (el) => setIcon(el, "sliders-horizontal"),
       openPicker: (heading, choices, current, onChoose) => {
         new AcpSelectSuggestModal(this.plugin.app, choices, current, onChoose, heading).open();
       },
@@ -557,7 +564,18 @@ export class ShellChatView extends ItemView {
 
   // ---------- context & attachments ----------
 
+  /** On state for the attach buttons: what is attached to the next message. */
+  private updateAttachState(): void {
+    const notes = this.contextChips.filter((chip) => chip.id.startsWith("note:"));
+    const active = this.plugin.app.workspace.getActiveFile()?.path;
+    this.attachButtons.image?.toggleClass("is-active", this.pendingImages.length > 0);
+    this.attachButtons.note?.toggleClass("is-active", notes.length > 0);
+    this.attachButtons.current?.toggleClass("is-active", !!active && notes.some((chip) => chip.path === active));
+    this.attachButtons.selection?.toggleClass("is-active", this.contextChips.some((chip) => chip.id.startsWith("selection:")));
+  }
+
   private renderChips(): void {
+    this.updateAttachState();
     this.chipsEl.empty();
     this.chipsEl.toggleClass("oc-hidden", !this.contextChips.length && !this.pendingImages.length);
     const chip = (icon: string, label: string, onRemove: () => void) => {
