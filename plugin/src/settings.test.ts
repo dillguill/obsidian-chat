@@ -161,3 +161,15 @@ test("a remote URL that points at this machine is detected", () => {
   assert.equal(pointsAtSelf("http://100.9.9.9:8765", ["100.64.0.7"]), false);
   assert.equal(pointsAtSelf(undefined, ["127.0.0.1"]), false);
 });
+
+test("the harness secret name and host address stay on the device", () => {
+  const settings = withDeviceShell(migrateSettings({}, { isMobile: false }).settings, {
+    mode: "local",
+    harnessSecret: "dsh-harness",
+    hostUrl: "https://mac.example.ts.net:9443",
+  });
+  const text = JSON.stringify(sharedSettings(settings));
+  assert.ok(!text.includes("dsh-harness") && !text.includes("example.ts.net"));
+  assert.equal(deviceShellOf(settings.shell).harnessSecret, "dsh-harness");
+  assert.equal(parseDeviceShell(JSON.stringify(deviceShellOf(settings.shell)))?.hostUrl, "https://mac.example.ts.net:9443");
+});

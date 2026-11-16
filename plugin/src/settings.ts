@@ -5,7 +5,8 @@
  */
 import { silentWav, transcribe } from "./ui/voice.ts";
 import { parseVoiceProvider } from "./voice/stt.ts";
-import { App, Platform, PluginSettingTab, Setting, setIcon, TextComponent } from "obsidian";
+import { App, Platform, PluginSettingTab, SecretComponent, Setting, setIcon, TextComponent } from "obsidian";
+import { harnessTarget } from "./shell/types.ts";
 import type ObsidianChatPlugin from "./main";
 import {
   DEFAULT_PORT,
@@ -99,15 +100,39 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
     new Setting(containerEl)
-      .setName("Harness command")
-      .setDesc("Any ACP-speaking harness, e.g. `opencode acp`. Applied on the next harness start.")
+      .setName("Harness")
+      .setDesc(
+        "A command to start on the host (e.g. `opencode acp`, `~/bin/dsh-acp`), or the wss:// address of a harness running on another machine. Applied on the next harness start.",
+      )
       .addText((text) => {
         text.setPlaceholder("opencode acp").setValue(this.plugin.settings.shell.command);
         text.inputEl.addEventListener("change", async () => {
           this.plugin.settings.shell.command = text.getValue().trim();
           await this.plugin.saveSettings();
+          this.display();
         });
       });
+    if (Platform.isDesktopApp && this.plugin.settings.shell.mode === "local" && harnessTarget(this.plugin.settings.shell.command).kind === "url") {
+      new Setting(containerEl)
+        .setName("Harness token")
+        .setDesc("Kept in this device's secret storage, never in synced settings.")
+        .addComponent((el) =>
+          new SecretComponent(this.app, el).setValue(this.plugin.settings.shell.harnessSecret ?? "").onChange(async (value) => {
+            this.plugin.settings.shell.harnessSecret = value || undefined;
+            await this.plugin.saveSettings();
+          }),
+        );
+      new Setting(containerEl)
+        .setName("This host's address")
+        .setDesc("Where the remote harness reaches the vault tools: this machine's tailnet name, as published by Tailscale Serve.")
+        .addText((text) => {
+          text.setPlaceholder("https://<this-machine>.<tailnet>.ts.net:9443").setValue(this.plugin.settings.shell.hostUrl ?? "");
+          text.inputEl.addEventListener("change", async () => {
+            this.plugin.settings.shell.hostUrl = text.getValue().trim() || undefined;
+            await this.plugin.saveSettings();
+          });
+        });
+    }
     new Setting(containerEl)
       .setName("Allowed Tailscale accounts")
       .setDesc("Logins that may attach through Tailscale Serve, comma-separated. Empty: any user on your tailnet.")

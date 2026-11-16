@@ -27,6 +27,8 @@ export interface ShellRuntimeSettings {
   sessionStoreFolder: string;
   blacklistFolders: string[];
   allowedTailscaleUsers: string[];
+  harnessToken?: () => string | null;
+  hostUrl?: string;
 }
 
 export interface ShellRuntimeOptions {

@@ -157,6 +157,8 @@ export default class ObsidianChatPlugin extends Plugin {
           sessionStoreFolder: this.settings.sessionStoreFolder || ".chat/sessions",
           blacklistFolders: this.settings.blacklistFolders,
           allowedTailscaleUsers: this.settings.allowedTailscaleUsers,
+          harnessToken: () => this.harnessToken(),
+          hostUrl: this.settings.shell.hostUrl,
         }),
         store: () => this.store(),
         storage: () => this.storage(),
@@ -167,6 +169,19 @@ export default class ObsidianChatPlugin extends Plugin {
       });
     }
     return this.runtime;
+  }
+
+  /** The token for a harness given as a URL, read from this device's secret
+   *  storage by the secret's name (the token never touches settings). */
+  harnessToken(): string | null {
+    const name = this.settings.shell.harnessSecret;
+    const storage = (this.app as unknown as { secretStorage?: { getSecret(id: string): string | null } }).secretStorage;
+    if (!name || !storage) return null;
+    try {
+      return storage.getSecret(name);
+    } catch {
+      return null;
+    }
   }
 
   /** Opens the ACP shell view in a right-side pane (desktop) or a tab. */

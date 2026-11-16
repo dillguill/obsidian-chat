@@ -18,6 +18,10 @@ export function respawnDelay(attempt: number): number {
   return backoffDelay(attempt);
 }
 
+/** How long a harness gets after SIGTERM before SIGKILL. Long enough for a
+ *  wrapper to clean up (dsh-acp revokes its Agent Vault session). */
+export const STOP_GRACE_MS = 10_000;
+
 export class LocalTransport implements ShellTransport {
   readonly label: string;
   readonly stream: Stream;
@@ -88,7 +92,7 @@ export class LocalTransport implements ShellTransport {
           // already gone
         }
         resolve();
-      }, 2_000);
+      }, STOP_GRACE_MS);
       child.once("exit", () => {
         clearTimeout(timer);
         resolve();

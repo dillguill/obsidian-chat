@@ -11,7 +11,8 @@ import {
   SESSION_SIZE_WARN_BYTES,
 } from "../session/limits.ts";
 import { backoffDelay } from "./transport.ts";
-import { isLoopbackBind } from "./types.ts";
+import { harnessTarget, isLoopbackBind } from "./types.ts";
+import { STOP_GRACE_MS } from "./local-transport.ts";
 import { sanitizeForRecord } from "../session/record.ts";
 
 test("the contract bounds are the ones the code uses", () => {
@@ -59,4 +60,16 @@ test("record sanitization strips image/audio bytes and auth header values", () =
   }) as { headers: Array<{ name: string; value: string }> };
   assert.equal(headers.headers[0].value, "***");
   assert.equal(headers.headers[1].value, "application/json");
+});
+
+test("the harness setting is a command unless it is a ws(s):// URL", () => {
+  assert.deepEqual(harnessTarget("  ~/bin/dsh-acp "), { kind: "command", command: "~/bin/dsh-acp" });
+  assert.deepEqual(harnessTarget("npx @zed-industries/claude-code-acp"), { kind: "command", command: "npx @zed-industries/claude-code-acp" });
+  assert.deepEqual(harnessTarget("wss://harness.example/acp"), { kind: "url", url: "wss://harness.example/acp" });
+  assert.deepEqual(harnessTarget("WS://127.0.0.1:9000"), { kind: "url", url: "WS://127.0.0.1:9000" });
+  assert.equal(harnessTarget("https://x").kind, "command", "only ws/wss are harness URLs");
+});
+
+test("a stopping harness gets time to clean up before SIGKILL", () => {
+  assert.ok(STOP_GRACE_MS >= 8_000);
 });

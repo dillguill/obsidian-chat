@@ -27,6 +27,12 @@ export interface ShellSettings {
   port?: number;
   /** This device's display name (routes approvals, shown in History). */
   deviceName?: string;
+  /** Host: name of the secret (in Obsidian's per-device secret storage)
+   *  holding the token for a harness given as a URL. Never the token itself. */
+  harnessSecret?: string;
+  /** Host: this host's tailnet address, given to a harness running elsewhere
+   *  so it can reach the vault tools. */
+  hostUrl?: string;
 }
 
 export interface LegacyImportMarker {
@@ -232,6 +238,8 @@ export interface DeviceShell {
   remoteUrl?: string;
   port?: number;
   deviceName?: string;
+  harnessSecret?: string;
+  hostUrl?: string;
 }
 
 export function deviceShellOf(shell: ShellSettings): DeviceShell {
@@ -239,6 +247,8 @@ export function deviceShellOf(shell: ShellSettings): DeviceShell {
   if (shell.remoteUrl !== undefined) out.remoteUrl = shell.remoteUrl;
   if (shell.port !== undefined) out.port = shell.port;
   if (shell.deviceName !== undefined) out.deviceName = shell.deviceName;
+  if (shell.harnessSecret) out.harnessSecret = shell.harnessSecret;
+  if (shell.hostUrl) out.hostUrl = shell.hostUrl;
   return out;
 }
 
@@ -257,6 +267,8 @@ export function parseDeviceShell(raw: unknown): DeviceShell | null {
   if (typeof value.remoteUrl === "string") out.remoteUrl = value.remoteUrl;
   if (validPort(value.port)) out.port = Number(value.port);
   if (typeof value.deviceName === "string" && value.deviceName.trim()) out.deviceName = value.deviceName.trim();
+  if (typeof value.harnessSecret === "string" && value.harnessSecret.trim()) out.harnessSecret = value.harnessSecret.trim();
+  if (typeof value.hostUrl === "string" && value.hostUrl.trim()) out.hostUrl = value.hostUrl.trim();
   return out.mode ? out : null;
 }
 
@@ -268,6 +280,8 @@ export function withDeviceShell(settings: ObsidianChatSettings, device: DeviceSh
   if ("remoteUrl" in device) shell.remoteUrl = device.remoteUrl;
   if (device.port !== undefined) shell.port = device.port;
   if (device.deviceName !== undefined) shell.deviceName = device.deviceName;
+  if (device.harnessSecret !== undefined) shell.harnessSecret = device.harnessSecret;
+  if (device.hostUrl !== undefined) shell.hostUrl = device.hostUrl;
   return { ...settings, shell };
 }
 

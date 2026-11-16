@@ -45,6 +45,15 @@ export interface AttachStatus {
   lastError: string | null;
 }
 
+/** What the harness setting names: a command to spawn, or a ws(s):// URL of a
+ *  harness running elsewhere (redesign item 7). */
+export type HarnessTarget = { kind: "command"; command: string } | { kind: "url"; url: string };
+
+export function harnessTarget(value: string): HarnessTarget {
+  const trimmed = value.trim();
+  return /^wss?:\/\//i.test(trimmed) ? { kind: "url", url: trimmed } : { kind: "command", command: trimmed };
+}
+
 /** True for addresses that stay on this machine. */
 export function isLoopbackBind(address: string): boolean {
   const value = address.trim().toLowerCase();

@@ -19,6 +19,8 @@ import { HostServer, createVaultMcpHandler } from "./host-server.ts";
 import { mintToken } from "./device-auth.ts";
 import { fingerprint, redactLabel } from "./identity.ts";
 import { LocalTransportConnector } from "./local-transport.ts";
+import { RemoteTransportConnector } from "./remote-transport.ts";
+import { harnessTarget } from "./types.ts";
 import { backoffDelay } from "./transport.ts";
 import { HARNESS_RESTART_ATTEMPTS } from "../session/limits.ts";
 import { ObsidianShellEnvironment } from "./environment.ts";
@@ -30,6 +32,11 @@ export interface HostCoreSettings {
   blacklistFolders: string[];
   /** Tailscale logins allowed through Serve ([] = any tailnet user). */
   allowedTailscaleUsers: string[];
+  /** Token for a URL harness (from this device's secret storage), or null. */
+  harnessToken?: () => string | null;
+  /** This host's tailnet address (e.g. https://mac.tailnet.ts.net:9443), used
+   *  as the vault tools' address when the harness runs on another machine. */
+  hostUrl?: string;
 }
 
 export interface HostCoreOptions {
@@ -117,12 +124,22 @@ export class HostCore {
     if (!this.server) return null;
     const headers = [{ name: "Authorization", value: `Bearer ${this.mcpTokenValue}` }];
     if (sessionKey) headers.push({ name: "X-Obsidian-Chat-Session", value: sessionKey });
-    return {
-      name: "vault",
-      type: "http" as const,
-      url: `http://127.0.0.1:${this.boundPort}/mcp`,
-      headers,
-    };
+    const url = this.mcpUrl();
+    if (!url) return null;
+    return { name: "vault", type: "http" as const, url, headers };
+  }
+
+  /** Loopback for a local harness; this host's tailnet address (through
+   *  Tailscale Serve) for a harness on another machine. */
+  private mcpUrl(): string | null {
+    const settings = this.settings();
+    if (harnessTarget(settings.shell.command).kind === "command") return `http://127.0.0.1:${this.boundPort}/mcp`;
+    const base = settings.hostUrl?.trim().replace(/\/+$/, "");
+    if (!base) {
+      this.log("remote harness has no vault tools: set This host's address in settings");
+      return null;
+    }
+    return `${base.replace(/^wss:/i, "https:").replace(/^ws:/i, "http:")}/mcp`;
   }
 
   /** Host side of the MCP write tools: approval on the owning device, then a
@@ -222,17 +239,30 @@ export class HostCore {
     const cwd = settings.shell.cwd?.trim() || this.vaultRoot();
     const command = settings.shell.command.trim();
     if (!command) throw new Error("no harness command is configured");
+    const target = harnessTarget(command);
+    const connector =
+      target.kind === "url"
+        ? new RemoteTransportConnector({
+            url: target.url,
+            token: settings.harnessToken?.() ?? "",
+            device: "host",
+            attempts: 3,
+            baseMs: 500,
+          })
+        : new LocalTransportConnector({
+            command: target.command,
+            cwd,
+            onStderr: (line) => this.log(`harness stderr: ${line}`),
+          });
     const client = new AcpShellClient({
       mode: "local",
       label: redactLabel(command),
       cwd,
       environment: this.shellEnvironment(),
       mcpServer: () => this.mcpEntry(),
-      connector: new LocalTransportConnector({
-        command,
-        cwd,
-        onStderr: (line) => this.log(`harness stderr: ${line}`),
-      }),
+      connector,
+      // A harness on another machine gets the same liveness check as devices.
+      ...(target.kind === "url" ? { heartbeatMs: 20_000 } : {}),
       autoSession: false,
       onLog: this.log,
       onTransportLost: (reason) => {
