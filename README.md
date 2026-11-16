@@ -57,9 +57,10 @@ stored.
 
 1. **Host** (desktop): Settings → Obsidian Chat → role **Host**, set the harness command (e.g.
    `opencode acp`). The listener starts with the plugin on loopback (port 8765 by default).
-2. Publish it on your tailnet once: `tailscale serve --bg 8765`. Optionally list the Tailscale
+2. Publish it on your tailnet once: `tailscale serve --bg --https=9443 8765` (not 443 if Caddy or
+   another server already listens there). Optionally list the Tailscale
    accounts allowed to attach (empty = anyone on your tailnet).
-3. **Other devices:** role **Remote**, host address `https://<host>.<tailnet>.ts.net`, and a device
+3. **Other devices:** role **Remote**, host address `https://<host>.<tailnet>.ts.net:9443`, and a device
    name (shown in History, routes approvals).
 4. Open the chat view.
 

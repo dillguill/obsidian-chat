@@ -67,7 +67,7 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
       new Setting(containerEl)
         .setName("Listener port")
         .setDesc(
-          `Loopback only. Publish it on your tailnet once with: tailscale serve --bg ${port}. Other devices then use https://<this-machine>.<tailnet>.ts.net.`,
+          `Loopback only. Publish it on your tailnet once with: tailscale serve --bg --https=9443 ${port}. Other devices then use https://<this-machine>.<tailnet>.ts.net:9443.`,
         )
         .addText((text) => {
           text.setValue(String(port));
@@ -85,7 +85,7 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
         .setName("Host address")
         .setDesc("The host's tailnet name, as published by Tailscale Serve.")
         .addText((text) => {
-          text.setPlaceholder("https://<host>.<tailnet>.ts.net").setValue(this.plugin.settings.shell.remoteUrl ?? "");
+          text.setPlaceholder("https://<host>.<tailnet>.ts.net:9443").setValue(this.plugin.settings.shell.remoteUrl ?? "");
           text.inputEl.addEventListener("change", async () => {
             this.plugin.settings.shell.remoteUrl = text.getValue().trim();
             await this.plugin.saveSettings();

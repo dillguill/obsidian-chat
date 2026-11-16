@@ -14,13 +14,14 @@ Mobile Obsidian never hosts. There is no bridge, daemon or launchd job in either
 1. Settings → Obsidian Chat → role **Host**.
 2. Harness command: any ACP-speaking command, e.g. `opencode acp`. The plugin passes the vault root
    as the session cwd and adds its loopback MCP tools when the harness supports HTTP MCP.
-3. Listener port (default 8765, loopback only). Publish it once: `tailscale serve --bg 8765`.
+3. Listener port (default 8765, loopback only). Publish it once: `tailscale serve --bg --https=9443 8765`
+   (9443 because Caddy on the Mac owns 443 on every interface).
 4. Optional: Allowed Tailscale accounts (empty = any user on your tailnet).
 5. Open the chat view (ribbon or command palette).
 
 ## Add a device
 
-On the device: role **Remote**, host address `https://<host>.<tailnet>.ts.net`, and a device name.
+On the device: role **Remote**, host address `https://<host>.<tailnet>.ts.net:9443`, and a device name.
 There is no pairing step and no code: the host trusts the Tailscale identity Serve attaches. To
 remove a device, remove it from your tailnet (or from the allowed accounts).
 
@@ -30,8 +31,8 @@ preferences sync with the vault, and a device only writes the keys it changed.
 ## Check the listener (host)
 
 ```sh
-H=https://<host>.<tailnet>.ts.net
-tailscale serve status                       # shows / proxy http://127.0.0.1:8765
+H=https://<host>.<tailnet>.ts.net:9443
+tailscale serve status                       # shows :9443 / proxy http://127.0.0.1:8765
 curl -s --noproxy '*' "$H/"                  # {"error":"not found"}: Serve reaches the listener
 U=(-s --noproxy '*' --http1.1 -m 3 -o /dev/null -D - -H "Connection: Upgrade" -H "Upgrade: websocket" \
    -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==")
@@ -39,7 +40,9 @@ curl "${U[@]}" "$H/acp?device=check" | head -1                               # 1
 curl "${U[@]}" -H "Origin: https://evil.example" "$H/acp" | head -1          # 403: web pages are refused
 ```
 
-`--noproxy '*'` matters: with an HTTP(S) proxy in the environment, curl prints the proxy's
+An empty `200` with `server: Caddy` means Caddy answered instead of Serve (wrong port). A `401`
+where `403` is expected means Obsidian is still running an old build: quit and reopen Obsidian
+(toggling the plugin does not always reload its code). `--noproxy '*'` matters: with an HTTP(S) proxy in the environment, curl prints the proxy's
 `HTTP/1.1 200` CONNECT reply instead of the host's answer.
 
 ## History and continuity

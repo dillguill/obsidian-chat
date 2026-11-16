@@ -168,7 +168,7 @@ export class HostCore {
     });
     await server.start();
     this.server = server;
-    this.log(`host core listening on 127.0.0.1:${server.boundPort} (publish with: tailscale serve --bg ${server.boundPort})`);
+    this.log(`host core listening on 127.0.0.1:${server.boundPort} (publish with: tailscale serve --bg --https=9443 ${server.boundPort})`);
   }
 
   /** Lazily connects the single harness child and wires the relay bridge. */

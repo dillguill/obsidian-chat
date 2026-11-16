@@ -78,6 +78,12 @@ whether or not the chat pane is open on the Mac.
   your own login.
 - Client certificates (mTLS) were ruled out: the Obsidian apps can't present
   them.
+- **Port 9443, not 443.** The Mac's Caddy listens on `*:443` (as root) and
+  answers the tailnet name first, with an empty 200 (it even obtains the
+  `*.ts.net` certificate from tailscaled). Serve runs on `--https=9443`
+  instead, so Caddy and the `*.internal` sites stay untouched:
+  `tailscale serve --bg --https=9443 8765`; remotes use
+  `https://<host>.<tailnet>.ts.net:9443`.
 
 ### 4. Remote connections that keep themselves alive
 
