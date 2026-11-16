@@ -88,7 +88,7 @@ a clean slate.
 
 - The composer adapts to its width: narrow shows icons only (session settings collapse to a
   sliders icon), medium shows the model, wide also shows the other values and short labels.
-  A tinted icon is on: web for this conversation, or something of that kind attached.
+  The globe is tinted (theme blue) while web is on for this conversation.
 
 - Every ACP update is rendered in arrival order and expanded by default; grouping is opt-in under
   Settings → Transcript. Tool cards show the harness's title/kind/status/content/locations with raw

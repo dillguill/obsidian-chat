@@ -751,11 +751,10 @@
   .oc-composer-right .oc-mic { padding: 0 8px !important; }
 }
 
-/* ---- On state: a toggle that is on is tinted, so it is clear what is active
+/* ---- On state: the globe is tinted while web is on for this conversation
    (dictation keeps its own red recording state). Uses the theme's blue, not
    the accent: many setups (e.g. Minimal with a grey accent) make the accent
    indistinguishable from muted icons. ---- */
-.oc-composer-bar .oc-icon-btn.is-active,
 .oc-composer-bar .oc-mic.oc-web.is-active {
   --oc-on: var(--color-blue, #3b82f6);
   --icon-color: var(--oc-on);
@@ -763,7 +762,5 @@
   color: var(--oc-on) !important;
   background: color-mix(in srgb, var(--oc-on) 16%, transparent) !important;
 }
-.oc-composer-bar .oc-icon-btn.is-active svg,
 .oc-composer-bar .oc-mic.oc-web.is-active svg { color: var(--oc-on) !important; }
-.oc-composer-bar .oc-icon-btn.is-active:hover,
 .oc-composer-bar .oc-mic.oc-web.is-active:hover { background: color-mix(in srgb, var(--oc-on) 26%, transparent) !important; }
