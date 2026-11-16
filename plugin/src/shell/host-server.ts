@@ -288,14 +288,20 @@ export class HostServer {
     }
     const origin = req.headers.origin;
     if (!originAllowed(Array.isArray(origin) ? origin[0] : origin, this.options.allowedOrigins)) {
+      this.options.log?.(`refused /acp upgrade: origin ${String(origin)} is not an Obsidian app`);
       rejectUpgrade(socket, 403, "Forbidden");
       return;
     }
     const deviceId = this.authenticate(req);
     if (!deviceId) {
+      const login = req.headers["tailscale-user-login"];
+      this.options.log?.(
+        `refused /acp upgrade from ${req.socket.remoteAddress}: ${login ? "Tailscale login not in Allowed Tailscale accounts" : "no token and no Tailscale identity (connect through the tailnet name)"}`,
+      );
       rejectUpgrade(socket, 401, "Unauthorized");
       return;
     }
+    this.options.log?.(`accepted /acp upgrade for device ${deviceId}`);
     wss.handleUpgrade(req, socket, head, (ws) => {
       const handler = this.options.onAcpConnection;
       if (!handler) {
