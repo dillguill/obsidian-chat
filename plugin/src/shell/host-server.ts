@@ -51,6 +51,14 @@ export function originAllowed(origin: string | undefined, allowed: readonly stri
   return allowed.includes(origin.trim().toLowerCase());
 }
 
+/** Refuses an upgrade with a complete HTTP response and a graceful close.
+ *  `end()` (not `destroy()`) flushes the response first: behind a proxy such as
+ *  Tailscale Serve, a reset connection turns a 401/403 into a 502, and the
+ *  client can no longer tell an auth rejection from a network failure. */
+function rejectUpgrade(socket: import("node:stream").Duplex, status: number, text: string): void {
+  socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+}
+
 /** Loopback check for `/mcp` (contract `vault-mcp.md` §2). */
 export function isLoopbackAddress(address: string | undefined): boolean {
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1";
@@ -280,14 +288,12 @@ export class HostServer {
     }
     const origin = req.headers.origin;
     if (!originAllowed(Array.isArray(origin) ? origin[0] : origin, this.options.allowedOrigins)) {
-      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-      socket.destroy();
+      rejectUpgrade(socket, 403, "Forbidden");
       return;
     }
     const deviceId = this.authenticate(req);
     if (!deviceId) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
-      socket.destroy();
+      rejectUpgrade(socket, 401, "Unauthorized");
       return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => {
