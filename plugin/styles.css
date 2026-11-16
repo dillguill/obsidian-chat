@@ -752,11 +752,18 @@
 }
 
 /* ---- On state: a toggle that is on is tinted, so it is clear what is active
-   (dictation keeps its own red recording state). ---- */
-.oc-icon-btn.is-active,
-.oc-mic.oc-web.is-active {
-  color: var(--interactive-accent) !important;
-  background: rgba(var(--interactive-accent-rgb, 124, 92, 255), 0.14) !important;
+   (dictation keeps its own red recording state). Uses the theme's blue, not
+   the accent: many setups (e.g. Minimal with a grey accent) make the accent
+   indistinguishable from muted icons. ---- */
+.oc-composer-bar .oc-icon-btn.is-active,
+.oc-composer-bar .oc-mic.oc-web.is-active {
+  --oc-on: var(--color-blue, #3b82f6);
+  --icon-color: var(--oc-on);
+  --icon-color-hover: var(--oc-on);
+  color: var(--oc-on) !important;
+  background: color-mix(in srgb, var(--oc-on) 16%, transparent) !important;
 }
-.oc-icon-btn.is-active:hover,
-.oc-mic.oc-web.is-active:hover { background: rgba(var(--interactive-accent-rgb, 124, 92, 255), 0.22) !important; }
+.oc-composer-bar .oc-icon-btn.is-active svg,
+.oc-composer-bar .oc-mic.oc-web.is-active svg { color: var(--oc-on) !important; }
+.oc-composer-bar .oc-icon-btn.is-active:hover,
+.oc-composer-bar .oc-mic.oc-web.is-active:hover { background: color-mix(in srgb, var(--oc-on) 26%, transparent) !important; }
