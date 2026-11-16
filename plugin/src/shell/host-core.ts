@@ -163,7 +163,7 @@ export class HostCore {
       },
       search: async (query, limit) => {
         const base = this.settings().webSearchUrl?.trim().replace(/\/+$/, "");
-        if (!base) throw new Error("no search server is configured (Settings → Obsidian Chat → Web)");
+        if (!base) throw new Error("no search server is configured (Settings → Chat → Web)");
         const response = await requestUrl({
           url: `${base}/search?q=${encodeURIComponent(query)}&format=json`,
           method: "GET",

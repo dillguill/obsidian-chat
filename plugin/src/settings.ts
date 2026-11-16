@@ -29,7 +29,7 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h3", { text: "Obsidian Chat" });
+    containerEl.createEl("h3", { text: "Chat" });
 
     containerEl.createEl("h4", { text: "This device" });
     containerEl.createEl("p", {

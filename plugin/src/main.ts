@@ -86,10 +86,10 @@ export default class ObsidianChatPlugin extends Plugin {
       });
       if (report.failed.length) {
         console.log(`[obsidian-chat] record move: ${report.failed.length} failed`, report.failed);
-        new Notice(`Obsidian Chat: ${report.failed.length} conversation(s) could not be moved out of the vault; they stay readable there and will be retried.`);
+        new Notice(`Chat: ${report.failed.length} conversation(s) could not be moved out of the vault; they stay readable there and will be retried.`);
       } else if (report.copied.length) {
         const count = report.copied.filter((name) => name.endsWith(".jsonl")).length;
-        new Notice(`Obsidian Chat: moved ${count} conversation(s) out of the vault. Old copies in .chat/sessions can be removed with "Delete old in-vault conversation copies".`);
+        new Notice(`Chat: moved ${count} conversation(s) out of the vault. Old copies in .chat/sessions can be removed with "Delete old in-vault conversation copies".`);
       }
       return report;
     })().catch((err) => {
@@ -107,7 +107,7 @@ export default class ObsidianChatPlugin extends Plugin {
     const vault = this.app.vault.adapter;
     const target = this.storage();
     if (target.folder === fromFolder || !(await vault.exists(fromFolder))) {
-      new Notice("Obsidian Chat: there are no old in-vault conversation copies.");
+      new Notice("Chat: there are no old in-vault conversation copies.");
       return;
     }
     let removed = 0;
@@ -132,7 +132,7 @@ export default class ObsidianChatPlugin extends Plugin {
         kept += 1;
       }
     }
-    new Notice(`Obsidian Chat: removed ${removed} old in-vault copies${kept ? `; kept ${kept} without a matching copy` : ""}.`);
+    new Notice(`Chat: removed ${removed} old in-vault copies${kept ? `; kept ${kept} without a matching copy` : ""}.`);
   }
 
   /** The shell attach configuration (local spawn or remote host). */
@@ -218,7 +218,7 @@ export default class ObsidianChatPlugin extends Plugin {
     });
     this.addCommand({
       id: "acp-shell-connection-info",
-      name: "Chat connection info",
+      name: "Connection info",
       callback: async () => {
         await this.activateShellView();
         const view = this.app.workspace.getLeavesOfType(SHELL_VIEW_TYPE)[0]?.view;
@@ -260,7 +260,7 @@ export default class ObsidianChatPlugin extends Plugin {
     } catch (err) {
       const message = String((err as Error).message ?? err);
       console.log(`[obsidian-chat] host listener did not start: ${message}`);
-      new Notice(`Obsidian Chat: the host listener did not start — ${message}`);
+      new Notice(`Chat: the host listener did not start — ${message}`);
     }
   }
 
@@ -285,9 +285,9 @@ export default class ObsidianChatPlugin extends Plugin {
     }
     try {
       await this.shellRuntime().restartHarness();
-      new Notice("Obsidian Chat: harness restarted");
+      new Notice("Chat: harness restarted");
     } catch (err) {
-      new Notice(`Obsidian Chat: could not restart the harness — ${String((err as Error).message ?? err)}`);
+      new Notice(`Chat: could not restart the harness — ${String((err as Error).message ?? err)}`);
     }
   }
 
@@ -310,7 +310,7 @@ export default class ObsidianChatPlugin extends Plugin {
     }
     const markdown = this.app.vault.getMarkdownFiles();
     if (!options.silent && markdown.length > 400) {
-      new Notice(`Obsidian Chat: scanning ${markdown.length} notes for old conversations…`);
+      new Notice(`Chat: scanning ${markdown.length} notes for old conversations…`);
     }
     const candidates = new Map<string, (typeof markdown)[number]>();
     const texts = new Map<string, string>();
@@ -383,9 +383,9 @@ export default class ObsidianChatPlugin extends Plugin {
     if (!options.silent) {
       const imported = report?.imported ?? 0;
       if (imported > 0) {
-        new Notice(`Obsidian Chat: recovered ${imported} old conversation${imported === 1 ? "" : "s"} from the vault.`);
+        new Notice(`Chat: recovered ${imported} old conversation${imported === 1 ? "" : "s"} from the vault.`);
       } else if (notes.length > 0) {
-        new Notice(`Obsidian Chat: found ${notes.length} old conversation note(s) but imported 0 — run “Reimport legacy chats (diagnostics)” for details.`);
+        new Notice(`Chat: found ${notes.length} old conversation note(s) but imported 0 — run “Reimport legacy chats (diagnostics)” for details.`);
       }
     }
     return report;

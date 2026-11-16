@@ -1,6 +1,6 @@
 {
   "id": "obsidian-chat",
-  "name": "Obsidian Chat",
+  "name": "Chat",
   "version": "0.1.22",
   "minAppVersion": "1.11.4",
   "description": "ACP shell for Obsidian: chat with any ACP-compatible harness, with native vault tools.",

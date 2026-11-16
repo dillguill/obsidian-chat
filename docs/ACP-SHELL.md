@@ -11,7 +11,7 @@ Mobile Obsidian never hosts. There is no bridge, daemon or launchd job in either
 
 ## First run on the host
 
-1. Settings → Obsidian Chat → role **Host**.
+1. Settings → Chat → role **Host**.
 2. Harness command: any ACP-speaking command, e.g. `opencode acp`. The plugin passes the vault root
    as the session cwd and adds its loopback MCP tools when the harness supports HTTP MCP.
 3. Listener port (default 8765, loopback only). Publish it once: `tailscale serve --bg --https=9443 8765`

@@ -1178,7 +1178,7 @@ export class ShellChatView extends ItemView {
     head.createSpan({ text: message });
     const hint = (text: string) => row.createDiv({ cls: "oc-callout-hint", text });
     if (/local host start failed|loopback host attach failed/i.test(message)) {
-      hint("The local listener could not start. On the computer that runs the harness, set Settings → Obsidian Chat → Mode to Local and check the harness command.");
+      hint("The local listener could not start. On the computer that runs the harness, set Settings → Chat → Role to Host and check the harness command.");
     }
     if (/unreachable|timed out|closed before|401|403|device code|host address/i.test(message)) {
       hint("The host Obsidian must be running, with its listener published by Tailscale Serve. Check the host address (its tailnet name) in settings.");

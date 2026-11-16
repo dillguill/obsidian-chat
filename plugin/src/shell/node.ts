@@ -31,7 +31,7 @@ export async function loadNodeModule<T>(id: string): Promise<T> {
     const reason = err instanceof Error ? err.message : String(err);
     throw new Error(
       `could not load ${id} in the desktop runtime (${reason}). ` +
-        "If this install should host, check Settings → Obsidian Chat → Mode.",
+        "If this install should host, check Settings → Chat → Role.",
     );
   }
 }
