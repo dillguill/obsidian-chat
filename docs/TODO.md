@@ -101,6 +101,11 @@ harness commands, and choosing a skill attaches its full text.
 
 ## 6. Web search and fetch (globe toggle) — parked
 
+**Decision 2026-11-16:** build after the redesign, as *gated tools in the plugin's vault tool
+server*, not through dsh or Obsidian's Web viewer: `web_fetch` (plain request from the host, no
+cookies, readable text, an approval card showing the full URL for every fetch) and `web_search`
+(through SearXNG). Web viewer stays for the user only — it shares Obsidian's cookies with plugins.
+
 Status: researched, not built. Revisit with the options below.
 
 ### Security model (why fetch is the risky part)
@@ -251,5 +256,5 @@ Items 1–4 built on `redesign/host-settings-reconnect` and verified 2026-11-15:
 - [x] 4. Remote liveness + reconnect on resume/online; no permanent give-up
 - [x] 5. Conversation records move to the host's app-data folder (`~/Library/Application Support/obsidian-chat/sessions/`); one-time migration from `.chat/sessions/`
 - [x] 6. Vault tool server gains approved write tools; dsh `obsidian` profile drops its own fs tools
-- [ ] 7. Harness setting accepts a command or a `ws(s)://` URL
-- [ ] 8. Plugin waits ~10 s before SIGKILL on harness stop (dsh-side changes: dsh repo `plans/08-obsidian-acp.md`)
+- [x] 7. Harness setting accepts a command or a `ws(s)://` URL
+- [x] 8. Plugin waits ~10 s before SIGKILL on harness stop (dsh-side changes: dsh repo `plans/08-obsidian-acp.md`)

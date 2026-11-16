@@ -157,10 +157,18 @@ One field; the plugin decides by prefix.
 | `wss://harness.example/acp` | connect to a harness running elsewhere |
 
 `ws://`/`wss://` means connect (reusing the remote WebSocket transport);
-anything else is spawned. A URL harness needs the vault tools reachable from
+anything else is spawned.
+
+**Built 2026-11-16:** the token is read from Obsidian's per-device secret
+storage by name (*Harness token*), a URL harness gets the liveness ping, and
+its vault tools URL is *This host's address* (the Serve name) + `/mcp`. A URL harness needs the vault tools reachable from
 it (tailnet name + per-run token from item 6), never an IP.
 
 ### 8. dsh-acp: fast, self-contained start (tracked in the dsh repo)
+
+**Built 2026-11-16:** plugin `STOP_GRACE_MS` = 10 s; dsh-ctl changes in the dsh
+repo (`plans/08-obsidian-acp.md`), addresses moved to the untracked
+`dsh.local.toml`.
 
 - `dsh-acp` stops loading/SIGHUPing the supervisor on every start. If the
   proxy is up it is left alone; if not, it is started once; on failure,
