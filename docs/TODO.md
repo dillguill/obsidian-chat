@@ -31,7 +31,7 @@ plugin has anything to show.
 - [x] The model/thinking popover is too large for the screen and partly cut
       off. Anchor it to the composer width on mobile (full width, inside the
       viewport), cap its height, and wrap long model names instead of clipping.
-- [ ] Verify on the phone: keyboard behaviour, popover placement, touch
+- [x] Verify on the phone: keyboard behaviour, popover placement, touch
       targets in tool rows, chips and permission cards.
 
 Done so far: dead buttons removed, composer above the bottom toolbar, 44px
@@ -58,7 +58,7 @@ name. Rename from the header title or the History list (extension method
 - [x] Typing `@` (or the @ button) opens the note picker in remote mode too,
       reading the device's own synced vault; blacklisted folders are hidden;
       the trigger works mid-sentence at the cursor.
-- [ ] Verify on the phone keyboard.
+- [x] Verify on the phone keyboard. (verified 2026-11-16)
 
 ## 4. Conversations sync between devices
 
@@ -88,7 +88,7 @@ optional `name`/`description` frontmatter. The agent gets a short catalog
 a task matches; typing `/` in an empty composer opens a picker of skills and
 harness commands, and choosing a skill attaches its full text.
 
-- [ ] Verify with real skills on the phone (remote mode reads the phone's
+- [x] Verify with real skills on the phone (remote mode reads the phone's
       synced copy; the harness reads the same paths on the host).
 
 - [x] A setting picks one vault folder as the skills folder (user-selected,
@@ -226,7 +226,7 @@ built and removed after phone testing:
 - If revisited: confirm on the phone that results arrive, finalize the UI
   on tap instead of waiting for `onend`, and keep Whisper the default.
 
-- [ ] Check mic permission and the `.internal` certificate on iOS (Caddy's
+- [x] Check mic permission and the `.internal` certificate on iOS (Caddy's
       internal CA must be trusted on the phone).
 
 ---
