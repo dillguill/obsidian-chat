@@ -183,17 +183,18 @@ The obsidian-chat host serves `web_search` (SearXNG URL from plugin
 settings) and `web_fetch` through the per-conversation vault MCP server it
 already gives the harness. dsh stays unchanged (its web tools stay off).
 
-- [ ] Plugin setting: SearXNG URL (like the whisper server).
-- [ ] MCP server lists web tools only for conversations with web on;
+- [x] Plugin setting: SearXNG URL (like the whisper server).
+- [ ] List web tools only for conversations with web on (today they refuse while the globe is
+      off, but are listed); MCP server lists web tools only for conversations with web on;
       advertise `tools.listChanged` and add the Streamable-HTTP GET (SSE)
       stream so the host can send `notifications/tools/list_changed` when
       the globe flips (the server is currently POST/JSON only).
-- [ ] Globe button in the composer → host extension method to set web
+- [x] Globe button in the composer → host extension method to set web
       on/off for the conversation; stored in the session record; off by
       default.
-- [ ] Every `web_fetch` raises a host permission card to the controlling
+- [x] Every `web_fetch` raises a host permission card to the controlling
       device with the full URL (Allow once / Reject; never always).
-- [ ] Fetch: size/time caps, readable text extraction; works only while
+- [x] Fetch: size/time caps, readable text extraction; works only while
       the Mac host is reachable (same as chat).
 
 Suggested path: A now for search, B later if fetch is wanted.
