@@ -99,14 +99,23 @@ harness commands, and choosing a skill attaches its full text.
       tagged context like other attachments.
 - [x] Skills sync with the vault, so every device sees the same set.
 
-## 6. Web search and fetch (globe toggle) — parked
+## 6. Web search and fetch (globe toggle) — built 2026-11-16
 
 **Decision 2026-11-16:** build after the redesign, as *gated tools in the plugin's vault tool
 server*, not through dsh or Obsidian's Web viewer: `web_fetch` (plain request from the host, no
 cookies, readable text, an approval card showing the full URL for every fetch) and `web_search`
 (through SearXNG). Web viewer stays for the user only — it shares Obsidian's cookies with plugins.
 
-Status: researched, not built. Revisit with the options below.
+Status: **built** (option B, `feat/web-tools`): Settings → Web (Off / Search only / Search and
+fetch) and a SearXNG URL; a per-conversation globe in the composer (off by default, in host memory,
+so a host restart turns it off); `web_search` and `web_fetch` in the plugin's tool server. Tools
+beyond the setting don't exist; with the globe off they refuse. Every fetch is an approval card with
+the full URL (Allow once / Reject). Fetches use a plain Node request (no cookies), refuse local, LAN,
+tailnet and `.internal`/`.ts.net` names and any name resolving to a private address (checked at
+connect time and on every redirect), and cap size/time/redirects. Results are labelled untrusted.
+Not done: `tools/list_changed` push (the harness sees a setting change on its next conversation).
+
+Original research and options below.
 
 ### Security model (why fetch is the risky part)
 

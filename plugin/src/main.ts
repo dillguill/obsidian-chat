@@ -157,6 +157,8 @@ export default class ObsidianChatPlugin extends Plugin {
           sessionStoreFolder: this.settings.sessionStoreFolder || ".chat/sessions",
           blacklistFolders: this.settings.blacklistFolders,
           allowedTailscaleUsers: this.settings.allowedTailscaleUsers,
+          webTools: this.settings.webTools,
+          webSearchUrl: this.settings.webSearchUrl,
           harnessToken: () => this.harnessToken(),
           hostUrl: this.settings.shell.hostUrl,
         }),

@@ -157,6 +157,36 @@ export class ObsidianChatSettingTab extends PluginSettingTab {
       .setName("Open the shell")
       .addButton((button) => button.setButtonText("Open shell").onClick(() => void this.plugin.activateShellView()));
 
+    containerEl.createEl("h4", { text: "Web" });
+    containerEl.createEl("p", {
+      text: "Off by default. When allowed here, each conversation still starts with web off; turn it on with the globe in the composer. Every fetch shows you the full URL to approve; local, LAN and tailnet addresses are never fetched.",
+      cls: "setting-item-description",
+    });
+    new Setting(containerEl)
+      .setName("Web tools")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("off", "Off")
+          .addOption("search", "Search only")
+          .addOption("search-fetch", "Search and fetch (approve each URL)")
+          .setValue(this.plugin.settings.webTools)
+          .onChange(async (value) => {
+            this.plugin.settings.webTools = value === "search" || value === "search-fetch" ? value : "off";
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          }),
+      );
+    new Setting(containerEl)
+      .setName("Search server")
+      .setDesc("Your SearXNG address (JSON output enabled). Searches are sent there, never to a public engine directly.")
+      .addText((text) => {
+        text.setPlaceholder("https://search.example").setValue(this.plugin.settings.webSearchUrl);
+        text.inputEl.addEventListener("change", async () => {
+          this.plugin.settings.webSearchUrl = text.getValue().trim();
+          await this.plugin.saveSettings();
+        });
+      });
+
     containerEl.createEl("h4", { text: "Vault access" });
     new Setting(containerEl)
       .setName("Inject vault rules")

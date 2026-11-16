@@ -27,6 +27,8 @@ export interface ShellRuntimeSettings {
   sessionStoreFolder: string;
   blacklistFolders: string[];
   allowedTailscaleUsers: string[];
+  webTools?: "off" | "search" | "search-fetch";
+  webSearchUrl?: string;
   harnessToken?: () => string | null;
   hostUrl?: string;
 }
@@ -376,6 +378,24 @@ export class ShellRuntime {
     this.continuityChoice = null;
   }
 
+  /** The current conversation's web toggle, as the host last reported it. */
+  private webState = false;
+
+  get webEnabled(): boolean {
+    return this.webState;
+  }
+
+  /** Flips web access for the current conversation (the composer's globe). */
+  async setWeb(enabled: boolean): Promise<boolean> {
+    if (!this.client) await this.connect();
+    const client = this.client;
+    const id = client?.getSessionId();
+    if (!client || !id) throw new Error("start the conversation first");
+    this.webState = await client.setWebIn(id, enabled);
+    this.emitState();
+    return this.webState;
+  }
+
   async cancel(): Promise<void> {
     await this.client?.cancel();
   }
@@ -445,6 +465,7 @@ export class ShellRuntime {
     this.continuityChoice = null;
     this.emitState();
     const meta = (response as { _meta?: Record<string, unknown> })._meta;
+    this.webState = meta?.["obsidian-chat/web"] === true;
     if (!meta) return null;
     return {
       state: String(meta["obsidian-chat/resume"] ?? "unknown"),
@@ -555,6 +576,7 @@ export class ShellRuntime {
     const previous = client.getSessionId();
     if (previous) await client.closeSession(previous).catch(() => undefined);
     await client.createSession({ cwd: this.mode === "local" ? this.vaultRoot() : "/" });
+    this.webState = false;
     this.emitState();
   }
 
@@ -565,6 +587,7 @@ export class ShellRuntime {
     this.lastSeq.clear();
     const client = this.client;
     this.client = null;
+    this.webState = false;
     if (client) await client.close().catch(() => undefined);
     this.emitState();
   }

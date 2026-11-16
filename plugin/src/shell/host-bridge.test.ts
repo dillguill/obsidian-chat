@@ -162,3 +162,19 @@ test("reject, a lost device, or an unknown session key all decline", async () =>
 
   assert.equal(await gone.bridge.approveVaultChange("not-a-key", change), false);
 });
+
+test("only the device in control flips web access; fetch approvals show the URL", async () => {
+  const { bridge, keys, asked } = bridgeWithHarness("allow");
+  const { sessionId } = await bridge.newSession("phone", { cwd: "/vault", mcpServers: [] } as never);
+  assert.equal(bridge.webEnabledForKey(keys[0]), false, "off by default");
+  await assert.rejects(bridge.setWeb("lenovo", { sessionId, enabled: true }));
+  assert.deepEqual(await bridge.setWeb("phone", { sessionId, enabled: true }), { enabled: true });
+  assert.equal(bridge.webEnabledForKey(keys[0]), true);
+  assert.equal(await bridge.approveWebFetch(keys[0], "https://example.com/x"), true);
+  const toolCall = asked[0].toolCall as { title: string };
+  assert.equal(toolCall.title, "Fetch https://example.com/x");
+  const options = asked[0].options as Array<{ kind: string }>;
+  assert.ok(!options.some((o) => o.kind === "allow_always"), "never allow-always");
+  await bridge.setWeb("phone", { sessionId, enabled: false });
+  assert.equal(bridge.webEnabledForKey(keys[0]), false);
+});

@@ -6,7 +6,7 @@
  *  then `accept(ws)`. Session/update/permission forwarding is delegated to a
  *  `RelayBridge` implemented by the host runtime (filled in US3).
  */
-import { PING_METHOD, RENAME_METHOD } from "../session/title.ts";
+import { PING_METHOD, RENAME_METHOD, WEB_METHOD } from "../session/title.ts";
 import {
   PROTOCOL_VERSION,
   agent,
@@ -53,6 +53,8 @@ export interface RelayBridge {
     deviceId: string,
     request: SetSessionConfigOptionRequest,
   ): Promise<SetSessionConfigOptionResponse>;
+  /** Extension: per-conversation web toggle. */
+  setWeb?(deviceId: string, request: { sessionId: string; enabled: boolean }): Promise<{ enabled: boolean }>;
   /** Extension: user rename of a stored conversation. */
   renameSession?(deviceId: string, request: { sessionId: string; title: string }): Promise<{ title: string }>;
 }
@@ -111,6 +113,14 @@ export class HostRelay {
         (ctx) => {
           if (!bridge.renameSession) throw new Error("rename is not supported by this host");
           return bridge.renameSession(deviceId, ctx.params);
+        },
+      )
+      .onRequest(
+        WEB_METHOD,
+        (params: unknown) => (params ?? {}) as { sessionId: string; enabled: boolean },
+        (ctx) => {
+          if (!bridge.setWeb) throw new Error("web access is not supported by this host");
+          return bridge.setWeb(deviceId, ctx.params);
         },
       )
       .onRequest(

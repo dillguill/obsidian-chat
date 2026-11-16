@@ -74,6 +74,15 @@ curl -s --noproxy '*' --http1.1 -m 3 -o /dev/null -D - -H "Connection: Upgrade" 
   conversation record is the same either way.
 - History shows no warning tag for conversations that can't reattach: they all continue.
 
+## Web access
+
+Settings → Web: **Off** (default), **Search only**, or **Search and fetch**, plus your SearXNG
+address (e.g. `https://search.example`, JSON output enabled). When allowed, each conversation
+still starts with web off; the **globe** in the composer turns it on for that conversation only.
+Every fetch asks you first with the full URL. Local, LAN and tailnet addresses are never fetched.
+Turning web off doesn't remove what was already fetched from the conversation: start a new one for
+a clean slate.
+
 ## Transcript, controls, approvals
 
 - Every ACP update is rendered in arrival order and expanded by default; grouping is opt-in under

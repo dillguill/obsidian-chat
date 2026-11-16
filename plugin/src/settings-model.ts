@@ -46,6 +46,10 @@ export interface ObsidianChatSettings {
   /** Tailscale logins allowed to attach through Tailscale Serve ([] = any
    *  user on the tailnet). Not secret, so it is synced. */
   allowedTailscaleUsers: string[];
+  /** Web tools allowed at all; each conversation still opts in (globe). */
+  webTools: "off" | "search" | "search-fetch";
+  /** SearXNG base URL for web_search (a name, e.g. https://search.example). */
+  webSearchUrl: string;
   blacklistFolders: string[];
   injectVaultRules: boolean;
   /** Vault folder holding skills ("" = off). Vault-level, so it syncs. */
@@ -65,6 +69,8 @@ export const DEFAULT_PORT = 8765;
 export const DEFAULT_SETTINGS: ObsidianChatSettings = {
   shell: { mode: "local", command: "opencode acp", port: DEFAULT_PORT },
   allowedTailscaleUsers: [],
+  webTools: "off",
+  webSearchUrl: "",
   blacklistFolders: ["Journals/", "_attachments/", ".trash/"],
   injectVaultRules: true,
   skillsFolder: "",
@@ -155,6 +161,8 @@ export function migrateSettings(raw: unknown, context: MigrationContext): Settin
   const settings: ObsidianChatSettings = {
     shell,
     allowedTailscaleUsers: (stringArray(data.allowedTailscaleUsers) ?? []).map((v) => v.trim()).filter(Boolean),
+    webTools: data.webTools === "search" || data.webTools === "search-fetch" ? data.webTools : "off",
+    webSearchUrl: typeof data.webSearchUrl === "string" ? data.webSearchUrl.trim() : "",
     blacklistFolders: stringArray(data.blacklistFolders) ?? [...DEFAULT_SETTINGS.blacklistFolders],
     injectVaultRules: typeof data.injectVaultRules === "boolean" ? data.injectVaultRules : DEFAULT_SETTINGS.injectVaultRules,
     skillsFolder: typeof data.skillsFolder === "string" ? data.skillsFolder.trim().replace(/^\/+|\/+$/g, "") : "",

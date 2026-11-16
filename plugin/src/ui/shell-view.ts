@@ -97,6 +97,8 @@ export class ShellChatView extends ItemView {
   private chipsEl!: HTMLElement;
   private controlsEl!: HTMLElement;
   private micBtn!: HTMLButtonElement;
+  /** The globe: web access for this conversation (off by default). */
+  private webBtn!: HTMLButtonElement;
   private micTime!: HTMLElement;
   private voice: VoiceRecorder | null = null;
   private voiceTimer = 0;
@@ -200,6 +202,9 @@ export class ShellChatView extends ItemView {
     }
     const actions = bar.createDiv({ cls: "oc-composer-right" });
     this.controlsEl = actions.createDiv({ cls: "oc-controls" });
+    this.webBtn = actions.createEl("button", { cls: "oc-mic oc-web oc-hidden", attr: { type: "button", "aria-label": "Web access", "aria-pressed": "false" } });
+    setIcon(this.webBtn.createSpan({ cls: "oc-mic-icon" }), "globe");
+    this.webBtn.addEventListener("click", () => void this.toggleWeb());
     this.micBtn = actions.createEl("button", { cls: "oc-mic oc-hidden", attr: { type: "button", "aria-label": "Dictate" } });
     setIcon(this.micBtn.createSpan({ cls: "oc-mic-icon" }), "mic");
     this.micTime = this.micBtn.createSpan({ cls: "oc-mic-time" });
@@ -499,6 +504,19 @@ export class ShellChatView extends ItemView {
   private renderControls(): void {
     this.micBtn?.toggleClass("oc-hidden", !this.voiceEngine() && this.voiceState === "idle");
     const runtime = this.plugin.shellRuntime();
+    if (this.webBtn) {
+      const allowed = this.plugin.settings.webTools !== "off";
+      const on = allowed && runtime.webEnabled;
+      this.webBtn.toggleClass("oc-hidden", !allowed);
+      this.webBtn.toggleClass("is-active", on);
+      this.webBtn.setAttr("aria-pressed", on ? "true" : "false");
+      this.webBtn.setAttr(
+        "title",
+        on
+          ? `Web on for this conversation (${this.plugin.settings.webTools === "search-fetch" ? "search and approved fetches" : "search only"}). Click to turn off.`
+          : "Web off for this conversation. Click to let the agent search the web.",
+      );
+    }
     const model = composerControlModel({
       modes: runtime.modes,
       configOptions: runtime.configOptions,
@@ -521,6 +539,20 @@ export class ShellChatView extends ItemView {
         this.updateSendState();
       },
     });
+  }
+
+  private async toggleWeb(): Promise<void> {
+    const runtime = this.plugin.shellRuntime();
+    try {
+      if (!runtime.clientDebugInfo?.sessionId) {
+        this.showError("Send a message first, then turn on web for this conversation.");
+        return;
+      }
+      await runtime.setWeb(!runtime.webEnabled);
+    } catch (err) {
+      this.showError(`Could not change web access: ${String((err as Error).message ?? err)}`);
+    }
+    this.renderControls();
   }
 
   // ---------- context & attachments ----------

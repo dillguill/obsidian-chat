@@ -14,6 +14,10 @@ export const RENAME_METHOD = "_obsidian-chat/session/rename";
 /** Extension request a client uses to check that the host still answers
  *  (application-level ping; browser WebSockets can't send protocol pings). */
 export const PING_METHOD = "_obsidian-chat/ping";
+
+/** Extension request: turn web access on/off for one conversation (the
+ *  composer's globe). Off by default; the host enforces it in the tools. */
+export const WEB_METHOD = "_obsidian-chat/session/web";
 export const MAX_TITLE_CHARS = 120;
 
 export function isPlaceholderTitle(title: string | null | undefined): boolean {

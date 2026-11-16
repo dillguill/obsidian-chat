@@ -724,3 +724,6 @@
 }
 .oc-chat-mobile .oc-mic { min-width: 40px; height: 40px; }
 .oc-chat-mobile .oc-mic-icon svg { width: 20px; height: 20px; }
+
+/* The globe (web access for this conversation). */
+.oc-web.is-active { color: var(--interactive-accent) !important; background: rgba(var(--interactive-accent-rgb, 124, 92, 255), 0.12) !important; }

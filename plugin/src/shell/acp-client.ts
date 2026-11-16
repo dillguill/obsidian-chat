@@ -11,7 +11,7 @@
  *  `sessionId` getter is the client's *primary* session (the local UI's chat);
  *  session-scoped methods (`promptIn`, `setModeIn`, …) are used by the relay.
  */
-import { PING_METHOD, RENAME_METHOD } from "../session/title.ts";
+import { PING_METHOD, RENAME_METHOD, WEB_METHOD } from "../session/title.ts";
 import {
   PROTOCOL_VERSION,
   RequestError,
@@ -705,6 +705,13 @@ export class AcpShellClient implements AcpChatClient {
 
   async setMode(modeId: string): Promise<void> {
     await this.setModeIn(this.requirePrimary(), modeId);
+  }
+
+  /** Extension `_obsidian-chat/session/web` (host-implemented): the globe. */
+  async setWebIn(sessionId: string, enabled: boolean): Promise<boolean> {
+    const conn = this.requireConn();
+    const response = await conn.agent.request<{ enabled?: boolean }>(WEB_METHOD, { sessionId, enabled });
+    return response?.enabled === true;
   }
 
   /** Extension `_obsidian-chat/session/rename` (host-implemented). */

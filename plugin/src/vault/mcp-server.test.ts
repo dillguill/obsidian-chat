@@ -361,3 +361,66 @@ test("write tools are annotated as not read-only", async () => {
   assert.equal(tools.find((t) => t.name === "write_note")?.annotations.readOnlyHint, false);
   assert.equal(tools.find((t) => t.name === "read_note")?.annotations.readOnlyHint, true);
 });
+
+// ---------- §6: gated web tools ----------
+
+import type { WebAccess, WebMode } from "./mcp-server.ts";
+import { urlRefusal } from "../web/policy.ts";
+
+function webServer(mode: WebMode, on: boolean, allowFetch = true) {
+  const fetched: string[] = [];
+  const asked: string[] = [];
+  const web: WebAccess = {
+    mode: () => mode,
+    enabled: (context) => on && context.session === "sess-1",
+    refusal: urlRefusal,
+    approveFetch: async (url) => {
+      asked.push(url);
+      return allowFetch;
+    },
+    search: async (query) => [{ title: `about ${query}`, url: "https://example.com", snippet: "s" }],
+    fetch: async (url) => {
+      fetched.push(url);
+      return { url, status: 200, title: "T", text: "body", truncated: false };
+    },
+  };
+  const server = new VaultMcpServer({ vault: fixtureVault(), web, policy: () => policy, token: () => "tok" });
+  const list = async () =>
+    (((await server.handle({ jsonrpc: "2.0", id: ++nextId, method: "tools/list" })) as RpcReply).result.tools as { name: string }[]).map((t) => t.name);
+  const tool = async (name: string, args: Record<string, unknown>) =>
+    ((await server.handle({ jsonrpc: "2.0", id: ++nextId, method: "tools/call", params: { name, arguments: args } }, { session: "sess-1" })) as RpcReply);
+  return { list, tool, fetched, asked };
+}
+
+test("web tools don't exist when the setting is off; search-only has no fetch", async () => {
+  assert.ok(!(await webServer("off", true).list()).some((n) => n.startsWith("web_")));
+  const searchOnly = webServer("search", true);
+  assert.deepEqual((await searchOnly.list()).filter((n) => n.startsWith("web_")), ["web_search"]);
+  const call = await searchOnly.tool("web_fetch", { url: "https://example.com" });
+  assert.ok(call.error, "an unavailable tool is unknown, not callable");
+});
+
+test("with the conversation's globe off, web tools refuse", async () => {
+  const { tool } = webServer("search-fetch", false);
+  const result = (await tool("web_search", { query: "x" })).result;
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /globe/);
+});
+
+test("every fetch is approved first; a decline fetches nothing; private URLs are refused before asking", async () => {
+  const allowed = webServer("search-fetch", true);
+  const ok = parseTool((await allowed.tool("web_fetch", { url: "https://example.com/a" })).result) as { text: string; note: string };
+  assert.equal(ok.text, "body");
+  assert.match(ok.note, /Untrusted/);
+  assert.deepEqual(allowed.asked, ["https://example.com/a"]);
+
+  const declined = webServer("search-fetch", true, false);
+  assert.equal((await declined.tool("web_fetch", { url: "https://example.com/b" })).result.isError, true);
+  assert.deepEqual(declined.fetched, []);
+
+  const priv = webServer("search-fetch", true);
+  for (const url of ["http://127.0.0.1:8765/mcp", "https://search.example", "http://100.64.0.9"]) {
+    assert.equal((await priv.tool("web_fetch", { url })).result.isError, true, url);
+  }
+  assert.deepEqual(priv.asked, [], "nothing private was even proposed");
+});

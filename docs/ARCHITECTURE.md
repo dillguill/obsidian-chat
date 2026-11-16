@@ -26,6 +26,8 @@ amendment.
      through VaultService (blacklist, `.obsidian/`, editor refresh, undo).
    - Loopback only, bearer token. This is the harness's only vault path: dsh's own file tools are
      off in its `obsidian` profile.
+   - Web (`src/web/`): `web_search` (SearXNG) and `web_fetch`, only when Settings → Web allows them
+     and the conversation's globe is on; every fetch is approved; private addresses are refused.
 3. **Shared VaultService** (`src/vault/service.ts` + `path-policy.ts`)
    - The single implementation of vault semantics: path confinement, blacklist, `.obsidian/`
      protection, reads (including open-editor text), writes, editor refresh, search index and

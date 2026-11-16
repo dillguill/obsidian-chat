@@ -117,6 +117,9 @@ export class HostBridge implements RelayBridge {
   /** Harness replay during reattach is not re-recorded/forwarded. */
   private suppressed = new Set<string>();
   private log: (message: string) => void;
+  /** Conversations with web access turned on (globe). In memory: a host
+   *  restart turns web off again, which is the safe default. */
+  private webOn = new Set<string>();
   /** MCP session key → host session id (and back). */
   private mcpKeys = new Map<string, string>();
   private mcpKeyOf = new Map<string, string>();
@@ -281,6 +284,7 @@ export class HostBridge implements RelayBridge {
         ...continuityMeta(decision),
         "obsidian-chat/continuity": CONTINUITY_CHOICES as unknown as string[],
         "obsidian-chat/attached": attached,
+        "obsidian-chat/web": this.webOn.has(request.sessionId),
       },
     } as LoadSessionResponse;
   }
@@ -678,6 +682,46 @@ export class HostBridge implements RelayBridge {
     const key = mintToken(12);
     this.bindMcpKey(key, hostId);
     return key;
+  }
+
+  /** The globe: only the device in control of the conversation may flip it. */
+  async setWeb(deviceId: string, request: { sessionId: string; enabled: boolean }): Promise<{ enabled: boolean }> {
+    const session = this.sessions.get(request.sessionId);
+    if (!session) throw new RequestError(-32602, "open the conversation before changing web access");
+    if (session.deviceId !== deviceId) throw new RequestError(POLICY_ERROR, movedMessage(session.deviceId));
+    if (request.enabled === true) this.webOn.add(session.hostId);
+    else this.webOn.delete(session.hostId);
+    this.log(`web access ${request.enabled === true ? "on" : "off"} for ${session.hostId}`);
+    return { enabled: this.webOn.has(session.hostId) };
+  }
+
+  /** Whether the conversation behind an MCP session key has web turned on. */
+  webEnabledForKey(sessionKey: string | null | undefined): boolean {
+    const hostId = sessionKey ? this.mcpKeys.get(sessionKey) : undefined;
+    return !!hostId && this.webOn.has(hostId);
+  }
+
+  /** Approval card for one web fetch: the full URL, allow once or reject,
+   *  never "always". */
+  async approveWebFetch(sessionKey: string, url: string): Promise<boolean> {
+    const hostId = this.mcpKeys.get(sessionKey);
+    const session = hostId ? this.sessions.get(hostId) : undefined;
+    if (!session) return false;
+    const requestId = `web-${mintToken(6)}`;
+    const toolCall = {
+      toolCallId: requestId,
+      title: `Fetch ${url}`,
+      kind: "fetch",
+      status: "pending",
+      content: [{ type: "content", content: { type: "text", text: `The agent wants to fetch:\n\n${url}` } }],
+      rawInput: { url },
+    };
+    const options = [
+      { optionId: "allow", name: "Allow once", kind: "allow_once" },
+      { optionId: "reject", name: "Reject", kind: "reject_once" },
+    ];
+    const response = await this.askDevice(session, requestId, toolCall, options);
+    return response.outcome.outcome === "selected" && response.outcome.optionId === "allow";
   }
 
   /** Asks the device that owns the calling chat session to approve a vault

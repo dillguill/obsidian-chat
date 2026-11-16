@@ -7,11 +7,14 @@
  *  listener over ACP/WebSocket; this class never serves the vault to a remote
  *  device (vault access stays on the host↔harness ACP client).
  */
-import { App, FileSystemAdapter, Platform } from "obsidian";
+import { App, FileSystemAdapter, Platform, requestUrl } from "obsidian";
+import { safeFetch } from "../web/fetch.ts";
+import { urlRefusal } from "../web/policy.ts";
+import { htmlToText } from "../web/text.ts";
 import type { SessionStore, StoreAdapter } from "../session/store.ts";
 import { ResumeRegistry } from "../session/resume.ts";
 import { VaultService } from "../vault/service.ts";
-import { VaultMcpServer, type VaultWriter } from "../vault/mcp-server.ts";
+import { VaultMcpServer, type VaultWriter, type WebAccess, type WebSearchHit } from "../vault/mcp-server.ts";
 import { AcpShellClient } from "./acp-client.ts";
 import { HostBridge } from "./host-bridge.ts";
 import { HostRelay } from "./host-relay.ts";
@@ -32,6 +35,10 @@ export interface HostCoreSettings {
   blacklistFolders: string[];
   /** Tailscale logins allowed through Serve ([] = any tailnet user). */
   allowedTailscaleUsers: string[];
+  /** Web tools the user allows at all (each conversation still opts in). */
+  webTools?: "off" | "search" | "search-fetch";
+  /** SearXNG base URL for web_search. */
+  webSearchUrl?: string;
   /** Token for a URL harness (from this device's secret storage), or null. */
   harnessToken?: () => string | null;
   /** This host's tailnet address (e.g. https://mac.tailnet.ts.net:9443), used
@@ -142,6 +149,53 @@ export class HostCore {
     return `${base.replace(/^wss:/i, "https:").replace(/^ws:/i, "http:")}/mcp`;
   }
 
+  /** Host side of the web tools (redesign §6): off unless the user's setting
+   *  allows it AND the conversation's globe is on; every fetch is approved. */
+  private webAccess(): WebAccess {
+    return {
+      mode: () => this.settings().webTools ?? "off",
+      enabled: (context) => !!this.bridge?.webEnabledForKey(context.session),
+      refusal: (url) => urlRefusal(url),
+      approveFetch: async (url, context) => {
+        const bridge = this.bridge;
+        if (!bridge || !context.session) return false;
+        return bridge.approveWebFetch(context.session, url);
+      },
+      search: async (query, limit) => {
+        const base = this.settings().webSearchUrl?.trim().replace(/\/+$/, "");
+        if (!base) throw new Error("no search server is configured (Settings → Obsidian Chat → Web)");
+        const response = await requestUrl({
+          url: `${base}/search?q=${encodeURIComponent(query)}&format=json`,
+          method: "GET",
+          headers: { accept: "application/json" },
+          throw: false,
+        });
+        if (response.status !== 200) throw new Error(`search server answered ${response.status}`);
+        const results = ((response.json as { results?: Array<Record<string, unknown>> })?.results ?? []).slice(0, limit);
+        return results.map(
+          (hit): WebSearchHit => ({
+            title: String(hit.title ?? ""),
+            url: String(hit.url ?? ""),
+            snippet: String(hit.content ?? ""),
+          }),
+        );
+      },
+      fetch: async (url) => {
+        const page = await safeFetch(url);
+        const type = page.contentType.toLowerCase();
+        if (type && !/text\/|json|xml/.test(type)) {
+          return { url: page.url, status: page.status, title: "", text: `(not text: ${page.contentType})`, truncated: false };
+        }
+        if (type.includes("html") || /^\s*</.test(page.body)) {
+          const readable = htmlToText(page.body);
+          return { url: page.url, status: page.status, title: readable.title, text: readable.text, truncated: page.truncated || readable.truncated };
+        }
+        const text = page.body.length > 100_000 ? `${page.body.slice(0, 100_000)}\n…(truncated)` : page.body;
+        return { url: page.url, status: page.status, title: "", text, truncated: page.truncated || page.body.length > 100_000 };
+      },
+    };
+  }
+
   /** Host side of the MCP write tools: approval on the owning device, then a
    *  snapshotted write through the same environment ACP fs writes use. */
   private vaultWriter(): VaultWriter {
@@ -175,6 +229,7 @@ export class HostCore {
     const mcp = new VaultMcpServer({
       vault: this.vault(),
       writer: this.vaultWriter(),
+      web: this.webAccess(),
       policy: () => this.vault().policy(),
       token: () => this.mcpTokenValue,
     });
