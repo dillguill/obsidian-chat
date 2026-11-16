@@ -10,7 +10,7 @@ test("only public http(s) URLs pass", () => {
     "file:///etc/passwd", "ftp://example.com", "https://user:pw@example.com", "not a url",
     "http://localhost:8765/mcp", "http://127.0.0.1:8765", "http://[::1]/", "http://10.0.0.1",
     "http://192.168.1.1", "http://172.20.0.1", "http://100.64.0.9", "http://169.254.169.254/latest",
-    "https://search.example", "https://device-01.example.ts.net:9443", "http://printer.local", "http://0.0.0.0",
+    "https://search.example.internal", "https://device-01.example.ts.net:9443", "http://printer.local", "http://0.0.0.0",
   ]) {
     assert.ok(urlRefusal(bad), bad);
   }

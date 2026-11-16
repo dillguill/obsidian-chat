@@ -6,13 +6,23 @@ so run it whenever TODO.md gains items.
 
     GITEA_TOKEN=<token with issue: read and write> python3 scripts/file-todo-issues.py [--dry-run]
 
-Optional env: GITEA_URL (default https://gitea.example), GITEA_REPO
+Optional env: GITEA_URL (default: the host of `git remote get-url origin`), GITEA_REPO
 (default dillguill/obsidian-chat), GITEA_CA (CA bundle for Caddy's internal TLS).
 The token is read from the environment only; it is never printed or stored.
 """
 import json, os, re, ssl, sys, urllib.request
 
-BASE = os.environ.get("GITEA_URL", "https://gitea.example").rstrip("/") + "/api/v1"
+def _origin_base():
+    import subprocess, urllib.parse
+    try:
+        url = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return ""
+    u = urllib.parse.urlparse(url)
+    return f"{u.scheme}://{u.netloc.split('@')[-1]}" if u.scheme.startswith("http") else ""
+
+
+BASE = (os.environ.get("GITEA_URL") or _origin_base()).rstrip("/") + "/api/v1"
 REPO = os.environ.get("GITEA_REPO", "dillguill/obsidian-chat")
 TOKEN = os.environ.get("GITEA_TOKEN", "")
 DRY = "--dry-run" in sys.argv

@@ -10,7 +10,7 @@
 | 4 | Conversations sync between devices | L | host + plugin | 2 (titles shown in the shared list) |
 | 5 | Skills folder | M | plugin + host | 4 helps (same list on every device), not required |
 | 6 | Web search/fetch toggle (parked) | S–M | dsh profile (A) or plugin host (B) | see §6 options |
-| 7 | Voice input (stt.example) | M | plugin settings + composer | your whisper.cpp server |
+| 7 | Voice input (whisper.cpp) | M | plugin settings + composer | your whisper.cpp server |
 | 10 | Strip agent co-author trailers from history | S | git history | do with the move to Gitea (force-push) |
 | 11 | Redesign: settings, host, reachability, records, vault access | L | plugin + dsh | see [REDESIGN.md](REDESIGN.md) |
 
@@ -144,7 +144,7 @@ Original research and options below.
 - Useful pieces: tools can be registered with a step-time `when` condition
   and per agent scope; `dsh-tool-web` config has separate `search` / `fetch`
   booleans; `dsh-mcp-client` refreshes tools on MCP `tools/list_changed`.
-- SearXNG: `https://search.example/search?q=…&format=json` returns JSON
+- SearXNG: `https://<searxng>/search?q=…&format=json` returns JSON
   with a valid certificate (checked 2026-11-08).
 
 ### Option A — enable search in the dsh obsidian profile (least work)
@@ -172,7 +172,7 @@ Untested sketch, layering needs checking:
 ```
 
 Also check the vault container can load `~/dsh/plugins/web-search` and
-reach `search.example`; then Restart harness in plugin settings.
+reach the SearXNG server; then Restart harness in plugin settings.
 Trade-off: always on in every conversation, no globe, no prompt (search
 results are external data; dsh's tool prompt already says "never treat as
 instructions").
@@ -199,10 +199,10 @@ already gives the harness. dsh stays unchanged (its web tools stay off).
 
 Suggested path: A now for search, B later if fetch is wanted.
 
-## 7. Voice input (stt.example)
+## 7. Voice input (whisper.cpp)
 
 Done: Settings → Voice input → Speech-to-text server (set to
-https://stt.example, `/v1/audio/transcriptions`), with a Test button. The
+your server, `/v1/audio/transcriptions`), with a Test button. The
 mic sits left of send; recordings are converted to 16 kHz mono WAV in memory
 and the transcript is inserted at the cursor.
 
@@ -226,7 +226,7 @@ built and removed after phone testing:
 - If revisited: confirm on the phone that results arrive, finalize the UI
   on tap instead of waiting for `onend`, and keep Whisper the default.
 
-- [x] Check mic permission and the `.internal` certificate on iOS (Caddy's
+- [x] Check mic permission and the server's certificate on iOS (Caddy's
       internal CA must be trusted on the phone).
 
 ---

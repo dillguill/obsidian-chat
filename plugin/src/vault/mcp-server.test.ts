@@ -419,7 +419,7 @@ test("every fetch is approved first; a decline fetches nothing; private URLs are
   assert.deepEqual(declined.fetched, []);
 
   const priv = webServer("search-fetch", true);
-  for (const url of ["http://127.0.0.1:8765/mcp", "https://search.example", "http://100.64.0.9"]) {
+  for (const url of ["http://127.0.0.1:8765/mcp", "https://search.example.internal", "http://100.64.0.9"]) {
     assert.equal((await priv.tool("web_fetch", { url })).result.isError, true, url);
   }
   assert.deepEqual(priv.asked, [], "nothing private was even proposed");

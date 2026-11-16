@@ -6,14 +6,24 @@ Idempotent: an issue whose title already exists (open or closed) is skipped.
     GITEA_TOKEN=<token with write:issue> python3 scripts/file-redesign-issues.py [--dry-run]
 
 Optional env:
-    GITEA_URL   base URL (default https://gitea.example)
+    GITEA_URL   base URL (default: the host of `git remote get-url origin`)
     GITEA_CA    CA bundle for Caddy's internal TLS, if the system store
                 doesn't trust it
 The token is read from the environment only; it is never printed or stored.
 """
 import json, os, ssl, sys, urllib.error, urllib.request
 
-BASE = os.environ.get("GITEA_URL", "https://gitea.example").rstrip("/") + "/api/v1"
+def _origin_base():
+    import subprocess, urllib.parse
+    try:
+        url = subprocess.run(["git", "remote", "get-url", "origin"], capture_output=True, text=True, check=True).stdout.strip()
+    except Exception:
+        return ""
+    u = urllib.parse.urlparse(url)
+    return f"{u.scheme}://{u.netloc.split('@')[-1]}" if u.scheme.startswith("http") else ""
+
+
+BASE = (os.environ.get("GITEA_URL") or _origin_base()).rstrip("/") + "/api/v1"
 TOKEN = os.environ.get("GITEA_TOKEN", "")
 DRY = "--dry-run" in sys.argv
 CTX = ssl.create_default_context(cafile=os.environ.get("GITEA_CA") or None)
@@ -87,7 +97,7 @@ Agent Vault session. Wait ~10 s (configurable). dsh side: dsh/dsh plan 08.
 
 Details: `{DOC}` §8."""),
     (DSH, "dsh-acp: don't SIGHUP the supervisor when the proxy is healthy", [],
-     """`cmd_acp` → `ensure_proxy` → `ensure_job` SIGHUPs `com.example.dsh` on every Obsidian
+     """`cmd_acp` → `ensure_proxy` → `ensure_job` SIGHUPs the supervisor job on every Obsidian
 harness start; reconcile can `container rm -f` the proxy under live sessions. Skip `ensure_job`
 when the proxy and relays answer; otherwise start once; on failure one clear error, exit 1.
 
