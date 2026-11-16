@@ -1,5 +1,5 @@
 /** In-memory VaultQuerySurface for MCP/fs tests (T008). */
-import type { ReadOptions, VaultQuerySurface } from "../../src/vault/service.ts";
+import type { FolderEntry, ReadOptions, VaultQuerySurface } from "../../src/vault/service.ts";
 import type { BacklinkHit, HeadingHit, LinkHit, NoteMetadata, TagCount } from "../../src/vault/metadata.ts";
 import type { SearchHit } from "../../src/vault/search.ts";
 
@@ -30,6 +30,21 @@ export class FakeVault implements VaultQuerySurface {
     const note = this.notes.get(relPath);
     if (!note) throw new Error(`not found: ${relPath}`);
     return note.content;
+  }
+
+  listFolder(relPath: string): FolderEntry[] {
+    const prefix = relPath.replace(/^\/+|\/+$/g, "");
+    const base = prefix ? `${prefix}/` : "";
+    const seen = new Map<string, FolderEntry>();
+    for (const [path, note] of this.notes) {
+      if (!path.startsWith(base) || !this.allowed(path)) continue;
+      const rest = path.slice(base.length);
+      const slash = rest.indexOf("/");
+      if (slash === -1) seen.set(path, { path, type: "file", size: note.content.length });
+      else seen.set(base + rest.slice(0, slash), { path: base + rest.slice(0, slash), type: "folder" });
+    }
+    if (prefix && !seen.size) throw new Error(`not a folder: ${prefix}`);
+    return [...seen.values()];
   }
 
   async writeText(relPath: string, content: string): Promise<void> {

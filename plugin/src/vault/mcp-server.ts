@@ -1,4 +1,11 @@
-/** Read-only vault MCP server (FR-026…FR-033, contract `vault-mcp.md`).
+/** Vault MCP server (FR-026…FR-033, contract `vault-mcp.md`; redesign item 6).
+ *
+ *  Read tools always; write tools when a `writer` is supplied. Every write is
+ *  shown to the user as an approval card with the real diff (routed to the
+ *  device that owns the chat session) and goes through VaultService, so the
+ *  blacklist, `.obsidian/` protection, editor refresh and host-side undo
+ *  apply. This is the only vault path a harness needs: a harness's own file
+ *  tools should be turned off so these rules can't be bypassed.
  *
  *  Obsidian-free on purpose: every tool calls the shared `VaultQuerySurface`
  *  (implemented by `VaultService` at runtime and by the fake in tests), and all
@@ -21,10 +28,40 @@ const LIMITS = {
 const SNIPPET_CHARS = 400;
 const RESPONSE_CHARS = 256 * 1024;
 const TOOL_TIMEOUT_MS = 5_000;
+/** Matches the operational approval timeout (10 min) plus the write itself. */
+const WRITE_TIMEOUT_MS = 11 * 60 * 1000;
+const READ_CHARS = 200_000;
+const LIST_MAX = 500;
 const SEARCH_TIMEOUT_MS = 2_000;
+
+/** One proposed change, as the approval card shows it. */
+export interface WriteApproval {
+  tool: string;
+  path: string;
+  /** null when the note does not exist yet. */
+  oldText: string | null;
+  newText: string;
+}
+
+/** Per-request context from the transport (which chat session is calling). */
+export interface McpCallContext {
+  /** Opaque per-session key the host gave the harness with the MCP entry. */
+  session?: string | null;
+}
+
+/** Host side of the write tools. */
+export interface VaultWriter {
+  exists(relPath: string): boolean;
+  /** Snapshot (for undo) and write through VaultService. */
+  write(relPath: string, content: string): Promise<void>;
+  /** Asks the user on the owning device; true only for an explicit allow. */
+  approve(change: WriteApproval, context: McpCallContext): Promise<boolean>;
+}
 
 export interface VaultMcpOptions {
   vault: VaultQuerySurface;
+  /** Enables the write tools. */
+  writer?: VaultWriter;
   /** Evaluated per call so settings changes apply without a restart. */
   policy: () => PathPolicyConfig;
   /** Current per-session bearer token; null/absent means “no session”. */
@@ -52,7 +89,9 @@ interface ToolDef {
   name: string;
   description: string;
   inputSchema: Record<string, unknown>;
-  run(args: Record<string, unknown>): Promise<ToolOutcome>;
+  /** Write tools wait for the user, so they get the approval timeout. */
+  writes?: boolean;
+  run(args: Record<string, unknown>, context: McpCallContext): Promise<ToolOutcome>;
 }
 
 type JsonRpcMessage = {
@@ -90,17 +129,17 @@ export class VaultMcpServer {
 
   /** Handles one JSON body (single message or batch); `null` means “nothing to
    *  reply to” (notifications/responses only). */
-  async handle(body: unknown): Promise<unknown | null> {
+  async handle(body: unknown, context: McpCallContext = {}): Promise<unknown | null> {
     if (Array.isArray(body)) {
-      const replies = (await Promise.all(body.map((message) => this.handleMessage(message)))).filter(
+      const replies = (await Promise.all(body.map((message) => this.handleMessage(message, context)))).filter(
         (reply) => reply !== null,
       );
       return replies.length ? replies : null;
     }
-    return this.handleMessage(body);
+    return this.handleMessage(body, context);
   }
 
-  private async handleMessage(raw: unknown): Promise<unknown | null> {
+  private async handleMessage(raw: unknown, context: McpCallContext): Promise<unknown | null> {
     if (!raw || typeof raw !== "object") return null;
     const msg = raw as JsonRpcMessage;
     if (typeof msg.method !== "string") return null; // a response or junk
@@ -117,8 +156,11 @@ export class VaultMcpServer {
           capabilities: { tools: {} },
           serverInfo: { name: "obsidian-vault", version: this.opts.version ?? "1.0.0" },
           instructions:
-            "Read-only tools for the user's Obsidian vault. Paths are vault-relative (e.g. `Inbox/idea.md`). " +
-            "There are no write, move, or delete tools; vault writes go through the editor's own approval flow.",
+            "Tools for the user's Obsidian vault. Paths are vault-relative (e.g. `Inbox/idea.md`). " +
+            (this.opts.writer
+              ? "Use read_note/list_folder to read and write_note/edit_note to change notes; every change is shown " +
+                "to the user for approval and may be declined. Blacklisted folders and `.obsidian/` are refused."
+              : "These tools are read-only; there is no write path here."),
         });
       case "ping":
         return ok({});
@@ -128,7 +170,7 @@ export class VaultMcpServer {
             name: tool.name,
             description: tool.description,
             inputSchema: tool.inputSchema,
-            annotations: { readOnlyHint: true, destructiveHint: false },
+            annotations: { readOnlyHint: !tool.writes, destructiveHint: false },
           })),
         });
       case "tools/call": {
@@ -140,7 +182,7 @@ export class VaultMcpServer {
           return ok(toolError("`arguments` must be an object"));
         }
         try {
-          return ok(await this.runTool(tool, args));
+          return ok(await this.runTool(tool, args, context));
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           // Tool failures are results the model can read, not protocol errors.
@@ -152,9 +194,9 @@ export class VaultMcpServer {
     }
   }
 
-  private async runTool(tool: ToolDef, args: Record<string, unknown>): Promise<McpToolResult> {
-    const timeout = tool.name === "search_notes" ? SEARCH_TIMEOUT_MS : TOOL_TIMEOUT_MS;
-    const outcome = await withTimeout(tool.run(args), timeout, `${tool.name} timed out`);
+  private async runTool(tool: ToolDef, args: Record<string, unknown>, context: McpCallContext): Promise<McpToolResult> {
+    const timeout = tool.writes ? WRITE_TIMEOUT_MS : tool.name === "search_notes" ? SEARCH_TIMEOUT_MS : TOOL_TIMEOUT_MS;
+    const outcome = await withTimeout(tool.run(args, context), timeout, `${tool.name} timed out`);
     const contents: McpContent[] = [{ type: "text", text: bound(JSON.stringify(outcome.value ?? null)) }];
     if (outcome.truncated) {
       contents.push({ type: "text", text: "truncated: true — more results exist; narrow the query or lower the limit." });
@@ -237,7 +279,95 @@ export class VaultMcpServer {
     // Tool bodies run detached from the class; bind the argument/path helpers.
     const self = this;
 
+    const readTools: ToolDef[] = [
+      {
+        name: "read_note",
+        description: "Text of a note (or any text file) in the vault, optionally a line range. Includes unsaved editor changes.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: str("Vault-relative path"),
+            line: int("First line to return (1-based)"),
+            limit: int("Number of lines to return"),
+          },
+          required: ["path"],
+        },
+        async run(args) {
+          const path = self.resolvePath(args.path);
+          const line = optionalInt(args.line, "line");
+          const limit = optionalInt(args.limit, "limit");
+          const text = await vault.readText(path, line === undefined ? {} : { line, limit });
+          return { value: { path, text: bound(text, READ_CHARS) }, truncated: text.length > READ_CHARS };
+        },
+      },
+      {
+        name: "list_folder",
+        description: "Files and folders directly inside a vault folder (omit `path` for the vault root).",
+        inputSchema: { type: "object", properties: { path: str("Vault-relative folder") } },
+        async run(args) {
+          const folder = self.resolveFolder(args.path) ?? "";
+          const entries = vault.listFolder(folder);
+          return { value: entries.slice(0, LIST_MAX), truncated: entries.length > LIST_MAX };
+        },
+      },
+    ];
+    const writer = this.opts.writer;
+    const writeTools: ToolDef[] = !writer
+      ? []
+      : [
+          {
+            name: "write_note",
+            description:
+              "Create a note or replace its whole content. Parent folders are created. The user approves the change first.",
+            writes: true,
+            inputSchema: {
+              type: "object",
+              properties: { path: str("Vault-relative path, e.g. `Inbox/idea.md`"), content: str("Full new content") },
+              required: ["path", "content"],
+            },
+            async run(args, context) {
+              const path = self.resolvePath(args.path);
+              const content = self.stringArg(args, "content") ?? "";
+              const oldText = writer.exists(path) ? await vault.readText(path) : null;
+              return self.applyChange("write_note", path, oldText, content, context);
+            },
+          },
+          {
+            name: "edit_note",
+            description:
+              "Replace exact text in an existing note. `old_text` must match exactly once unless `replace_all` is true. " +
+              "The user approves the change first.",
+            writes: true,
+            inputSchema: {
+              type: "object",
+              properties: {
+                path: str("Vault-relative note path"),
+                old_text: str("Exact text to replace (include enough context to be unique)"),
+                new_text: str("Replacement text"),
+                replace_all: { type: "boolean", description: "Replace every occurrence" },
+              },
+              required: ["path", "old_text", "new_text"],
+            },
+            async run(args, context) {
+              const path = self.resolvePath(args.path);
+              if (!writer.exists(path)) throw new ToolError(`not found: ${path}`);
+              const oldStr = self.stringArg(args, "old_text") ?? "";
+              const newStr = self.stringArg(args, "new_text") ?? "";
+              if (!oldStr) throw new ToolError("`old_text` must not be empty");
+              const current = await vault.readText(path);
+              const count = current.split(oldStr).length - 1;
+              if (count === 0) throw new ToolError("`old_text` was not found in the note");
+              if (count > 1 && args.replace_all !== true) {
+                throw new ToolError(`\`old_text\` matches ${count} times; add context or set replace_all`);
+              }
+              const next = args.replace_all === true ? current.split(oldStr).join(newStr) : current.replace(oldStr, () => newStr);
+              return self.applyChange("edit_note", path, current, next, context);
+            },
+          },
+        ];
+
     return [
+      ...readTools,
       {
         name: "search_notes",
         description:
@@ -358,8 +488,32 @@ export class VaultMcpServer {
           };
         },
       },
+      ...writeTools,
     ];
   }
+
+  /** Approval, then write. A decline is a tool result the model can read. */
+  private async applyChange(
+    tool: string,
+    path: string,
+    oldText: string | null,
+    newText: string,
+    context: McpCallContext,
+  ): Promise<ToolOutcome> {
+    const writer = this.opts.writer;
+    if (!writer) throw new ToolError("this vault server is read-only");
+    if (oldText === newText) return { value: { path, changed: false } };
+    const approved = await writer.approve({ tool, path, oldText, newText }, context);
+    if (!approved) throw new ToolError(`the user declined this change to ${path}; do not retry it unchanged`);
+    await writer.write(path, newText);
+    return { value: { path, changed: true, created: oldText === null } };
+  }
+}
+
+function optionalInt(value: unknown, field: string): number | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw new ToolError(`\`${field}\` must be a positive integer`);
+  return value;
 }
 
 function toolError(message: string): McpToolResult {

@@ -101,3 +101,64 @@ test("session/list reports stored conversations even when their harness is gone"
   assert.equal((list.sessions[0]._meta as Record<string, unknown>)["obsidian-chat/resume"], "fresh-only");
 });
 
+
+// ---------- redesign item 6: MCP write approvals route to the owning device ----------
+
+function bridgeWithHarness(answer: string | null) {
+  const adapter = new MemoryAdapter();
+  const store = new SessionStore(adapter, ".chat/sessions");
+  const keys: string[] = [];
+  const harness = {
+    onRawUpdate: () => undefined,
+    onRawPermissionRequest: () => undefined,
+    getCapabilitiesSnapshot: () => ({ loadSession: false, resume: false, mcpHttp: true }),
+    createSession: async () => ({ sessionId: "harness-1", modes: null, configOptions: null }),
+  };
+  const bridge = new HostBridge({
+    store: () => store,
+    ensureHarness: async () => harness as never,
+    harness: () => harness as never,
+    vaultRoot: () => "/vault",
+    command: () => ({ label: "test", fingerprint: fingerprint("test acp", "/vault"), command: "test acp" }),
+    mcpEntry: (key) => {
+      keys.push(key);
+      return { name: "vault", type: "http", url: "http://127.0.0.1:1/mcp", headers: [] } as never;
+    },
+  });
+  const asked: Array<Record<string, unknown>> = [];
+  const context = {
+    notify: async () => undefined,
+    request: async (_method: string, params: Record<string, unknown>) => {
+      asked.push(params);
+      if (answer === null) throw new Error("device went away");
+      return { outcome: { outcome: "selected", optionId: answer } };
+    },
+  } as unknown as AgentContext;
+  bridge.bindDevice("phone", context);
+  return { bridge, keys, asked, store };
+}
+
+const change = { tool: "write_note", path: "Inbox/a.md", oldText: null, newText: "hi" };
+
+test("a vault write approval goes to the device that owns the session, with the diff", async () => {
+  const { bridge, keys, asked } = bridgeWithHarness("allow");
+  const { sessionId } = await bridge.newSession("phone", { cwd: "/vault", mcpServers: [] } as never);
+  assert.equal(keys.length, 1, "the harness got a per-session MCP key");
+  assert.equal(await bridge.approveVaultChange(keys[0], change), true);
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].sessionId, sessionId);
+  const toolCall = asked[0].toolCall as { content: Array<Record<string, unknown>> };
+  assert.deepEqual(toolCall.content[0], { type: "diff", path: "Inbox/a.md", oldText: null, newText: "hi" });
+});
+
+test("reject, a lost device, or an unknown session key all decline", async () => {
+  const rejected = bridgeWithHarness("reject");
+  await rejected.bridge.newSession("phone", { cwd: "/vault", mcpServers: [] } as never);
+  assert.equal(await rejected.bridge.approveVaultChange(rejected.keys[0], change), false);
+
+  const gone = bridgeWithHarness(null);
+  await gone.bridge.newSession("phone", { cwd: "/vault", mcpServers: [] } as never);
+  assert.equal(await gone.bridge.approveVaultChange(gone.keys[0], change), false);
+
+  assert.equal(await gone.bridge.approveVaultChange("not-a-key", change), false);
+});

@@ -38,7 +38,7 @@ import {
 } from "@agentclientprotocol/sdk";
 import { cancelledPermission } from "../acp/permissions.ts";
 import { CONTEXT_META_KEY } from "../acp/types.ts";
-import type { ContentBlock } from "@agentclientprotocol/sdk";
+import type { ContentBlock, RequestPermissionResponse } from "@agentclientprotocol/sdk";
 import { sanitizeForRecord } from "../session/record.ts";
 import { buildDigest, buildFullReplay, digestBlock } from "../session/digest.ts";
 import type { NewEntry, SessionStore, SessionSummary } from "../session/store.ts";
@@ -46,6 +46,8 @@ import { continuityMeta, decideContinuity, isResumableState, type CurrentHarness
 import type { RecordEntry, SessionHeader } from "../session/record.ts";
 import type { AcpShellClient, McpServerEntry } from "./acp-client.ts";
 import type { RelayBridge } from "./host-relay.ts";
+import { mintToken } from "./device-auth.ts";
+import type { WriteApproval } from "../vault/mcp-server.ts";
 
 export interface HostBridgeOptions {
   store: () => SessionStore;
@@ -57,8 +59,9 @@ export interface HostBridgeOptions {
   vaultRoot: () => string;
   /** Redacted label, deterministic fingerprint, and the raw command. */
   command: () => { label: string; fingerprint: string; command: string };
-  /** Vault MCP entry for the harness session (null when unavailable). */
-  mcpEntry: () => McpServerEntry | null;
+  /** Vault MCP entry for one chat session (null when unavailable); the key
+   *  comes back on every MCP call so write approvals reach the right device. */
+  mcpEntry: (sessionKey: string) => McpServerEntry | null;
   /** Host continuity registry (optional in unit tests). */
   registry?: ResumeRegistry;
   log?: (message: string) => void;
@@ -114,6 +117,9 @@ export class HostBridge implements RelayBridge {
   /** Harness replay during reattach is not re-recorded/forwarded. */
   private suppressed = new Set<string>();
   private log: (message: string) => void;
+  /** MCP session key → host session id (and back). */
+  private mcpKeys = new Map<string, string>();
+  private mcpKeyOf = new Map<string, string>();
 
   constructor(options: HostBridgeOptions) {
     this.opts = options;
@@ -180,7 +186,8 @@ export class HostBridge implements RelayBridge {
     this.attachHarness(harness);
     const cwd = this.opts.vaultRoot();
     const capabilities = harness.getCapabilitiesSnapshot();
-    const entry = capabilities.mcpHttp ? this.opts.mcpEntry() : null;
+    const key = mintToken(12);
+    const entry = capabilities.mcpHttp ? this.opts.mcpEntry(key) : null;
     const created = await harness.createSession({
       cwd,
       mcpServers: entry ? [entry] : [],
@@ -199,6 +206,7 @@ export class HostBridge implements RelayBridge {
       title: "ACP session",
     });
     const session: HostSession = { hostId, deviceId, harnessId: created.sessionId, cwd, turn: 0 };
+    this.bindMcpKey(key, hostId);
     this.sessions.set(hostId, session);
     this.byHarness.set(created.sessionId, session);
     this.registry?.upsert(this.rowFor(hostId, session, "live"));
@@ -326,7 +334,7 @@ export class HostBridge implements RelayBridge {
     this.attachHarness(harness);
     const cwd = header.harness.cwd || this.opts.vaultRoot();
     const capabilities = harness.getCapabilitiesSnapshot();
-    const entry = capabilities.mcpHttp ? this.opts.mcpEntry() : null;
+    const entry = capabilities.mcpHttp ? this.opts.mcpEntry(this.mcpKeyFor(header.sessionId)) : null;
     const created = await harness.createSession({ cwd, mcpServers: entry ? [entry] : [] });
     const session: HostSession = {
       hostId: header.sessionId,
@@ -524,7 +532,7 @@ export class HostBridge implements RelayBridge {
     const harnessId = header.harnessSessionId;
     if (!harnessId) throw new Error("session has no harness session id");
     const capabilities = harness.getCapabilitiesSnapshot();
-    const mcp = capabilities.mcpHttp ? this.opts.mcpEntry() : null;
+    const mcp = capabilities.mcpHttp ? this.opts.mcpEntry(this.mcpKeyFor(header.sessionId)) : null;
     this.suppressed.add(harnessId);
     try {
       const restored = await harness.attachSession(harnessId, {
@@ -662,6 +670,96 @@ export class HostBridge implements RelayBridge {
       .catch(() => undefined);
   }
 
+  private bindMcpKey(key: string, hostId: string): void {
+    this.mcpKeys.set(key, hostId);
+    this.mcpKeyOf.set(hostId, key);
+  }
+
+  /** Stable MCP key for an existing conversation (minted on first use). */
+  private mcpKeyFor(hostId: string): string {
+    const existing = this.mcpKeyOf.get(hostId);
+    if (existing) return existing;
+    const key = mintToken(12);
+    this.bindMcpKey(key, hostId);
+    return key;
+  }
+
+  /** Asks the device that owns the calling chat session to approve a vault
+   *  change made through the MCP write tools. The card shows the real diff and
+   *  offers exactly allow/reject; anything but an explicit allow (no device,
+   *  disconnect, timeout, reject) declines. Recorded like any approval. */
+  async approveVaultChange(sessionKey: string, change: WriteApproval): Promise<boolean> {
+    const hostId = this.mcpKeys.get(sessionKey);
+    const session = hostId ? this.sessions.get(hostId) : undefined;
+    if (!session) return false;
+    const requestId = `vault-${mintToken(6)}`;
+    const toolCall = {
+      toolCallId: requestId,
+      title: `${change.oldText === null ? "Create" : "Edit"} ${change.path}`,
+      kind: "edit",
+      status: "pending",
+      content: [{ type: "diff", path: change.path, oldText: change.oldText, newText: change.newText }],
+      locations: [{ path: change.path }],
+    };
+    const options = [
+      { optionId: "allow", name: "Allow", kind: "allow_once" },
+      { optionId: "reject", name: "Reject", kind: "reject_once" },
+    ];
+    const response = await this.askDevice(session, requestId, toolCall, options);
+    return response.outcome.outcome === "selected" && response.outcome.optionId === "allow";
+  }
+
+  /** Sends one approval to the session's device and records request and
+   *  response. Resolves cancelled when the device is gone or fails. */
+  private async askDevice(
+    session: HostSession,
+    requestId: string,
+    toolCall: unknown,
+    options: unknown[],
+  ): Promise<RequestPermissionResponse> {
+    await this.record(session.hostId, {
+      kind: "permission_request",
+      turn: Math.max(1, session.turn),
+      requestId,
+      toolCall,
+      options,
+    });
+    const context = this.devices.get(session.deviceId);
+    if (!context) {
+      await this.record(session.hostId, {
+        kind: "permission_response",
+        requestId,
+        outcome: { outcome: "cancelled" },
+        reason: "device disconnected",
+      });
+      return cancelledPermission();
+    }
+    try {
+      const response = await context.request(methods.client.session.requestPermission, {
+        sessionId: session.hostId,
+        toolCall,
+        options,
+      } as never);
+      await this.record(session.hostId, {
+        kind: "permission_response",
+        requestId,
+        outcome:
+          response.outcome.outcome === "selected"
+            ? { outcome: "selected", optionId: response.outcome.optionId }
+            : { outcome: "cancelled" },
+      });
+      return response;
+    } catch (err) {
+      await this.record(session.hostId, {
+        kind: "permission_response",
+        requestId,
+        outcome: { outcome: "cancelled" },
+        reason: errorText(err),
+      });
+      return cancelledPermission();
+    }
+  }
+
   private forwardPermission(
     request: { sessionId: string; toolCall: unknown; options: unknown[] },
     requestId: string,
@@ -670,50 +768,9 @@ export class HostBridge implements RelayBridge {
     if (!session) return false;
     const harness = this.opts.harness();
     if (!harness) return false;
-    const context = this.devices.get(session.deviceId);
-    void (async () => {
-      await this.record(session.hostId, {
-        kind: "permission_request",
-        turn: Math.max(1, session.turn),
-        requestId,
-        toolCall: request.toolCall,
-        options: request.options,
-      });
-      if (!context) {
-        await this.record(session.hostId, {
-          kind: "permission_response",
-          requestId,
-          outcome: { outcome: "cancelled" },
-          reason: "device disconnected",
-        });
-        harness.respondPermissionRaw(requestId, cancelledPermission());
-        return;
-      }
-      try {
-        const response = await context.request(methods.client.session.requestPermission, {
-          sessionId: session.hostId,
-          toolCall: request.toolCall,
-          options: request.options,
-        } as never);
-        await this.record(session.hostId, {
-          kind: "permission_response",
-          requestId,
-          outcome:
-            response.outcome.outcome === "selected"
-              ? { outcome: "selected", optionId: response.outcome.optionId }
-              : { outcome: "cancelled" },
-        });
-        harness.respondPermissionRaw(requestId, response);
-      } catch (err) {
-        await this.record(session.hostId, {
-          kind: "permission_response",
-          requestId,
-          outcome: { outcome: "cancelled" },
-          reason: errorText(err),
-        });
-        harness.respondPermissionRaw(requestId, cancelledPermission());
-      }
-    })().catch((err) => this.log(`permission relay failed: ${errorText(err)}`));
+    void this.askDevice(session, requestId, request.toolCall, request.options)
+      .then((response) => harness.respondPermissionRaw(requestId, response))
+      .catch((err) => this.log(`permission relay failed: ${errorText(err)}`));
     return true;
   }
 

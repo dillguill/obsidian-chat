@@ -37,6 +37,10 @@ export interface HostServerOptions {
 
 const MAX_MCP_BODY = 1024 * 1024;
 
+/** Header carrying the per-chat-session key the host hands the harness with
+ *  the MCP entry, so a write tool's approval reaches the right device. */
+export const MCP_SESSION_HEADER = "x-obsidian-chat-session";
+
 import { loadNodeModule } from "./node.ts";
 
 /** Origins of the Obsidian apps: desktop (Electron), iOS (Capacitor) and
@@ -100,7 +104,8 @@ export function createVaultMcpHandler(options: {
       reply(res, 200, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "parse error" } });
       return;
     }
-    const result = await options.server.handle(body);
+    const session = req.headers[MCP_SESSION_HEADER];
+    const result = await options.server.handle(body, { session: Array.isArray(session) ? session[0] : session ?? null });
     if (result === null) {
       res.writeHead(202);
       res.end();

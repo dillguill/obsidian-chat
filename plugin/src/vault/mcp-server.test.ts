@@ -69,12 +69,12 @@ test("initialize reports the MCP protocol version and tools-only capability", as
   assert.equal(reply.result.capabilities.resources, undefined);
 });
 
-test("tools/list exposes exactly the six read-only vault tools", async () => {
+test("without a writer, tools/list exposes only read-only vault tools", async () => {
   const reply = await call(createServerFor(), "tools/list");
   const tools = reply.result.tools as { name: string; annotations: Record<string, unknown> }[];
   assert.deepEqual(
     tools.map((t) => t.name).sort(),
-    ["get_backlinks", "get_links", "get_note_metadata", "get_outline", "list_tags", "search_notes"],
+    ["get_backlinks", "get_links", "get_note_metadata", "get_outline", "list_folder", "list_tags", "read_note", "search_notes"],
   );
   for (const tool of tools) {
     assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false }, tool.name);
@@ -278,4 +278,86 @@ test("ACP fs and MCP tools share exactly the same path verdicts", async () => {
     assert.equal(mcpAllowed, allowed, `mcp verdict for ${path}`);
     assert.equal(mcpAllowed, fsAllowed, `shared policy diverged for ${path}`);
   }
+});
+
+// ---------- redesign item 6: reads and approved writes ----------
+
+import type { VaultWriter, WriteApproval } from "./mcp-server.ts";
+
+function writableServer(answer: boolean | ((change: WriteApproval) => boolean)) {
+  const vault = fixtureVault();
+  const asked: Array<{ change: WriteApproval; session: string | null | undefined }> = [];
+  const writer: VaultWriter = {
+    exists: (path) => vault.notes.has(path),
+    write: (path, content) => vault.writeText(path, content),
+    approve: async (change, context) => {
+      asked.push({ change, session: context.session });
+      return typeof answer === "function" ? answer(change) : answer;
+    },
+  };
+  const server = new VaultMcpServer({ vault, writer, policy: () => policy, token: () => "tok" });
+  const tool = async (name: string, args: Record<string, unknown>) => {
+    const reply = (await server.handle({ jsonrpc: "2.0", id: ++nextId, method: "tools/call", params: { name, arguments: args } }, { session: "sess-1" })) as RpcReply;
+    return reply.result as { content: { type: string; text: string }[]; isError?: boolean };
+  };
+  return { vault, server, asked, tool };
+}
+
+test("read_note returns text and line ranges; blacklisted notes are refused", async () => {
+  const { tool } = writableServer(true);
+  const read = parseTool(await tool("read_note", { path: "Inbox/idea.md" })) as { text: string };
+  assert.equal(read.text, "an idea about gardening");
+  const refused = await tool("read_note", { path: "Private/secret.md" });
+  assert.equal(refused.isError, true);
+});
+
+test("list_folder lists the root without blacklisted folders", async () => {
+  const { tool } = writableServer(true);
+  const entries = parseTool(await tool("list_folder", {})) as { path: string }[];
+  assert.deepEqual(entries.map((e) => e.path).sort(), ["Inbox", "Notes"]);
+});
+
+test("write_note asks the owning session's device with the real diff, then writes", async () => {
+  const { tool, asked, vault } = writableServer(true);
+  const result = parseTool(await tool("write_note", { path: "Inbox/new.md", content: "hello" })) as { created: boolean };
+  assert.equal(result.created, true);
+  assert.equal(vault.notes.get("Inbox/new.md")?.content, "hello");
+  assert.equal(asked.length, 1);
+  assert.equal(asked[0].session, "sess-1");
+  assert.deepEqual(asked[0].change, { tool: "write_note", path: "Inbox/new.md", oldText: null, newText: "hello" });
+});
+
+test("a declined change is not written and the model is told", async () => {
+  const { tool, vault } = writableServer(false);
+  const result = await tool("edit_note", { path: "Inbox/idea.md", old_text: "gardening", new_text: "cooking" });
+  assert.equal(result.isError, true);
+  assert.match(result.content[0].text, /declined/);
+  assert.equal(vault.notes.get("Inbox/idea.md")?.content, "an idea about gardening");
+});
+
+test("edit_note replaces a unique match; ambiguous or missing text is refused before asking", async () => {
+  const { tool, asked, vault } = writableServer(true);
+  await vault.writeText("Notes/twice.md", "a b a");
+  assert.equal((await tool("edit_note", { path: "Notes/twice.md", old_text: "a", new_text: "x" })).isError, true);
+  assert.equal((await tool("edit_note", { path: "Notes/twice.md", old_text: "zzz", new_text: "x" })).isError, true);
+  assert.equal(asked.length, 0, "nothing was proposed");
+  await tool("edit_note", { path: "Notes/twice.md", old_text: "a", new_text: "x", replace_all: true });
+  assert.equal(vault.notes.get("Notes/twice.md")?.content, "x b x");
+});
+
+test("writes to blacklisted, .obsidian or session-store paths are refused without asking", async () => {
+  const { tool, asked } = writableServer(true);
+  for (const path of ["Private/x.md", ".obsidian/app.json", ".chat/sessions/a.jsonl", "../outside.md"]) {
+    const result = await tool("write_note", { path, content: "x" });
+    assert.equal(result.isError, true, path);
+  }
+  assert.equal(asked.length, 0);
+});
+
+test("write tools are annotated as not read-only", async () => {
+  const { server } = writableServer(true);
+  const reply = (await server.handle({ jsonrpc: "2.0", id: ++nextId, method: "tools/list" })) as RpcReply;
+  const tools = reply.result.tools as { name: string; annotations: { readOnlyHint: boolean } }[];
+  assert.equal(tools.find((t) => t.name === "write_note")?.annotations.readOnlyHint, false);
+  assert.equal(tools.find((t) => t.name === "read_note")?.annotations.readOnlyHint, true);
 });

@@ -40,6 +40,14 @@ export interface VaultQuerySurface {
   outline(relPath: string): HeadingHit[];
   metadata(relPath: string): NoteMetadata | null;
   readText(relPath: string, options?: ReadOptions): Promise<string>;
+  /** Direct children of a vault folder ("" = root), policy-filtered. */
+  listFolder(relPath: string): FolderEntry[];
+}
+
+export interface FolderEntry {
+  path: string;
+  type: "file" | "folder";
+  size?: number;
 }
 
 export interface ReadOptions {
@@ -139,6 +147,20 @@ export class VaultService {
     else await this.app.vault.create(normalizePath(verdict.relPath), content);
     this.refreshEditors(verdict.relPath);
     this.docsDirty = true;
+  }
+
+  listFolder(relPath: string): FolderEntry[] {
+    const config = this.policy();
+    const rel = relPath.replace(/^\/+|\/+$/g, "");
+    const folder = rel ? this.app.vault.getAbstractFileByPath(normalizePath(rel)) : this.app.vault.getRoot();
+    if (!(folder instanceof TFolder)) throw new Error(`not a folder: ${rel || "/"}`);
+    const out: FolderEntry[] = [];
+    for (const child of folder.children) {
+      if (!evaluateRelativePath(child.path, config).allowed) continue;
+      if (child instanceof TFolder) out.push({ path: child.path, type: "folder" });
+      else if (child instanceof TFile) out.push({ path: child.path, type: "file", size: child.stat.size });
+    }
+    return out.sort((a, b) => (a.type === b.type ? a.path.localeCompare(b.path) : a.type === "folder" ? -1 : 1));
   }
 
   /** Removes a note (used only by the host-side Undo of a harness-created file). */

@@ -250,6 +250,6 @@ Items 1–4 built on `redesign/host-settings-reconnect` and verified 2026-11-15:
 - [x] 3. Loopback-only listener behind Tailscale Serve; identity headers replace device codes; drop bind/port settings
 - [x] 4. Remote liveness + reconnect on resume/online; no permanent give-up
 - [ ] 5. Conversation records move to the host's app-data folder (`~/Library/Application Support/obsidian-chat/sessions/`); one-time migration from `.chat/sessions/`
-- [ ] 6. Vault tool server gains approved write tools; dsh `obsidian` profile drops its own fs tools
+- [x] 6. Vault tool server gains approved write tools; dsh `obsidian` profile drops its own fs tools
 - [ ] 7. Harness setting accepts a command or a `ws(s)://` URL
 - [ ] 8. Plugin waits ~10 s before SIGKILL on harness stop (dsh-side changes: dsh repo `plans/08-obsidian-acp.md`)

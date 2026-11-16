@@ -11,7 +11,7 @@ import { App, FileSystemAdapter, Platform } from "obsidian";
 import type { SessionStore, StoreAdapter } from "../session/store.ts";
 import { ResumeRegistry } from "../session/resume.ts";
 import { VaultService } from "../vault/service.ts";
-import { VaultMcpServer } from "../vault/mcp-server.ts";
+import { VaultMcpServer, type VaultWriter } from "../vault/mcp-server.ts";
 import { AcpShellClient } from "./acp-client.ts";
 import { HostBridge } from "./host-bridge.ts";
 import { HostRelay } from "./host-relay.ts";
@@ -107,13 +107,36 @@ export class HostCore {
     return this.environment;
   }
 
-  private mcpEntry() {
+  /** Vault MCP entry for one chat session: the session key routes write
+   *  approvals to the device that owns the conversation. */
+  private mcpEntry(sessionKey?: string) {
     if (!this.server) return null;
+    const headers = [{ name: "Authorization", value: `Bearer ${this.mcpTokenValue}` }];
+    if (sessionKey) headers.push({ name: "X-Obsidian-Chat-Session", value: sessionKey });
     return {
       name: "vault",
       type: "http" as const,
       url: `http://127.0.0.1:${this.boundPort}/mcp`,
-      headers: [{ name: "Authorization", value: `Bearer ${this.mcpTokenValue}` }],
+      headers,
+    };
+  }
+
+  /** Host side of the MCP write tools: approval on the owning device, then a
+   *  snapshotted write through the same environment ACP fs writes use. */
+  private vaultWriter(): VaultWriter {
+    return {
+      exists: (relPath) => !!this.vault().fileFor(relPath),
+      write: async (relPath, content) => {
+        const env = this.shellEnvironment();
+        const absolute = `${this.vaultRoot().replace(/\/+$/, "")}/${relPath}`;
+        await env.snapshotBeforeWrite(absolute);
+        await env.writeTextFile(absolute, content);
+      },
+      approve: async (change, context) => {
+        const bridge = this.bridge;
+        if (!bridge || !context.session) return false;
+        return bridge.approveVaultChange(context.session, change);
+      },
     };
   }
 
@@ -130,6 +153,7 @@ export class HostCore {
     }
     const mcp = new VaultMcpServer({
       vault: this.vault(),
+      writer: this.vaultWriter(),
       policy: () => this.vault().policy(),
       token: () => this.mcpTokenValue,
     });
@@ -151,7 +175,7 @@ export class HostCore {
         command: settings.shell.command,
       }),
       registry,
-      mcpEntry: () => this.mcpEntry(),
+      mcpEntry: (sessionKey) => this.mcpEntry(sessionKey),
       log: this.log,
     });
     this.bridge = bridge;

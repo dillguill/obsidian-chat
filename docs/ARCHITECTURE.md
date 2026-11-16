@@ -19,9 +19,13 @@ amendment.
      plugin loads on the host; the harness is still spawned lazily.
    - A relay bridge maps each device session onto a harness session, forwards updates with
      `_meta { "obsidian-chat/seq" }`, and routes approvals to the owning device only.
-2. **In-process read-only MCP vault server** (`src/vault/mcp-server.ts`)
-   - Note search, backlinks, outgoing links, tags, outline/headings, metadata.
-   - Loopback only, per-session bearer token, no write tools.
+2. **In-process MCP vault server** (`src/vault/mcp-server.ts`)
+   - Reads: read_note, list_folder, search, backlinks, outgoing links, tags, outline, metadata.
+   - Writes: write_note, edit_note. Each one is an approval card with the real diff on the device
+     that owns the chat session (routed by a per-session key header), then a snapshotted write
+     through VaultService (blacklist, `.obsidian/`, editor refresh, undo).
+   - Loopback only, bearer token. This is the harness's only vault path: dsh's own file tools are
+     off in its `obsidian` profile.
 3. **Shared VaultService** (`src/vault/service.ts` + `path-policy.ts`)
    - The single implementation of vault semantics: path confinement, blacklist, `.obsidian/`
      protection, reads (including open-editor text), writes, editor refresh, search index and
@@ -76,7 +80,8 @@ amendment.
   name are per-device local storage. Saving merges only the keys this device changed, and the plugin
   reloads on an external change.
 - The MCP endpoint is loopback-only and additionally requires the per-session token.
-- Vault writes only happen through ACP fs + approval; MCP exposes no write path.
+- Vault writes happen through the MCP write tools (approval on the owning device) or ACP fs (the
+  harness's own approval). Both go through VaultService and the same path policy.
 - The shell holds no provider credentials. Provider/model configuration lives entirely in the
   harness.
 - Legacy modules — HTTP/SSE relay, custom ACP bridge client, Markdown note history, `turn_end`
