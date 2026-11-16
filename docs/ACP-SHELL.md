@@ -40,10 +40,22 @@ curl "${U[@]}" "$H/acp?device=check" | head -1                               # 1
 curl "${U[@]}" -H "Origin: https://evil.example" "$H/acp" | head -1          # 403: web pages are refused
 ```
 
+A `502` on the plain GET too means nothing is listening on 127.0.0.1:8765: start Obsidian (the
+listener starts with the plugin on the host) and check `lsof -nP -iTCP:8765 -sTCP:LISTEN`.
 An empty `200` with `server: Caddy` means Caddy answered instead of Serve (wrong port). A `401`
 where `403` is expected means Obsidian is still running an old build: quit and reopen Obsidian
 (toggling the plugin does not always reload its code). `--noproxy '*'` matters: with an HTTP(S) proxy in the environment, curl prints the proxy's
 `HTTP/1.1 200` CONNECT reply instead of the host's answer.
+
+Nothing but Tailscale Serve may forward to the listener port. A reverse proxy (Caddy, nginx, socat)
+in front of 8765 would pass a forged `Tailscale-User-Login` header through. This check should fail
+(connection refused or 401), never return 101:
+
+```sh
+curl -s --noproxy '*' --http1.1 -m 3 -o /dev/null -D - -H "Connection: Upgrade" -H "Upgrade: websocket" \
+  -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
+  -H "Tailscale-User-Login: forged@example.com" "http://$(tailscale ip -4):8765/acp" | head -1
+```
 
 ## History and continuity
 

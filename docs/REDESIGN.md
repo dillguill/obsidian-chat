@@ -54,8 +54,11 @@ whether or not the chat pane is open on the Mac.
   remote devices store that name, never an IP.
 - Serve's identity headers (`Tailscale-User-Login`) replace paired-device codes.
   Serve strips client-supplied identity headers, and loopback-only binding
-  means nothing can reach the listener around Serve. Note: tagged devices get
-  no identity headers.
+  means nothing can reach the listener around Serve — **as long as no other
+  local proxy forwards to the listener port**. Any such proxy (Caddy, nginx,
+  socat, an SSH tunnel) passes a client-supplied `Tailscale-User-Login`
+  through and lets any device that reaches it attach as anyone. Note: tagged
+  devices get no identity headers.
 - `/acp` only accepts the Obsidian app origins (or no Origin); web pages get
   403. Serve vouches for the device, not the page that opened the socket.
 
@@ -78,6 +81,13 @@ whether or not the chat pane is open on the Mac.
   your own login.
 - Client certificates (mTLS) were ruled out: the Obsidian apps can't present
   them.
+- **Removed a leftover Caddy relay (2026-11-15).** The Mac's Caddyfile had an
+  `http://:8765` site on the Tailscale IP that proxied to the plugin (how
+  remotes reached the old `http://100.x:8765` address). It forwarded a forged
+  `Tailscale-User-Login` unchanged, so any tailnet device could attach as any
+  user (verified: 101). The block was removed and Caddy reloaded; Serve on 9443
+  is now the only way in. Check for this whenever the host machine changes:
+  nothing but Serve may proxy to the listener port.
 - **Port 9443, not 443.** The Mac's Caddy listens on `*:443` (as root) and
   answers the tailnet name first, with an empty 200 (it even obtains the
   `*.ts.net` certificate from tailscaled). Serve runs on `--https=9443`
