@@ -212,7 +212,21 @@ export class ShellRuntime {
   }
 
   /** Starts the host listener and the single harness attachment (local mode). */
+  /** Concurrent callers (plugin load and an opening chat view) share one
+   *  start, so there is never a second HostCore racing for the port. */
+  private hostStarting: Promise<void> | null = null;
+
   async startHost(): Promise<void> {
+    if (this.host) return;
+    if (!this.hostStarting) {
+      this.hostStarting = this.startHostOnce().finally(() => {
+        this.hostStarting = null;
+      });
+    }
+    return this.hostStarting;
+  }
+
+  private async startHostOnce(): Promise<void> {
     if (this.host) return;
     if (!Platform.isDesktopApp) throw new Error("host mode is desktop-only");
     const host = new HostCore({
